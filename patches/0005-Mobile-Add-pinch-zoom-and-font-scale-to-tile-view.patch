@@ -1,0 +1,237 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebastian Riempp <sebastian.riempp@gmx.de>
+Date: Sun, 13 Sep 2026 14:49:08 +0000
+Subject: [PATCH 5/6] Mobile: Add pinch zoom and font scale to tile view
+
+Adds notes.tileFontScale (60-160%) and raises notes.tileColumns' maximum
+to 5. The "smaller"/"larger" toolbar buttons now follow the earlier
+plugin's zoom() steps: column count changes first, and once at either
+end of the 1-5 column range, the font scale changes by 10 instead.
+NoteTile scales its title, preview text and image height by that factor.
+
+NoteTileList also recognizes a two-finger pinch gesture over the grid
+(a View using the responder system directly, capturing only once a
+second touch appears so single-finger scrolling in the FlatList is
+unaffected) and applies the same zoom steps once the finger distance
+changes by more than 60px, matching the plugin's threshold.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0122rnadKkGCFMVkX948oRD8
+
+diff --git a/packages/app-mobile/components/NoteTile.tsx b/packages/app-mobile/components/NoteTile.tsx
+index db1d21c..1df5f92 100644
+--- a/packages/app-mobile/components/NoteTile.tsx
++++ b/packages/app-mobile/components/NoteTile.tsx
+@@ -28,6 +28,7 @@ interface Props {
+ 	selectedNoteIds: string[];
+ 	index?: number;
+ 	numColumns: number;
++	fontScale: number;
+ }
+ 
+ // Strips the most common Markdown markup so that the tile preview reads as plain text. This is
+@@ -48,10 +49,11 @@ const stripMarkdown = (body: string) => {
+ 		.trim();
+ };
+ 
+-const useStyles = (themeId: number, numColumns: number, isSelected: boolean) => {
++const useStyles = (themeId: number, numColumns: number, isSelected: boolean, fontScale: number) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
+ 		const gap = theme.marginLeft / 2;
++		const scale = fontScale / 100;
+ 
+ 		const outer: ViewStyle = {
+ 			width: `${100 / numColumns}%`,
+@@ -70,7 +72,7 @@ const useStyles = (themeId: number, numColumns: number, isSelected: boolean) =>
+ 
+ 		const image: ImageStyle = {
+ 			width: '100%',
+-			height: 96,
++			height: 96 * scale,
+ 			backgroundColor: theme.backgroundColor3,
+ 		};
+ 
+@@ -86,7 +88,7 @@ const useStyles = (themeId: number, numColumns: number, isSelected: boolean) =>
+ 
+ 		const lockIcon: TextStyle = {
+ 			color: theme.colorFaded,
+-			fontSize: theme.fontSizeSmaller,
++			fontSize: theme.fontSizeSmaller * scale,
+ 			marginRight: 6,
+ 			marginTop: 2,
+ 		};
+@@ -95,13 +97,13 @@ const useStyles = (themeId: number, numColumns: number, isSelected: boolean) =>
+ 			flexShrink: 1,
+ 			fontWeight: 'bold',
+ 			color: theme.color,
+-			fontSize: theme.fontSize,
++			fontSize: theme.fontSize * scale,
+ 		};
+ 
+ 		const previewText: TextStyle = {
+ 			marginTop: 4,
+ 			color: theme.colorFaded,
+-			fontSize: theme.fontSizeSmaller,
++			fontSize: theme.fontSizeSmaller * scale,
+ 		};
+ 
+ 		const checkboxRow: ViewStyle = {
+@@ -129,13 +131,13 @@ const useStyles = (themeId: number, numColumns: number, isSelected: boolean) =>
+ 			},
+ 			uncheckedOpacityStyle: { },
+ 		});
+-	}, [themeId, numColumns, isSelected]);
++	}, [themeId, numColumns, isSelected, fontScale]);
+ };
+ 
+ const NoteTileComponent: React.FC<Props> = memo(props => {
+ 	const note = props.note ?? {};
+ 	const isSelected = props.noteSelectionEnabled && props.selectedNoteIds.includes(note.id);
+-	const styles = useStyles(props.themeId, props.numColumns, isSelected);
++	const styles = useStyles(props.themeId, props.numColumns, isSelected, props.fontScale);
+ 	const dialogs = useContext(DialogContext);
+ 	const [checkboxKey, setCheckboxKey] = useState(0);
+ 	const [previewText, setPreviewText] = useState('');
+@@ -287,5 +289,6 @@ export default connect((state: AppState) => {
+ 		themeId: state.settings.theme,
+ 		noteSelectionEnabled: state.noteSelectionEnabled,
+ 		selectedNoteIds: state.selectedNoteIds,
++		fontScale: state.settings['notes.tileFontScale'],
+ 	};
+ })(NoteTileComponent);
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+index c8c8434..fa0d5f2 100644
+--- a/packages/app-mobile/components/NoteTileList.tsx
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -2,7 +2,7 @@ import * as React from 'react';
+ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+ import { connect } from 'react-redux';
+ import { Dispatch } from 'redux';
+-import { FlatList, Text, StyleSheet, Button, View, ViewStyle, TextStyle } from 'react-native';
++import { FlatList, GestureResponderEvent, Text, StyleSheet, Button, View, ViewStyle, TextStyle } from 'react-native';
+ import { FolderEntity, NoteEntity } from '@joplin/lib/services/database/types';
+ import { AppState } from '../utils/types';
+ import getEmptyFolderMessage from '@joplin/lib/components/shared/NoteList/getEmptyFolderMessage';
+@@ -71,6 +71,17 @@ const useStyles = (themeId: number) => {
+ 	}, [themeId]);
+ };
+ 
++// Two-finger distance, used by the pinch-to-zoom gesture below.
++const touchDistance = (touches: { pageX: number; pageY: number }[]) => {
++	const dx = touches[0].pageX - touches[1].pageX;
++	const dy = touches[0].pageY - touches[1].pageY;
++	return Math.sqrt(dx * dx + dy * dy);
++};
++
++// The pinch distance, in pixels, that triggers one zoom step. Matches the earlier plugin's
++// implementation.
++const pinchZoomThreshold = 60;
++
+ // Note tiles are laid out in a fixed number of columns, using the same note data (and
+ // selection/dispatch logic, in NoteTile.tsx) as the list view in NoteList.tsx.
+ const NoteTileListComponent: React.FC<Props> = props => {
+@@ -115,22 +126,67 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 	const items = folderIds.length ? (filteredNotes ?? []) : props.items;
+ 
+ 	// FlatList requires a remount (via `key`) when `numColumns` changes.
+-	const numColumns = Math.min(4, Math.max(1, props.tileColumns || 1));
++	const numColumns = Math.min(5, Math.max(1, props.tileColumns || 1));
+ 
++	// Zoom steps match the earlier plugin's zoom() function: first the column count is changed,
++	// and once at either end of the column range, the font scale is changed instead.
+ 	const zoomIn = useCallback(() => {
+ 		const columns = Setting.value('notes.tileColumns');
+-		if (columns > 1) Setting.setValue('notes.tileColumns', columns - 1);
++		if (columns > 1) {
++			Setting.setValue('notes.tileColumns', columns - 1);
++		} else {
++			Setting.setValue('notes.tileFontScale', Math.min(160, Setting.value('notes.tileFontScale') + 10));
++		}
+ 	}, []);
+ 
+ 	const zoomOut = useCallback(() => {
+ 		const columns = Setting.value('notes.tileColumns');
+-		if (columns < 4) Setting.setValue('notes.tileColumns', columns + 1);
++		if (columns < 5) {
++			Setting.setValue('notes.tileColumns', columns + 1);
++		} else {
++			Setting.setValue('notes.tileFontScale', Math.max(60, Setting.value('notes.tileFontScale') - 10));
++		}
++	}, []);
++
++	const pinchStateRef = useRef<{ lastDistance: number }|null>(null);
++
++	const onStartShouldSetResponderCapture = useCallback((event: GestureResponderEvent) => {
++		return event.nativeEvent.touches.length === 2;
++	}, []);
++
++	const onResponderGrant = useCallback((event: GestureResponderEvent) => {
++		pinchStateRef.current = { lastDistance: touchDistance(event.nativeEvent.touches) };
++	}, []);
++
++	const onResponderMove = useCallback((event: GestureResponderEvent) => {
++		if (event.nativeEvent.touches.length !== 2 || !pinchStateRef.current) return;
++
++		const distance = touchDistance(event.nativeEvent.touches);
++		const delta = distance - pinchStateRef.current.lastDistance;
++		if (delta > pinchZoomThreshold) {
++			zoomIn();
++			pinchStateRef.current.lastDistance = distance;
++		} else if (-delta > pinchZoomThreshold) {
++			zoomOut();
++			pinchStateRef.current.lastDistance = distance;
++		}
++	}, [zoomIn, zoomOut]);
++
++	const onResponderEnd = useCallback(() => {
++		pinchStateRef.current = null;
+ 	}, []);
+ 
+ 	const toolbar = <NoteTileToolbar onZoomIn={zoomIn} onZoomOut={zoomOut}/>;
+ 
+ 	if (items.length) {
+-		return <View style={styles.root}>
++		return <View
++			style={styles.root}
++			onStartShouldSetResponderCapture={onStartShouldSetResponderCapture}
++			onResponderGrant={onResponderGrant}
++			onResponderMove={onResponderMove}
++			onResponderRelease={onResponderEnd}
++			onResponderTerminate={onResponderEnd}
++		>
+ 			{toolbar}
+ 			<FlatList
+ 				key={`note-tile-list-${numColumns}`}
+diff --git a/packages/lib/models/settings/builtInMetadata.ts b/packages/lib/models/settings/builtInMetadata.ts
+index 3d0c887..dd0d82a 100644
+--- a/packages/lib/models/settings/builtInMetadata.ts
++++ b/packages/lib/models/settings/builtInMetadata.ts
+@@ -1419,7 +1419,7 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			appTypes: [AppType.Mobile],
+ 			label: () => _('Tile columns'),
+ 			minimum: 1,
+-			maximum: 4,
++			maximum: 5,
+ 			step: 1,
+ 			storage: SettingStorage.File,
+ 			isGlobal: true,
+@@ -1434,6 +1434,18 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			isGlobal: false,
+ 		},
+ 
++		'notes.tileFontScale': {
++			value: 100,
++			type: SettingItemType.Int,
++			public: false,
++			appTypes: [AppType.Mobile],
++			minimum: 60,
++			maximum: 160,
++			step: 10,
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
+ 		'notes.showCheckboxCompletionChart': {
+ 			value: true,
+ 			type: SettingItemType.Bool,

@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebastian Riempp <sebastian.riempp@gmx.de>
+Date: Sun, 13 Sep 2026 14:49:31 +0000
+Subject: [PATCH 6/6] Android: Use separate application id for the tile view
+ fork
+
+Changes applicationId to net.cozic.joplin.tileview (the Kotlin namespace
+and package names stay net.cozic.joplin) and app_name to "Joplin Tiles"
+so this fork can be installed and run side by side with the Play Store
+Joplin app on the same device.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0122rnadKkGCFMVkX948oRD8
+
+diff --git a/packages/app-mobile/android/app/build.gradle b/packages/app-mobile/android/app/build.gradle
+index 459efbf..6e82589 100644
+--- a/packages/app-mobile/android/app/build.gradle
++++ b/packages/app-mobile/android/app/build.gradle
+@@ -80,7 +80,7 @@ android {
+ 
+     namespace "net.cozic.joplin"
+     defaultConfig {
+-        applicationId "net.cozic.joplin"
++        applicationId "net.cozic.joplin.tileview"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+ 		versionCode 2097819
+diff --git a/packages/app-mobile/android/app/src/main/res/values/strings.xml b/packages/app-mobile/android/app/src/main/res/values/strings.xml
+index f89aea2..86e797b 100644
+--- a/packages/app-mobile/android/app/src/main/res/values/strings.xml
++++ b/packages/app-mobile/android/app/src/main/res/values/strings.xml
+@@ -1,4 +1,4 @@
+ <resources>
+-    <string name="app_name">Joplin</string>
++    <string name="app_name">Joplin Tiles</string>
+     <string name="default_notification_channel_id">net.cozic.joplin.notification</string>
+ </resources>

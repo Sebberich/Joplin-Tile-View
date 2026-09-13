@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebastian Riempp <sebastian.riempp@gmx.de>
+Date: Sun, 13 Sep 2026 14:47:42 +0000
+Subject: [PATCH 4/6] Mobile: Add layout toggle button
+
+Adds a button to switch between the tile and list note layouts without
+going through Settings: NoteTileToolbar (added in the previous commit)
+already has a button that sets notes.mobileLayout to 'list', and a new
+narrow bar (NoteListLayoutBar) above NoteList sets it back to 'tiles'.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0122rnadKkGCFMVkX948oRD8
+
+diff --git a/packages/app-mobile/components/screens/Notes/NoteListLayoutBar.tsx b/packages/app-mobile/components/screens/Notes/NoteListLayoutBar.tsx
+new file mode 100644
+index 0000000..eb51859
+--- /dev/null
++++ b/packages/app-mobile/components/screens/Notes/NoteListLayoutBar.tsx
+@@ -0,0 +1,70 @@
++import * as React from 'react';
++import { useMemo } from 'react';
++import { Text, StyleSheet, TouchableHighlight, View, ViewStyle, TextStyle } from 'react-native';
++import Setting from '@joplin/lib/models/Setting';
++import { _ } from '@joplin/lib/locale';
++import Icon from '../../Icon';
++import { themeStyle } from '../../global-style';
++
++interface Props {
++	themeId: number;
++}
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++
++		const root: ViewStyle = {
++			flexDirection: 'row',
++			justifyContent: 'flex-end',
++			alignItems: 'center',
++			paddingHorizontal: theme.marginLeft / 2,
++			paddingVertical: 4,
++			borderBottomWidth: 1,
++			borderBottomColor: theme.dividerColor,
++		};
++
++		const button: ViewStyle = {
++			flexDirection: 'row',
++			alignItems: 'center',
++			paddingVertical: 6,
++			paddingHorizontal: 8,
++		};
++
++		const label: TextStyle = {
++			color: theme.color,
++			fontSize: theme.fontSize,
++			marginLeft: 6,
++		};
++
++		const icon: TextStyle = {
++			color: theme.color,
++			fontSize: theme.fontSizeLarger,
++		};
++
++		return StyleSheet.create({ root, button, label, icon });
++	}, [themeId]);
++};
++
++// Shown above NoteList when `notes.mobileLayout` is 'list', to switch back to the tile view. The
++// equivalent button for switching from tiles to list lives in NoteTileToolbar.
++const NoteListLayoutBar: React.FC<Props> = props => {
++	const styles = useStyles(props.themeId);
++
++	const onSwitchToTilesPress = () => {
++		Setting.setValue('notes.mobileLayout', 'tiles');
++	};
++
++	return (
++		<View style={styles.root}>
++			<TouchableHighlight onPress={onSwitchToTilesPress} accessibilityRole='button' accessibilityLabel={_('Switch to tile view')}>
++				<View style={styles.button}>
++					<Icon name='fas fa-th-large' style={styles.icon} accessibilityLabel={null} />
++					<Text style={styles.label}>{_('Tiles')}</Text>
++				</View>
++			</TouchableHighlight>
++		</View>
++	);
++};
++
++export default NoteListLayoutBar;
+diff --git a/packages/app-mobile/components/screens/Notes/Notes.tsx b/packages/app-mobile/components/screens/Notes/Notes.tsx
+index 39d0944..8ffc476 100644
+--- a/packages/app-mobile/components/screens/Notes/Notes.tsx
++++ b/packages/app-mobile/components/screens/Notes/Notes.tsx
+@@ -21,6 +21,7 @@ import { DialogContext, DialogControl } from '../../DialogManager';
+ import { useContext } from 'react';
+ import { MenuChoice } from '../../DialogManager/types';
+ import NewNoteButton from './NewNoteButton';
++import NoteListLayoutBar from './NoteListLayoutBar';
+ import PerFolderSortOrderService from '@joplin/lib/services/sortOrder/PerFolderSortOrderService';
+ import { ALL_NOTES_FILTER_ID } from '@joplin/lib/reserved-ids';
+ 
+@@ -325,7 +326,10 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 					showSearchButton={true}
+ 					showSideMenuButton={true}
+ 				/>
+-				{this.props.mobileLayout === 'tiles' ? <NoteTileList /> : <NoteList />}
++				{this.props.mobileLayout === 'tiles' ? <NoteTileList /> : <>
++					<NoteListLayoutBar themeId={this.props.themeId} />
++					<NoteList />
++				</>}
+ 				{actionButtonComp}
+ 			</AccessibleView>
+ 		);

@@ -1,0 +1,705 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebastian Riempp <sebastian.riempp@gmx.de>
+Date: Sun, 13 Sep 2026 14:47:07 +0000
+Subject: [PATCH 3/6] Mobile: Add multi-notebook filter to tile view
+
+Adds `notes.tileFolderIds` so the tile view can be limited to one or more
+notebooks, selected from a checkbox tree dialog (NoteTileFolderDialog)
+reachable from a new toolbar above the grid (NoteTileToolbar). Checking a
+notebook also checks its descendants and unchecking removes them, matching
+the earlier Joplin plugin this feature is based on; the selection logic is
+factored into utils/tileFolderSelection.ts so it can be tested directly.
+
+When a filter is set, NoteTileList loads its own notes with Note.previews()
+instead of using whatever Joplin currently has loaded into state.notes.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0122rnadKkGCFMVkX948oRD8
+
+diff --git a/.gitignore b/.gitignore
+index f33b704..48664b5 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -803,8 +803,10 @@ packages/app-mobile/components/NoteEditor/types.js
+ packages/app-mobile/components/NoteItem.js
+ packages/app-mobile/components/NoteList.js
+ packages/app-mobile/components/NoteTile.js
++packages/app-mobile/components/NoteTileFolderDialog.js
+ packages/app-mobile/components/NoteTileList.test.js
+ packages/app-mobile/components/NoteTileList.js
++packages/app-mobile/components/NoteTileToolbar.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileEditor.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileSwitcher.js
+ packages/app-mobile/components/ProfileSwitcher/useProfileConfig.js
+@@ -946,6 +948,7 @@ packages/app-mobile/components/screens/NoteRevisionViewer.js
+ packages/app-mobile/components/screens/NoteTagsDialog.js
+ packages/app-mobile/components/screens/Notes/NewNoteButton.test.js
+ packages/app-mobile/components/screens/Notes/NewNoteButton.js
++packages/app-mobile/components/screens/Notes/NoteListLayoutBar.js
+ packages/app-mobile/components/screens/Notes/Notes.js
+ packages/app-mobile/components/screens/Notes/TextWrapCalculator.js
+ packages/app-mobile/components/screens/ResourceScreen.js
+@@ -1098,6 +1101,8 @@ packages/app-mobile/utils/testing/getWebViewWindowById.js
+ packages/app-mobile/utils/testing/mockPluginServiceSetup.js
+ packages/app-mobile/utils/testing/setupGlobalStore.js
+ packages/app-mobile/utils/testing/testingLibrary.js
++packages/app-mobile/utils/tileFolderSelection.test.js
++packages/app-mobile/utils/tileFolderSelection.js
+ packages/app-mobile/utils/types.js
+ packages/app-mobile/web/serviceWorker.js
+ packages/app-mobile/web/webpack.config.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index 0f4e6c1..1df1c18 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -829,8 +829,10 @@ packages/app-mobile/components/NoteEditor/types.js
+ packages/app-mobile/components/NoteItem.js
+ packages/app-mobile/components/NoteList.js
+ packages/app-mobile/components/NoteTile.js
++packages/app-mobile/components/NoteTileFolderDialog.js
+ packages/app-mobile/components/NoteTileList.test.js
+ packages/app-mobile/components/NoteTileList.js
++packages/app-mobile/components/NoteTileToolbar.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileEditor.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileSwitcher.js
+ packages/app-mobile/components/ProfileSwitcher/useProfileConfig.js
+@@ -972,6 +974,7 @@ packages/app-mobile/components/screens/NoteRevisionViewer.js
+ packages/app-mobile/components/screens/NoteTagsDialog.js
+ packages/app-mobile/components/screens/Notes/NewNoteButton.test.js
+ packages/app-mobile/components/screens/Notes/NewNoteButton.js
++packages/app-mobile/components/screens/Notes/NoteListLayoutBar.js
+ packages/app-mobile/components/screens/Notes/Notes.js
+ packages/app-mobile/components/screens/Notes/TextWrapCalculator.js
+ packages/app-mobile/components/screens/ResourceScreen.js
+@@ -1124,6 +1127,8 @@ packages/app-mobile/utils/testing/getWebViewWindowById.js
+ packages/app-mobile/utils/testing/mockPluginServiceSetup.js
+ packages/app-mobile/utils/testing/setupGlobalStore.js
+ packages/app-mobile/utils/testing/testingLibrary.js
++packages/app-mobile/utils/tileFolderSelection.test.js
++packages/app-mobile/utils/tileFolderSelection.js
+ packages/app-mobile/utils/types.js
+ packages/app-mobile/web/serviceWorker.js
+ packages/app-mobile/web/webpack.config.js
+diff --git a/packages/app-mobile/components/NoteTileFolderDialog.tsx b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+new file mode 100644
+index 0000000..012de5c
+--- /dev/null
++++ b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+@@ -0,0 +1,148 @@
++import * as React from 'react';
++import { useMemo } from 'react';
++import { connect } from 'react-redux';
++import { FlatList, StyleSheet, Text, TouchableHighlight, View, ViewStyle, TextStyle } from 'react-native';
++import Folder from '@joplin/lib/models/Folder';
++import Setting from '@joplin/lib/models/Setting';
++import { FolderEntity } from '@joplin/lib/services/database/types';
++import { AppState } from '../utils/types';
++import { toggleFolderSelection } from '../utils/tileFolderSelection';
++import { _ } from '@joplin/lib/locale';
++import Checkbox from './Checkbox';
++import Modal from './Modal';
++import { themeStyle } from './global-style';
++
++interface Props {
++	themeId: number;
++	folders: FolderEntity[];
++	selectedFolderIds: string[];
++	visible: boolean;
++	onClose: ()=> void;
++}
++
++interface FolderListItem {
++	id: string;
++	title: string;
++	depth: number;
++}
++
++const flattenFolderTree = (folders: FolderEntity[]): FolderListItem[] => {
++	const output: FolderListItem[] = [];
++	const addChildren = (folder: { id: string; title: string; children: FolderEntity[] }, depth: number) => {
++		output.push({ id: folder.id, title: Folder.displayTitle(folder), depth });
++		const children = [...folder.children].sort((a, b) => Folder.displayTitle(a).localeCompare(Folder.displayTitle(b)));
++		for (const child of children) addChildren(child as typeof folder, depth + 1);
++	};
++	const tree = Folder.buildTree(folders.filter(f => f.id !== Folder.conflictFolderId()));
++	const roots = [...tree].sort((a, b) => Folder.displayTitle(a).localeCompare(Folder.displayTitle(b)));
++	for (const root of roots) addChildren(root as unknown as { id: string; title: string; children: FolderEntity[] }, 0);
++	return output;
++};
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++
++		const container: ViewStyle = {
++			backgroundColor: theme.backgroundColor,
++			borderRadius: 4,
++			maxWidth: 600,
++			width: '90%',
++			maxHeight: '80%',
++			alignSelf: 'center',
++			marginVertical: 'auto',
++			padding: theme.margin,
++		};
++
++		const title: TextStyle = {
++			...theme.headerStyle,
++			marginBottom: theme.marginTop,
++		};
++
++		const row: ViewStyle = {
++			flexDirection: 'row',
++			alignItems: 'center',
++			paddingVertical: 8,
++		};
++
++		const rowLabel: TextStyle = {
++			color: theme.color,
++			fontSize: theme.fontSize,
++			marginLeft: 8,
++			flexShrink: 1,
++		};
++
++		return StyleSheet.create({
++			container,
++			title,
++			row,
++			rowLabel,
++			checkboxStyle: { color: theme.color },
++		});
++	}, [themeId]);
++};
++
++const NoteTileFolderDialogComponent: React.FC<Props> = props => {
++	const styles = useStyles(props.themeId);
++	const items = useMemo(() => flattenFolderTree(props.folders), [props.folders]);
++
++	if (!props.visible) return null;
++
++	const setSelection = (ids: string[]) => {
++		Setting.setValue('notes.tileFolderIds', ids.join(','));
++	};
++
++	const onAllPress = () => setSelection([]);
++
++	const onFolderToggle = (folderId: string, checked: boolean) => {
++		setSelection(toggleFolderSelection(props.selectedFolderIds, folderId, checked, props.folders));
++	};
++
++	return (
++		<Modal
++			visible={props.visible}
++			onClose={props.onClose}
++			containerStyle={styles.container}
++			scrollOverflow={true}
++		>
++			<Text style={styles.title}>{_('Notebooks')}</Text>
++			<View style={styles.row}>
++				<Checkbox
++					style={styles.checkboxStyle}
++					checked={!props.selectedFolderIds.length}
++					onChange={onAllPress}
++					accessibilityLabel={_('All notebooks')}
++				/>
++				<Text style={styles.rowLabel}>{_('All notebooks')}</Text>
++			</View>
++			<FlatList
++				data={items}
++				keyExtractor={item => item.id}
++				renderItem={({ item }) => (
++					<TouchableHighlight onPress={() => onFolderToggle(item.id, !props.selectedFolderIds.includes(item.id))}>
++						<View style={[styles.row, { paddingLeft: 8 + item.depth * 20 }]}>
++							<Checkbox
++								style={styles.checkboxStyle}
++								checked={props.selectedFolderIds.includes(item.id)}
++								onChange={checked => onFolderToggle(item.id, checked)}
++								accessibilityLabel={item.title}
++							/>
++							<Text style={styles.rowLabel}>{item.title}</Text>
++						</View>
++					</TouchableHighlight>
++				)}
++			/>
++		</Modal>
++	);
++};
++
++const NoteTileFolderDialog = connect((state: AppState) => {
++	const raw = state.settings['notes.tileFolderIds'] as string;
++	return {
++		themeId: state.settings.theme,
++		folders: state.folders,
++		selectedFolderIds: raw ? raw.split(',').filter(Boolean) : [],
++	};
++})(NoteTileFolderDialogComponent);
++
++export default NoteTileFolderDialog;
+diff --git a/packages/app-mobile/components/NoteTileList.test.tsx b/packages/app-mobile/components/NoteTileList.test.tsx
+index d5cf223..0866d12 100644
+--- a/packages/app-mobile/components/NoteTileList.test.tsx
++++ b/packages/app-mobile/components/NoteTileList.test.tsx
+@@ -45,6 +45,28 @@ describe('NoteTileList', () => {
+ 		});
+ 	});
+ 
++	test('should only show notes from notebooks selected in notes.tileFolderIds', async () => {
++		const folder1 = await Folder.save({ title: 'Folder 1' });
++		const folder2 = await Folder.save({ title: 'Folder 2' });
++		const note1 = await Note.save({ title: 'Note in folder 1', parent_id: folder1.id });
++		await Note.save({ title: 'Note in folder 2', parent_id: folder2.id });
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder1, folder2] });
++		testStore.dispatch({
++			type: 'NOTE_UPDATE_ALL',
++			notes: [note1],
++			notesSource: 'test',
++		});
++		testStore.dispatch({ type: 'SETTING_UPDATE_ONE', key: 'notes.tileFolderIds', value: folder1.id });
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('Note in folder 1')).toBeTruthy();
++			expect(screen.queryByText('Note in folder 2')).toBeFalsy();
++		});
++	});
++
+ 	test('should show a message when the selected folder has no notes', async () => {
+ 		const folder = await Folder.save({ title: 'Empty folder' });
+ 
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+index 14afd91..c8c8434 100644
+--- a/packages/app-mobile/components/NoteTileList.tsx
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -1,5 +1,5 @@
+ import * as React from 'react';
+-import { useEffect, useMemo, useRef } from 'react';
++import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+ import { connect } from 'react-redux';
+ import { Dispatch } from 'redux';
+ import { FlatList, Text, StyleSheet, Button, View, ViewStyle, TextStyle } from 'react-native';
+@@ -7,9 +7,14 @@ import { FolderEntity, NoteEntity } from '@joplin/lib/services/database/types';
+ import { AppState } from '../utils/types';
+ import getEmptyFolderMessage from '@joplin/lib/components/shared/NoteList/getEmptyFolderMessage';
+ import Folder from '@joplin/lib/models/Folder';
++import Note, { PreviewsOrder } from '@joplin/lib/models/Note';
++import Setting from '@joplin/lib/models/Setting';
++import { stateUtils } from '@joplin/lib/reducer';
++import useAsyncEffect from '@joplin/lib/hooks/useAsyncEffect';
+ 
+ import { _ } from '@joplin/lib/locale';
+ import NoteTile from './NoteTile';
++import NoteTileToolbar from './NoteTileToolbar';
+ import { themeStyle } from './global-style';
+ 
+ interface Props {
+@@ -21,12 +26,20 @@ interface Props {
+ 	noteSelectionEnabled?: boolean;
+ 	selectedFolderId: string|null;
+ 	tileColumns: number;
++	tileFolderIds: string;
++	notesOrder: PreviewsOrder[];
++	uncompletedTodosOnTop: boolean;
++	showCompletedTodos: boolean;
+ }
+ 
+ const useStyles = (themeId: number) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
+ 
++		const root: ViewStyle = {
++			flex: 1,
++		};
++
+ 		const noItemMessage: TextStyle = {
+ 			paddingLeft: theme.marginLeft,
+ 			paddingRight: theme.marginRight,
+@@ -49,6 +62,7 @@ const useStyles = (themeId: number) => {
+ 		};
+ 
+ 		return StyleSheet.create({
++			root,
+ 			noItemMessage,
+ 			noNotebookView,
+ 			list,
+@@ -63,6 +77,7 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 	const styles = useStyles(props.themeId);
+ 	const rootRef = useRef<FlatList<NoteEntity>>(null);
+ 	const previousNotesSource = useRef(props.notesSource);
++	const [filteredNotes, setFilteredNotes] = useState<NoteEntity[]|null>(null);
+ 
+ 	// Make sure scroll position is reset when switching from one folder to another or to a tag list.
+ 	useEffect(() => {
+@@ -72,41 +87,86 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 		}
+ 	}, [props.notesSource]);
+ 
+-	const onCreateNotebookButtonPress = () => {
+-		props.dispatch({
+-			type: 'NAV_GO',
+-			routeName: 'Folder',
+-			folderId: null,
+-		});
+-	};
++	const folderIds = useMemo(() => (props.tileFolderIds ? props.tileFolderIds.split(',').filter(Boolean) : []), [props.tileFolderIds]);
++
++	// When a notebook filter is set, the tile list no longer shows whatever Joplin currently has
++	// loaded into `state.notes` (a single notebook, a tag, a search, ...) -- it loads its own
++	// notes from the selected notebooks instead. `props.items` is used as a signal that the
++	// database notes may have changed (a note was added, edited, deleted, etc.) and the filtered
++	// list should be reloaded.
++	useAsyncEffect(async event => {
++		if (!folderIds.length) {
++			setFilteredNotes(null);
++			return;
++		}
++
++		const options = {
++			order: props.notesOrder,
++			uncompletedTodosOnTop: props.uncompletedTodosOnTop,
++			showCompletedTodos: props.showCompletedTodos,
++			conditions: [`parent_id IN (${folderIds.map(() => '?').join(',')})`],
++			conditionsParams: [...folderIds],
++		};
++
++		const notes = await Note.previews(null, options);
++		if (!event.cancelled) setFilteredNotes(notes);
++	}, [folderIds, props.notesOrder, props.uncompletedTodosOnTop, props.showCompletedTodos, props.items]);
++
++	const items = folderIds.length ? (filteredNotes ?? []) : props.items;
+ 
+ 	// FlatList requires a remount (via `key`) when `numColumns` changes.
+ 	const numColumns = Math.min(4, Math.max(1, props.tileColumns || 1));
+ 
+-	if (props.items.length) {
+-		return <FlatList
+-			key={`note-tile-list-${numColumns}`}
+-			ref={rootRef}
+-			style={styles.list}
+-			data={props.items}
+-			numColumns={numColumns}
+-			columnWrapperStyle={numColumns > 1 ? styles.columnWrapper : undefined}
+-			renderItem={({ item, index }) => <NoteTile note={item} index={index} numColumns={numColumns} />}
+-			keyExtractor={item => item.id}
+-		/>;
++	const zoomIn = useCallback(() => {
++		const columns = Setting.value('notes.tileColumns');
++		if (columns > 1) Setting.setValue('notes.tileColumns', columns - 1);
++	}, []);
++
++	const zoomOut = useCallback(() => {
++		const columns = Setting.value('notes.tileColumns');
++		if (columns < 4) Setting.setValue('notes.tileColumns', columns + 1);
++	}, []);
++
++	const toolbar = <NoteTileToolbar onZoomIn={zoomIn} onZoomOut={zoomOut}/>;
++
++	if (items.length) {
++		return <View style={styles.root}>
++			{toolbar}
++			<FlatList
++				key={`note-tile-list-${numColumns}`}
++				ref={rootRef}
++				style={styles.list}
++				data={items}
++				numColumns={numColumns}
++				columnWrapperStyle={numColumns > 1 ? styles.columnWrapper : undefined}
++				renderItem={({ item, index }) => <NoteTile note={item} index={index} numColumns={numColumns} />}
++				keyExtractor={item => item.id}
++			/>
++		</View>;
+ 	} else {
+-		if (!Folder.atLeastOneRealFolderExists(props.folders)) {
++		if (folderIds.length) {
++			return <View style={styles.root}>
++				{toolbar}
++				<Text style={styles.noItemMessage}>{_('There are currently no notes in the selected notebooks.')}</Text>
++			</View>;
++		} else if (!Folder.atLeastOneRealFolderExists(props.folders)) {
+ 			const noItemMessage = _('You currently have no notebooks.');
+ 			return (
+-				<View style={styles.noNotebookView}>
+-					<Text style={styles.noItemMessage}>{noItemMessage}</Text>
+-					<Button title={_('Create a notebook')} onPress={onCreateNotebookButtonPress} />
++				<View style={styles.root}>
++					{toolbar}
++					<View style={styles.noNotebookView}>
++						<Text style={styles.noItemMessage}>{noItemMessage}</Text>
++						<Button title={_('Create a notebook')} onPress={() => props.dispatch({ type: 'NAV_GO', routeName: 'Folder', folderId: null })} />
++					</View>
+ 				</View>
+ 			);
+ 		} else {
+-			return <Text style={styles.noItemMessage}>
+-				{getEmptyFolderMessage(props.folders, props.selectedFolderId)}
+-			</Text>;
++			return <View style={styles.root}>
++				{toolbar}
++				<Text style={styles.noItemMessage}>
++					{getEmptyFolderMessage(props.folders, props.selectedFolderId)}
++				</Text>
++			</View>;
+ 		}
+ 	}
+ };
+@@ -120,6 +180,10 @@ const NoteTileList = connect((state: AppState) => {
+ 		noteSelectionEnabled: state.noteSelectionEnabled,
+ 		selectedFolderId: state.selectedFolderId,
+ 		tileColumns: state.settings['notes.tileColumns'],
++		tileFolderIds: state.settings['notes.tileFolderIds'],
++		notesOrder: stateUtils.notesOrder(state.settings),
++		uncompletedTodosOnTop: state.settings.uncompletedTodosOnTop,
++		showCompletedTodos: state.settings.showCompletedTodos,
+ 	};
+ })(NoteTileListComponent);
+ 
+diff --git a/packages/app-mobile/components/NoteTileToolbar.tsx b/packages/app-mobile/components/NoteTileToolbar.tsx
+new file mode 100644
+index 0000000..4fb3d80
+--- /dev/null
++++ b/packages/app-mobile/components/NoteTileToolbar.tsx
+@@ -0,0 +1,140 @@
++import * as React from 'react';
++import { useMemo, useState } from 'react';
++import { connect } from 'react-redux';
++import { Text, StyleSheet, TouchableHighlight, View, ViewStyle, TextStyle } from 'react-native';
++import Setting from '@joplin/lib/models/Setting';
++import { FolderEntity } from '@joplin/lib/services/database/types';
++import { AppState } from '../utils/types';
++import { _ } from '@joplin/lib/locale';
++import IconButton from './IconButton';
++import NoteTileFolderDialog from './NoteTileFolderDialog';
++import { themeStyle } from './global-style';
++
++interface Props {
++	themeId: number;
++	folders: FolderEntity[];
++	selectedFolderIds: string[];
++	tileColumns: number;
++	onZoomIn: ()=> void;
++	onZoomOut: ()=> void;
++}
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++
++		const root: ViewStyle = {
++			flexDirection: 'row',
++			alignItems: 'center',
++			paddingHorizontal: theme.marginLeft / 2,
++			paddingVertical: 4,
++			borderBottomWidth: 1,
++			borderBottomColor: theme.dividerColor,
++		};
++
++		const folderButton: ViewStyle = {
++			flexDirection: 'row',
++			alignItems: 'center',
++			flexShrink: 1,
++			paddingVertical: 6,
++			paddingHorizontal: 8,
++		};
++
++		const folderButtonLabel: TextStyle = {
++			color: theme.color,
++			fontSize: theme.fontSize,
++			marginLeft: 6,
++		};
++
++		const spacer: ViewStyle = { flexGrow: 1 };
++
++		const icon: TextStyle = {
++			color: theme.color,
++			fontSize: theme.fontSizeLarger,
++			width: 32,
++			textAlign: 'center',
++		};
++
++		return StyleSheet.create({
++			root,
++			folderButton,
++			folderButtonLabel,
++			spacer,
++			icon,
++		});
++	}, [themeId]);
++};
++
++const folderTitleById = (folders: FolderEntity[], id: string) => {
++	return folders.find(f => f.id === id)?.title ?? '';
++};
++
++const NoteTileToolbarComponent: React.FC<Props> = props => {
++	const styles = useStyles(props.themeId);
++	const [folderDialogVisible, setFolderDialogVisible] = useState(false);
++
++	const folderLabel = useMemo(() => {
++		if (!props.selectedFolderIds.length) return _('All notebooks');
++		if (props.selectedFolderIds.length === 1) return folderTitleById(props.folders, props.selectedFolderIds[0]) || _('1 notebook');
++		return _('%d notebooks', props.selectedFolderIds.length);
++	}, [props.selectedFolderIds, props.folders]);
++
++	const onSwitchToListPress = () => {
++		Setting.setValue('notes.mobileLayout', 'list');
++	};
++
++	return (
++		<View style={styles.root}>
++			<TouchableHighlight onPress={() => setFolderDialogVisible(true)} accessibilityRole='button'>
++				<View style={styles.folderButton}>
++					<IconButton
++						iconName='fas fa-folder'
++						onPress={() => setFolderDialogVisible(true)}
++						description={_('Filter by notebook')}
++						iconStyle={styles.icon}
++						themeId={props.themeId}
++					/>
++					<Text style={styles.folderButtonLabel} numberOfLines={1}>{folderLabel}</Text>
++				</View>
++			</TouchableHighlight>
++			<View style={styles.spacer}/>
++			<IconButton
++				iconName='fas fa-minus'
++				onPress={props.onZoomOut}
++				description={_('Smaller')}
++				iconStyle={styles.icon}
++				themeId={props.themeId}
++			/>
++			<IconButton
++				iconName='fas fa-plus'
++				onPress={props.onZoomIn}
++				description={_('Larger')}
++				iconStyle={styles.icon}
++				themeId={props.themeId}
++			/>
++			<IconButton
++				iconName='fas fa-list'
++				onPress={onSwitchToListPress}
++				description={_('Switch to list view')}
++				iconStyle={styles.icon}
++				themeId={props.themeId}
++			/>
++			<NoteTileFolderDialog
++				visible={folderDialogVisible}
++				onClose={() => setFolderDialogVisible(false)}
++			/>
++		</View>
++	);
++};
++
++const NoteTileToolbar = connect((state: AppState) => {
++	const raw = state.settings['notes.tileFolderIds'] as string;
++	return {
++		themeId: state.settings.theme,
++		folders: state.folders,
++		selectedFolderIds: raw ? raw.split(',').filter(Boolean) : [],
++		tileColumns: state.settings['notes.tileColumns'],
++	};
++})(NoteTileToolbarComponent);
++
++export default NoteTileToolbar;
+diff --git a/packages/app-mobile/utils/tileFolderSelection.test.ts b/packages/app-mobile/utils/tileFolderSelection.test.ts
+new file mode 100644
+index 0000000..ea24128
+--- /dev/null
++++ b/packages/app-mobile/utils/tileFolderSelection.test.ts
+@@ -0,0 +1,31 @@
++import { FolderEntity } from '@joplin/lib/services/database/types';
++import { toggleFolderSelection } from './tileFolderSelection';
++
++const makeFolder = (id: string, parentId: string): FolderEntity => ({ id, parent_id: parentId } as FolderEntity);
++
++describe('tileFolderSelection', () => {
++	const folders: FolderEntity[] = [
++		makeFolder('parent', ''),
++		makeFolder('child1', 'parent'),
++		makeFolder('child2', 'parent'),
++		makeFolder('grandchild', 'child1'),
++		makeFolder('other', ''),
++	];
++
++	test('checking a parent folder also checks all of its descendants', () => {
++		const result = toggleFolderSelection([], 'parent', true, folders);
++		expect(result.sort()).toEqual(['child1', 'child2', 'grandchild', 'parent'].sort());
++	});
++
++	test('unchecking a single child only removes that child', () => {
++		const selected = ['parent', 'child1', 'child2', 'grandchild'];
++		const result = toggleFolderSelection(selected, 'child2', false, folders);
++		expect(result.sort()).toEqual(['parent', 'child1', 'grandchild'].sort());
++	});
++
++	test('unchecking a parent folder also removes all of its descendants', () => {
++		const selected = ['parent', 'child1', 'child2', 'grandchild', 'other'];
++		const result = toggleFolderSelection(selected, 'parent', false, folders);
++		expect(result.sort()).toEqual(['other'].sort());
++	});
++});
+diff --git a/packages/app-mobile/utils/tileFolderSelection.ts b/packages/app-mobile/utils/tileFolderSelection.ts
+new file mode 100644
+index 0000000..f1bef12
+--- /dev/null
++++ b/packages/app-mobile/utils/tileFolderSelection.ts
+@@ -0,0 +1,41 @@
++import { FolderEntity } from '@joplin/lib/services/database/types';
++
++// Builds a map from folder ID to the IDs of its direct children.
++const buildChildrenMap = (folders: FolderEntity[]) => {
++	const childrenMap: Record<string, string[]> = {};
++	for (const folder of folders) {
++		const parentId = folder.parent_id || '';
++		childrenMap[parentId] ??= [];
++		childrenMap[parentId].push(folder.id);
++	}
++	return childrenMap;
++};
++
++// All descendant folder IDs (children, grandchildren, ...) of `folderId`.
++export const getDescendantFolderIds = (folderId: string, folders: FolderEntity[]) => {
++	const childrenMap = buildChildrenMap(folders);
++	const output: string[] = [];
++	const stack = [...(childrenMap[folderId] ?? [])];
++	while (stack.length) {
++		const id = stack.pop();
++		output.push(id);
++		for (const childId of childrenMap[id] ?? []) stack.push(childId);
++	}
++	return output;
++};
++
++// Toggles a folder's selection, applying the parent/child rule: checking a folder also checks
++// all of its descendants, and unchecking a folder also unchecks all of its descendants. A
++// descendant can still be checked or unchecked on its own afterward.
++export const toggleFolderSelection = (selectedIds: string[], folderId: string, checked: boolean, folders: FolderEntity[]) => {
++	const ids = [folderId, ...getDescendantFolderIds(folderId, folders)];
++	const selected = new Set(selectedIds);
++	for (const id of ids) {
++		if (checked) {
++			selected.add(id);
++		} else {
++			selected.delete(id);
++		}
++	}
++	return [...selected];
++};
+diff --git a/packages/lib/models/settings/builtInMetadata.ts b/packages/lib/models/settings/builtInMetadata.ts
+index ffd68d4..3d0c887 100644
+--- a/packages/lib/models/settings/builtInMetadata.ts
++++ b/packages/lib/models/settings/builtInMetadata.ts
+@@ -1425,6 +1425,15 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			isGlobal: true,
+ 		},
+ 
++		'notes.tileFolderIds': {
++			value: '',
++			type: SettingItemType.String,
++			public: false,
++			appTypes: [AppType.Mobile],
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
+ 		'notes.showCheckboxCompletionChart': {
+ 			value: true,
+ 			type: SettingItemType.Bool,
