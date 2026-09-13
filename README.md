@@ -22,8 +22,8 @@ es als Artefakt an den Lauf. Details in [docs/BUILD.md](docs/BUILD.md).
 ## Status
 
 - [x] Projektgerüst: Submodule, Patch-Workflow, Build-Skripte, CI
-- [ ] Schritt 1: Unveränderter Joplin-Build läuft durch (CI-Lauf abwarten)
-- [ ] Schritt 2: Einstiegspunkte – siehe [docs/ANALYSE.md](docs/ANALYSE.md)
+- [x] Schritt 1: Unveränderter Joplin-Build läuft durch ([CI-Lauf #3](https://github.com/Sebberich/Joplin-Tile-View/actions/runs/34762251862), APK-Artefakt)
+- [x] Schritt 2: Einstiegspunkte – siehe [docs/ANALYSE.md](docs/ANALYSE.md)
 - [x] Schritt 3: Kachelkomponente mit Titel/Vorschau/erstem Bild, Notizbuchfilter (Patches 0002, 0003)
 - [x] Schritt 4: Einstellung und Knopf Liste/Kacheln, Standard Kacheln (Patches 0001, 0004)
 - [x] Schritt 5: Pinch-Zoom, Spaltenzahl, Schriftgröße (Patch 0005); eigene App-ID `net.cozic.joplin.tileview` (Patch 0006)
