@@ -1,0 +1,578 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebastian Riempp <sebastian.riempp@gmx.de>
+Date: Sun, 13 Sep 2026 14:35:23 +0000
+Subject: [PATCH 2/2] Mobile: Add tile view for the note list
+
+Adds a Google-Keep-style tile grid (NoteTileList/NoteTile) as an
+alternative to the note list, using the same selection, navigation and
+to-do checkbox logic as NoteItem. Tiles show the note title, a plain-text
+body preview, and the first linked image once its resource is ready.
+Notes.tsx picks the layout based on the new notes.mobileLayout setting.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0122rnadKkGCFMVkX948oRD8
+
+diff --git a/.gitignore b/.gitignore
+index c0f64c7..f33b704 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -802,6 +802,9 @@ packages/app-mobile/components/NoteEditor/testing/createTestEditorProps.js
+ packages/app-mobile/components/NoteEditor/types.js
+ packages/app-mobile/components/NoteItem.js
+ packages/app-mobile/components/NoteList.js
++packages/app-mobile/components/NoteTile.js
++packages/app-mobile/components/NoteTileList.test.js
++packages/app-mobile/components/NoteTileList.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileEditor.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileSwitcher.js
+ packages/app-mobile/components/ProfileSwitcher/useProfileConfig.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index 93e9d3c..0f4e6c1 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -828,6 +828,9 @@ packages/app-mobile/components/NoteEditor/testing/createTestEditorProps.js
+ packages/app-mobile/components/NoteEditor/types.js
+ packages/app-mobile/components/NoteItem.js
+ packages/app-mobile/components/NoteList.js
++packages/app-mobile/components/NoteTile.js
++packages/app-mobile/components/NoteTileList.test.js
++packages/app-mobile/components/NoteTileList.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileEditor.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileSwitcher.js
+ packages/app-mobile/components/ProfileSwitcher/useProfileConfig.js
+diff --git a/packages/app-mobile/components/NoteTile.tsx b/packages/app-mobile/components/NoteTile.tsx
+new file mode 100644
+index 0000000..db1d21c
+--- /dev/null
++++ b/packages/app-mobile/components/NoteTile.tsx
+@@ -0,0 +1,291 @@
++import * as React from 'react';
++import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
++import { connect } from 'react-redux';
++import { Image, Text, StyleSheet, TextStyle, View, ViewStyle, ImageStyle, AccessibilityInfo } from 'react-native';
++import Checkbox from './Checkbox';
++import Note from '@joplin/lib/models/Note';
++import Resource from '@joplin/lib/models/Resource';
++import time from '@joplin/lib/time';
++import { themeStyle } from './global-style';
++import { _ } from '@joplin/lib/locale';
++import { AppState } from '../utils/types';
++import { Dispatch } from 'redux';
++import { NoteEntity } from '@joplin/lib/services/database/types';
++import { toFileProtocolPath } from '@joplin/utils/path';
++import useOnLongPressProps from '../utils/hooks/useOnLongPressProps';
++import MultiTouchableOpacity from './buttons/MultiTouchableOpacity';
++import isNoteLockEnabled from '@joplin/lib/services/noteLock/isNoteLockEnabled';
++import NoteLockNote from '@joplin/lib/services/noteLock/NoteLockNote';
++import NoteLockSession from '@joplin/lib/services/noteLock/NoteLockSession';
++import { DialogContext } from './DialogManager';
++import Icon from './Icon';
++
++interface Props {
++	dispatch: Dispatch;
++	themeId: number;
++	note: NoteEntity;
++	noteSelectionEnabled: boolean;
++	selectedNoteIds: string[];
++	index?: number;
++	numColumns: number;
++}
++
++// Strips the most common Markdown markup so that the tile preview reads as plain text. This is
++// a rough cleanup, not a full Markdown-to-text conversion.
++const stripMarkdown = (body: string) => {
++	return body
++		.replace(/```[\s\S]*?```/g, ' ')
++		.replace(/`([^`]*)`/g, '$1')
++		.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
++		.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
++		.replace(/^\s{0,3}#{1,6}\s+/gm, '')
++		.replace(/^\s{0,3}>+\s?/gm, '')
++		.replace(/^\s*[-*+]\s+/gm, '')
++		.replace(/^\s*\d+\.\s+/gm, '')
++		.replace(/[*_~#]/g, '')
++		.replace(/\r?\n+/g, ' ')
++		.replace(/\s+/g, ' ')
++		.trim();
++};
++
++const useStyles = (themeId: number, numColumns: number, isSelected: boolean) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++		const gap = theme.marginLeft / 2;
++
++		const outer: ViewStyle = {
++			width: `${100 / numColumns}%`,
++			padding: gap / 2,
++		};
++
++		const card: ViewStyle = {
++			flexGrow: 1,
++			backgroundColor: theme.backgroundColor2,
++			borderRadius: 8,
++			borderWidth: isSelected ? 2 : 1,
++			borderColor: isSelected ? theme.selectedColor : theme.colorFaded,
++			overflow: 'hidden',
++			paddingBottom: 8,
++		};
++
++		const image: ImageStyle = {
++			width: '100%',
++			height: 96,
++			backgroundColor: theme.backgroundColor3,
++		};
++
++		const content: ViewStyle = {
++			paddingHorizontal: 10,
++			paddingTop: 8,
++		};
++
++		const titleRow: ViewStyle = {
++			flexDirection: 'row',
++			alignItems: 'flex-start',
++		};
++
++		const lockIcon: TextStyle = {
++			color: theme.colorFaded,
++			fontSize: theme.fontSizeSmaller,
++			marginRight: 6,
++			marginTop: 2,
++		};
++
++		const title: TextStyle = {
++			flexShrink: 1,
++			fontWeight: 'bold',
++			color: theme.color,
++			fontSize: theme.fontSize,
++		};
++
++		const previewText: TextStyle = {
++			marginTop: 4,
++			color: theme.colorFaded,
++			fontSize: theme.fontSizeSmaller,
++		};
++
++		const checkboxRow: ViewStyle = {
++			flexDirection: 'row',
++			justifyContent: 'flex-end',
++			paddingHorizontal: 4,
++			paddingTop: 4,
++		};
++
++		return StyleSheet.create({
++			outer,
++			card,
++			image,
++			content,
++			titleRow,
++			lockIcon,
++			title,
++			previewText,
++			checkboxRow,
++			checkboxStyle: {
++				color: theme.color,
++			},
++			checkedOpacityStyle: {
++				opacity: 0.4,
++			},
++			uncheckedOpacityStyle: { },
++		});
++	}, [themeId, numColumns, isSelected]);
++};
++
++const NoteTileComponent: React.FC<Props> = memo(props => {
++	const note = props.note ?? {};
++	const isSelected = props.noteSelectionEnabled && props.selectedNoteIds.includes(note.id);
++	const styles = useStyles(props.themeId, props.numColumns, isSelected);
++	const dialogs = useContext(DialogContext);
++	const [checkboxKey, setCheckboxKey] = useState(0);
++	const [previewText, setPreviewText] = useState('');
++	const [imageUri, setImageUri] = useState<string|null>(null);
++	const suppressPressUntilRef = useRef(0);
++
++	// The note preview (body text and first image) isn't part of the preview fields NoteList
++	// loads into Redux state, so it's fetched here, per tile, once the note ID is known.
++	useEffect(() => {
++		let cancelled = false;
++		setPreviewText('');
++		setImageUri(null);
++
++		const noteId = note.id;
++		if (!noteId) return () => { cancelled = true; };
++
++		const loadPreview = async () => {
++			const full = await Note.load(noteId, { fields: ['body'] });
++			if (cancelled || !full) return;
++
++			const body = full.body ?? '';
++			setPreviewText(stripMarkdown(body));
++
++			const resourceIds = await Note.linkedResourceIds(body);
++			if (cancelled || !resourceIds.length) return;
++
++			const resource = await Resource.load(resourceIds[0]);
++			if (cancelled || !resource) return;
++			if (!Resource.isSupportedImageMimeType(resource.mime)) return;
++			if (!(await Resource.isReady(resource))) return;
++			if (cancelled) return;
++
++			setImageUri(toFileProtocolPath(Resource.fullPath(resource)));
++		};
++
++		void loadPreview();
++
++		return () => { cancelled = true; };
++	}, [note.id]);
++
++	// Duplicated from NoteItem.tsx (tap/long-press/selection and to-do checkbox handling) so
++	// that tiles behave exactly like list rows. See NoteItem.tsx for the original.
++	const todoCheckbox_change = useCallback(async (checked: boolean) => {
++		if (!props.note) return;
++
++		if (isNoteLockEnabled()) suppressPressUntilRef.current = Date.now() + 100;
++
++		if (isNoteLockEnabled()) {
++			const lockState = await Note.load(props.note.id, { fields: ['is_locked'] });
++			if (NoteLockNote.isLocked(lockState) && !NoteLockSession.instance().isUnlocked()) {
++				setCheckboxKey(key => key + 1);
++				await dialogs.error(_('Cannot change a locked note while the session is locked'));
++				return;
++			}
++		}
++
++		const newNote = {
++			id: props.note.id,
++			todo_completed: checked ? time.unixMs() : 0,
++		};
++		await Note.save(newNote);
++
++		props.dispatch({ type: 'NOTE_SORT' });
++	}, [props.note, props.dispatch, dialogs]);
++
++	const onPress = useCallback(() => {
++		if (Date.now() < suppressPressUntilRef.current) return;
++		if (!props.note) return;
++		if (props.note.encryption_applied) return;
++
++		if (props.noteSelectionEnabled) {
++			props.dispatch({
++				type: 'NOTE_SELECTION_TOGGLE',
++				id: props.note.id,
++			});
++		} else {
++			props.dispatch({
++				type: 'NAV_GO',
++				routeName: 'Note',
++				noteId: props.note.id,
++			});
++		}
++	}, [props.note, props.noteSelectionEnabled, props.dispatch]);
++
++	const onLongPress = useCallback(() => {
++		const now = Date.now();
++		if (now < suppressPressUntilRef.current) return;
++		suppressPressUntilRef.current = now + 500;
++
++		if (!props.note) return;
++
++		if (!props.noteSelectionEnabled) {
++			AccessibilityInfo.announceForAccessibility(_('Entering selection mode'));
++		}
++
++		props.dispatch({
++			type: props.noteSelectionEnabled ? 'NOTE_SELECTION_TOGGLE' : 'NOTE_SELECTION_START',
++			id: props.note.id,
++		});
++	}, [props.dispatch, props.note, props.noteSelectionEnabled]);
++
++	const isTodo = !!Number(note.is_todo);
++	const checkboxChecked = !!Number(note.todo_completed);
++	const opacityStyle = isTodo && checkboxChecked ? styles.checkedOpacityStyle : styles.uncheckedOpacityStyle;
++
++	const noteTitle = Note.displayTitle(note);
++	const selectDeselectLabel = isSelected ? _('Deselect') : _('Select');
++	const onLongPressProps = useOnLongPressProps({ onLongPress, actionDescription: selectDeselectLabel });
++
++	const todoCheckbox = isTodo ? <Checkbox
++		key={checkboxKey}
++		style={styles.checkboxStyle}
++		checked={checkboxChecked}
++		onChange={todoCheckbox_change}
++		accessibilityLabel={_('to-do: %s', noteTitle)}
++	/> : null;
++
++	const pressableProps = {
++		style: styles.card,
++		accessibilityLabel: noteTitle,
++		accessibilityHint: props.noteSelectionEnabled ? '' : _('Opens note'),
++		'aria-pressed': props.noteSelectionEnabled ? isSelected : undefined,
++		accessibilityState: { selected: isSelected },
++		...onLongPressProps,
++	};
++
++	return (
++		<View style={[styles.outer, opacityStyle]}>
++			<MultiTouchableOpacity
++				{...pressableProps}
++				onPress={onPress}
++				beforePressable={todoCheckbox ? <View style={styles.checkboxRow}>{todoCheckbox}</View> : null}
++			>
++				{imageUri ? <Image source={{ uri: imageUri }} style={styles.image} resizeMode='cover' /> : null}
++				<View style={styles.content}>
++					<View style={styles.titleRow}>
++						{!!note.is_locked && <Icon name='fas fa-lock' style={styles.lockIcon} accessibilityLabel={_('Locked')} />}
++						<Text style={styles.title} numberOfLines={2}>{noteTitle}</Text>
++					</View>
++					{!!previewText && <Text style={styles.previewText} numberOfLines={6}>{previewText}</Text>}
++				</View>
++			</MultiTouchableOpacity>
++		</View>
++	);
++});
++
++export default connect((state: AppState) => {
++	return {
++		themeId: state.settings.theme,
++		noteSelectionEnabled: state.noteSelectionEnabled,
++		selectedNoteIds: state.selectedNoteIds,
++	};
++})(NoteTileComponent);
+diff --git a/packages/app-mobile/components/NoteTileList.test.tsx b/packages/app-mobile/components/NoteTileList.test.tsx
+new file mode 100644
+index 0000000..d5cf223
+--- /dev/null
++++ b/packages/app-mobile/components/NoteTileList.test.tsx
+@@ -0,0 +1,64 @@
++import * as React from 'react';
++import TestProviderStack from './testing/TestProviderStack';
++import NoteTileList from './NoteTileList';
++import { AppState } from '../utils/types';
++import { Store } from 'redux';
++import createMockReduxStore from '../utils/testing/createMockReduxStore';
++import setupGlobalStore from '../utils/testing/setupGlobalStore';
++import { render, screen, waitFor } from '../utils/testing/testingLibrary';
++import { setupDatabaseAndSynchronizer } from '@joplin/lib/testing/test-utils';
++import Folder from '@joplin/lib/models/Folder';
++import Note from '@joplin/lib/models/Note';
++
++let testStore: Store<AppState>;
++
++const WrappedNoteTileList: React.FC = () => {
++	return <TestProviderStack store={testStore}>
++		<NoteTileList/>
++	</TestProviderStack>;
++};
++
++describe('NoteTileList', () => {
++	beforeEach(async () => {
++		await setupDatabaseAndSynchronizer(0);
++		testStore = createMockReduxStore();
++		setupGlobalStore(testStore);
++	});
++
++	test('should render a tile for each note passed to it', async () => {
++		const folder = await Folder.save({ title: 'Test folder' });
++		const note1 = await Note.save({ title: 'First note', parent_id: folder.id });
++		const note2 = await Note.save({ title: 'Second note', parent_id: folder.id });
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder] });
++		testStore.dispatch({
++			type: 'NOTE_UPDATE_ALL',
++			notes: [note1, note2],
++			notesSource: 'test',
++		});
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('First note')).toBeTruthy();
++			expect(screen.getByText('Second note')).toBeTruthy();
++		});
++	});
++
++	test('should show a message when the selected folder has no notes', async () => {
++		const folder = await Folder.save({ title: 'Empty folder' });
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder] });
++		testStore.dispatch({
++			type: 'NOTE_UPDATE_ALL',
++			notes: [],
++			notesSource: 'test',
++		});
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('There are currently no notes. Create one by clicking on the (+) button.')).toBeTruthy();
++		});
++	});
++});
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+new file mode 100644
+index 0000000..14afd91
+--- /dev/null
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -0,0 +1,126 @@
++import * as React from 'react';
++import { useEffect, useMemo, useRef } from 'react';
++import { connect } from 'react-redux';
++import { Dispatch } from 'redux';
++import { FlatList, Text, StyleSheet, Button, View, ViewStyle, TextStyle } from 'react-native';
++import { FolderEntity, NoteEntity } from '@joplin/lib/services/database/types';
++import { AppState } from '../utils/types';
++import getEmptyFolderMessage from '@joplin/lib/components/shared/NoteList/getEmptyFolderMessage';
++import Folder from '@joplin/lib/models/Folder';
++
++import { _ } from '@joplin/lib/locale';
++import NoteTile from './NoteTile';
++import { themeStyle } from './global-style';
++
++interface Props {
++	themeId: number;
++	dispatch: Dispatch;
++	notesSource: string;
++	items: NoteEntity[];
++	folders: FolderEntity[];
++	noteSelectionEnabled?: boolean;
++	selectedFolderId: string|null;
++	tileColumns: number;
++}
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++
++		const noItemMessage: TextStyle = {
++			paddingLeft: theme.marginLeft,
++			paddingRight: theme.marginRight,
++			paddingTop: theme.marginTop,
++			paddingBottom: theme.marginBottom,
++			fontSize: theme.fontSize,
++			color: theme.color,
++			textAlign: 'center',
++		};
++
++		const noNotebookView: ViewStyle = {};
++
++		const list: ViewStyle = {
++			paddingHorizontal: theme.marginLeft / 2,
++			paddingTop: theme.marginTop / 2,
++		};
++
++		const columnWrapper: ViewStyle = {
++			justifyContent: 'flex-start',
++		};
++
++		return StyleSheet.create({
++			noItemMessage,
++			noNotebookView,
++			list,
++			columnWrapper,
++		});
++	}, [themeId]);
++};
++
++// Note tiles are laid out in a fixed number of columns, using the same note data (and
++// selection/dispatch logic, in NoteTile.tsx) as the list view in NoteList.tsx.
++const NoteTileListComponent: React.FC<Props> = props => {
++	const styles = useStyles(props.themeId);
++	const rootRef = useRef<FlatList<NoteEntity>>(null);
++	const previousNotesSource = useRef(props.notesSource);
++
++	// Make sure scroll position is reset when switching from one folder to another or to a tag list.
++	useEffect(() => {
++		if (previousNotesSource.current !== props.notesSource) {
++			previousNotesSource.current = props.notesSource;
++			rootRef.current?.scrollToOffset({ offset: 0, animated: false });
++		}
++	}, [props.notesSource]);
++
++	const onCreateNotebookButtonPress = () => {
++		props.dispatch({
++			type: 'NAV_GO',
++			routeName: 'Folder',
++			folderId: null,
++		});
++	};
++
++	// FlatList requires a remount (via `key`) when `numColumns` changes.
++	const numColumns = Math.min(4, Math.max(1, props.tileColumns || 1));
++
++	if (props.items.length) {
++		return <FlatList
++			key={`note-tile-list-${numColumns}`}
++			ref={rootRef}
++			style={styles.list}
++			data={props.items}
++			numColumns={numColumns}
++			columnWrapperStyle={numColumns > 1 ? styles.columnWrapper : undefined}
++			renderItem={({ item, index }) => <NoteTile note={item} index={index} numColumns={numColumns} />}
++			keyExtractor={item => item.id}
++		/>;
++	} else {
++		if (!Folder.atLeastOneRealFolderExists(props.folders)) {
++			const noItemMessage = _('You currently have no notebooks.');
++			return (
++				<View style={styles.noNotebookView}>
++					<Text style={styles.noItemMessage}>{noItemMessage}</Text>
++					<Button title={_('Create a notebook')} onPress={onCreateNotebookButtonPress} />
++				</View>
++			);
++		} else {
++			return <Text style={styles.noItemMessage}>
++				{getEmptyFolderMessage(props.folders, props.selectedFolderId)}
++			</Text>;
++		}
++	}
++};
++
++const NoteTileList = connect((state: AppState) => {
++	return {
++		items: state.notes,
++		folders: state.folders,
++		notesSource: state.notesSource,
++		themeId: state.settings.theme,
++		noteSelectionEnabled: state.noteSelectionEnabled,
++		selectedFolderId: state.selectedFolderId,
++		tileColumns: state.settings['notes.tileColumns'],
++	};
++})(NoteTileListComponent);
++
++export default NoteTileList;
+diff --git a/packages/app-mobile/components/screens/Notes/Notes.tsx b/packages/app-mobile/components/screens/Notes/Notes.tsx
+index d85a94b..39d0944 100644
+--- a/packages/app-mobile/components/screens/Notes/Notes.tsx
++++ b/packages/app-mobile/components/screens/Notes/Notes.tsx
+@@ -3,6 +3,7 @@ import { AppState as RNAppState, View, StyleSheet, NativeEventSubscription, View
+ import { stateUtils } from '@joplin/lib/reducer';
+ import { connect } from 'react-redux';
+ import NoteList from '../../NoteList';
++import NoteTileList from '../../NoteTileList';
+ import Folder from '@joplin/lib/models/Folder';
+ import Tag from '@joplin/lib/models/Tag';
+ import Note, { PreviewsOrder } from '@joplin/lib/models/Note';
+@@ -43,6 +44,7 @@ interface Props {
+ 	selectedTagId: string;
+ 	selectedSmartFilterId: string;
+ 	notesParentType: string;
++	mobileLayout: string;
+ }
+ 
+ interface State {
+@@ -323,7 +325,7 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 					showSearchButton={true}
+ 					showSideMenuButton={true}
+ 				/>
+-				<NoteList />
++				{this.props.mobileLayout === 'tiles' ? <NoteTileList /> : <NoteList />}
+ 				{actionButtonComp}
+ 			</AccessibleView>
+ 		);
+@@ -352,6 +354,7 @@ const NotesScreen = connect((state: AppState) => {
+ 		themeId: state.settings.theme,
+ 		noteSelectionEnabled: state.noteSelectionEnabled,
+ 		notesOrder: stateUtils.notesOrder(state.settings),
++		mobileLayout: state.settings['notes.mobileLayout'],
+ 	};
+ })(NotesScreenWrapper);
+ 

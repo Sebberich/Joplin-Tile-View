@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebastian Riempp <sebastian.riempp@gmx.de>
+Date: Sun, 13 Sep 2026 14:35:00 +0000
+Subject: [PATCH 1/2] Mobile: Add settings for the note list layout
+
+Adds `notes.mobileLayout` (list or tiles, default tiles) and
+`notes.tileColumns` so the mobile note list can be switched between the
+classic list and a Google-Keep-style tile grid.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0122rnadKkGCFMVkX948oRD8
+
+diff --git a/packages/lib/models/settings/builtInMetadata.ts b/packages/lib/models/settings/builtInMetadata.ts
+index 9d17ad0..ffd68d4 100644
+--- a/packages/lib/models/settings/builtInMetadata.ts
++++ b/packages/lib/models/settings/builtInMetadata.ts
+@@ -1393,6 +1393,38 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			isGlobal: false,
+ 		},
+ 
++		'notes.mobileLayout': {
++			value: 'tiles',
++			type: SettingItemType.String,
++			isEnum: true,
++			section: 'appearance',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Note list layout'),
++			options: () => {
++				return {
++					list: _('List'),
++					tiles: _('Tiles'),
++				};
++			},
++			storage: SettingStorage.File,
++			isGlobal: true,
++		},
++
++		'notes.tileColumns': {
++			value: 2,
++			type: SettingItemType.Int,
++			section: 'appearance',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Tile columns'),
++			minimum: 1,
++			maximum: 4,
++			step: 1,
++			storage: SettingStorage.File,
++			isGlobal: true,
++		},
++
+ 		'notes.showCheckboxCompletionChart': {
+ 			value: true,
+ 			type: SettingItemType.Bool,
