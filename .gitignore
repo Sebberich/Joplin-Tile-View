@@ -1,0 +1,12 @@
+# Build-Ausgaben / Downloads
+*.apk
+*.aab
+dist/
+node_modules/
+.yarn/
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

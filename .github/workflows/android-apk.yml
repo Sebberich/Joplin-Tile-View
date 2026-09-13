@@ -1,0 +1,92 @@
+# Baut das Android-APK (Release-Variante, mit Debug-Keystore signiert) aus dem
+# Submodule joplin/ plus patches/. Orientiert sich an joplin/.github/workflows/build-android.yml.
+# Läuft bei jedem Push und manuell (workflow_dispatch). Das APK liegt danach als
+# Artefakt "joplin-tile-view-apk" am Workflow-Lauf.
+name: android-apk
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Linux-Abhängigkeiten
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y libsecret-1-dev
+
+      # Wie in Joplins CI: Platz freimachen, die NDK-/OpenSSL-Transforms brauchen 20 GB+.
+      - name: Plattenplatz freigeben
+        run: |
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf /usr/local/share/powershell || true
+          docker system prune -af || true
+          df -h /
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '20'
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: yarn
+          cache-dependency-path: joplin/yarn.lock
+
+      - name: Yarn über Corepack
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+          COREPACK_NETWORK_TIMEOUT: '60000'
+        run: |
+          corepack enable
+          cd joplin
+          for i in 1 2 3; do
+            corepack prepare --activate && break
+            echo "corepack prepare fehlgeschlagen (Versuch $i), neuer Versuch in 15s..."
+            sleep 15
+          done
+          yarn --version
+
+      - name: Patches anwenden
+        run: scripts/apply-patches.sh
+
+      - name: yarn install
+        env:
+          SKIP_ONENOTE_CONVERTER_BUILD: 1
+        run: |
+          source joplin/.github/scripts/retry.sh
+          cd joplin
+          retry yarn install
+
+      - name: Android-APK bauen
+        run: scripts/build-android.sh release
+
+      - name: 16-KB-Alignment prüfen
+        run: |
+          APK=joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
+          test -f "$APK"
+          ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -name zipalign | sort | tail -n1)"
+          "$ZIPALIGN" -c -P 16 -v 4 "$APK" | tail -n 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joplin-tile-view-apk
+          path: joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
