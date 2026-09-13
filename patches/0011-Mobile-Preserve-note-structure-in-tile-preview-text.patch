@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Sun, 13 Sep 2026 20:07:08 +0000
+Subject: [PATCH 11/11] Mobile: Preserve note structure in tile preview text
+
+
+diff --git a/.gitignore b/.gitignore
+index d22cf6c..3fb55d5 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1103,6 +1103,8 @@ packages/app-mobile/utils/testing/setupGlobalStore.js
+ packages/app-mobile/utils/testing/testingLibrary.js
+ packages/app-mobile/utils/tileFolderSelection.test.js
+ packages/app-mobile/utils/tileFolderSelection.js
++packages/app-mobile/utils/tilePreviewText.test.js
++packages/app-mobile/utils/tilePreviewText.js
+ packages/app-mobile/utils/tileZoom.test.js
+ packages/app-mobile/utils/tileZoom.js
+ packages/app-mobile/utils/types.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index 7a11561..bdc1519 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -1129,6 +1129,8 @@ packages/app-mobile/utils/testing/setupGlobalStore.js
+ packages/app-mobile/utils/testing/testingLibrary.js
+ packages/app-mobile/utils/tileFolderSelection.test.js
+ packages/app-mobile/utils/tileFolderSelection.js
++packages/app-mobile/utils/tilePreviewText.test.js
++packages/app-mobile/utils/tilePreviewText.js
+ packages/app-mobile/utils/tileZoom.test.js
+ packages/app-mobile/utils/tileZoom.js
+ packages/app-mobile/utils/types.js
+diff --git a/packages/app-mobile/components/NoteTile.tsx b/packages/app-mobile/components/NoteTile.tsx
+index 125ec02..c555ab4 100644
+--- a/packages/app-mobile/components/NoteTile.tsx
++++ b/packages/app-mobile/components/NoteTile.tsx
+@@ -19,6 +19,7 @@ import NoteLockNote from '@joplin/lib/services/noteLock/NoteLockNote';
+ import NoteLockSession from '@joplin/lib/services/noteLock/NoteLockSession';
+ import { DialogContext } from './DialogManager';
+ import Icon from './Icon';
++import stripMarkdown from '../utils/tilePreviewText';
+ 
+ interface Props {
+ 	dispatch: Dispatch;
+@@ -31,24 +32,6 @@ interface Props {
+ 	viewerFontSize: number;
+ }
+ 
+-// Strips the most common Markdown markup so that the tile preview reads as plain text. This is
+-// a rough cleanup, not a full Markdown-to-text conversion.
+-const stripMarkdown = (body: string) => {
+-	return body
+-		.replace(/```[\s\S]*?```/g, ' ')
+-		.replace(/`([^`]*)`/g, '$1')
+-		.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+-		.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+-		.replace(/^\s{0,3}#{1,6}\s+/gm, '')
+-		.replace(/^\s{0,3}>+\s?/gm, '')
+-		.replace(/^\s*[-*+]\s+/gm, '')
+-		.replace(/^\s*\d+\.\s+/gm, '')
+-		.replace(/[*_~#]/g, '')
+-		.replace(/\r?\n+/g, ' ')
+-		.replace(/\s+/g, ' ')
+-		.trim();
+-};
+-
+ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, viewerFontSize: number) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
+@@ -279,7 +262,7 @@ const NoteTileComponent: React.FC<Props> = memo(props => {
+ 						{!!note.is_locked && <Icon name='fas fa-lock' style={styles.lockIcon} accessibilityLabel={_('Locked')} />}
+ 						<Text style={styles.title} numberOfLines={2}>{noteTitle}</Text>
+ 					</View>
+-					{!!previewText && <Text style={styles.previewText} numberOfLines={6}>{previewText}</Text>}
++					{!!previewText && <Text style={styles.previewText} numberOfLines={8}>{previewText}</Text>}
+ 				</View>
+ 			</MultiTouchableOpacity>
+ 		</View>
+diff --git a/packages/app-mobile/utils/tilePreviewText.test.ts b/packages/app-mobile/utils/tilePreviewText.test.ts
+new file mode 100644
+index 0000000..1e79fb2
+--- /dev/null
++++ b/packages/app-mobile/utils/tilePreviewText.test.ts
+@@ -0,0 +1,21 @@
++import stripMarkdown from './tilePreviewText';
++
++describe('tilePreviewText', () => {
++	test.each([
++		['keeps line breaks between paragraphs', 'Line one\nLine two', 'Line one\nLine two'],
++		['collapses 3+ consecutive newlines to 2', 'a\n\n\n\nb', 'a\n\nb'],
++		['trims leading and trailing blank lines', '\n\nHello\n\n', 'Hello'],
++		['renders unordered list items as bullets', '- item one\n- item two', '• item one\n• item two'],
++		['keeps ordered list numbers as-is', '1. First\n2. Second', '1. First\n2. Second'],
++		['renders unchecked and checked task items', '- [ ] todo\n- [x] done', '☐ todo\n☑ done'],
++		['strips heading markers', '# Heading\nBody', 'Heading\nBody'],
++		['strips blockquote markers', '> Quoted text', 'Quoted text'],
++		['strips emphasis markers', '**bold** and _italic_ and ~strike~', 'bold and italic and strike'],
++		['keeps link text and drops the URL', '[Joplin](https://joplinapp.org)', 'Joplin'],
++		['drops images entirely', 'before ![alt](image.png) after', 'before  after'],
++		['removes fenced code blocks', 'before\n```\nsome code\n```\nafter', 'before\n\nafter'],
++		['unwraps inline code', 'Run `npm install` first', 'Run npm install first'],
++	])('%s', (_name, input, expected) => {
++		expect(stripMarkdown(input)).toBe(expected);
++	});
++});
+diff --git a/packages/app-mobile/utils/tilePreviewText.ts b/packages/app-mobile/utils/tilePreviewText.ts
+new file mode 100644
+index 0000000..9575120
+--- /dev/null
++++ b/packages/app-mobile/utils/tilePreviewText.ts
+@@ -0,0 +1,55 @@
++// Task list items ("- [ ] foo" / "- [x] foo") must be checked for before plain unordered list
++// items, since they also start with a list marker.
++const taskListItemRegexp = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$/;
++const unorderedListItemRegexp = /^(\s*)[-*+]\s+(.*)$/;
++
++// Rewrites a single line of already-unwrapped Markdown into its plain-text preview form: list
++// markers become bullet/checkbox symbols (ordered list numbers are left as-is), while other line
++// content passes through unchanged.
++const rewriteListMarkers = (line: string) => {
++	const taskMatch = taskListItemRegexp.exec(line);
++	if (taskMatch) {
++		const [, indent, mark, rest] = taskMatch;
++		const checked = mark.toLowerCase() === 'x';
++		return `${indent}${checked ? '☑' : '☐'} ${rest}`;
++	}
++
++	const unorderedMatch = unorderedListItemRegexp.exec(line);
++	if (unorderedMatch) {
++		const [, indent, rest] = unorderedMatch;
++		return `${indent}• ${rest}`;
++	}
++
++	return line;
++};
++
++// Converts a note body from Markdown to plain text for the tile preview. Unlike a plain
++// "collapse everything to one line" strip, this keeps the note's line structure (paragraphs,
++// list items, ...) readable, since tiles show several lines of preview text. This is a rough
++// cleanup, not a full Markdown-to-text conversion.
++const stripMarkdown = (body: string) => {
++	let text = body
++		.replace(/```[\s\S]*?```/g, '')
++		.replace(/!\[[^\]]*\]\([^)]*\)/g, '')
++		.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
++		.replace(/`([^`]*)`/g, '$1')
++		.replace(/^\s{0,3}#{1,6}\s+/gm, '')
++		.replace(/^\s{0,3}>+\s?/gm, '');
++
++	text = text
++		.split('\n')
++		.map(rewriteListMarkers)
++		.join('\n');
++
++	text = text
++		.replace(/[*_~]/g, '')
++		.split('\n')
++		.map(line => line.replace(/\s+$/, ''))
++		.join('\n')
++		.replace(/\n{3,}/g, '\n\n')
++		.trim();
++
++	return text;
++};
++
++export default stripMarkdown;

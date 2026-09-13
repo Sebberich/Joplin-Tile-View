@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Sun, 13 Sep 2026 20:04:02 +0000
+Subject: [PATCH 10/11] Mobile: Fix OLED dark theme showing grey note tiles
+
+
+diff --git a/packages/app-mobile/components/NoteTile.tsx b/packages/app-mobile/components/NoteTile.tsx
+index 08a58c2..125ec02 100644
+--- a/packages/app-mobile/components/NoteTile.tsx
++++ b/packages/app-mobile/components/NoteTile.tsx
+@@ -64,10 +64,10 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 
+ 		const card: ViewStyle = {
+ 			flexGrow: 1,
+-			backgroundColor: theme.backgroundColor2,
++			backgroundColor: theme.backgroundColor,
+ 			borderRadius: 8,
+ 			borderWidth: isSelected ? 2 : 1,
+-			borderColor: isSelected ? theme.selectedColor : theme.colorFaded,
++			borderColor: isSelected ? theme.selectedColor : theme.dividerColor,
+ 			overflow: 'hidden',
+ 			paddingBottom: 8,
+ 		};

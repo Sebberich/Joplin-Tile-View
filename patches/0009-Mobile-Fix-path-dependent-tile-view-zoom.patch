@@ -1,0 +1,203 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Sun, 13 Sep 2026 20:03:04 +0000
+Subject: [PATCH 09/11] Mobile: Fix path-dependent tile view zoom
+
+
+diff --git a/.gitignore b/.gitignore
+index 48664b5..d22cf6c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1103,6 +1103,8 @@ packages/app-mobile/utils/testing/setupGlobalStore.js
+ packages/app-mobile/utils/testing/testingLibrary.js
+ packages/app-mobile/utils/tileFolderSelection.test.js
+ packages/app-mobile/utils/tileFolderSelection.js
++packages/app-mobile/utils/tileZoom.test.js
++packages/app-mobile/utils/tileZoom.js
+ packages/app-mobile/utils/types.js
+ packages/app-mobile/web/serviceWorker.js
+ packages/app-mobile/web/webpack.config.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index 1df1c18..7a11561 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -1129,6 +1129,8 @@ packages/app-mobile/utils/testing/setupGlobalStore.js
+ packages/app-mobile/utils/testing/testingLibrary.js
+ packages/app-mobile/utils/tileFolderSelection.test.js
+ packages/app-mobile/utils/tileFolderSelection.js
++packages/app-mobile/utils/tileZoom.test.js
++packages/app-mobile/utils/tileZoom.js
+ packages/app-mobile/utils/types.js
+ packages/app-mobile/web/serviceWorker.js
+ packages/app-mobile/web/webpack.config.js
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+index bc9ca3b..dff612c 100644
+--- a/packages/app-mobile/components/NoteTileList.tsx
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -16,6 +16,7 @@ import { _ } from '@joplin/lib/locale';
+ import NoteTile from './NoteTile';
+ import NoteTileToolbar from './NoteTileToolbar';
+ import { themeStyle } from './global-style';
++import { zoomStep } from '../utils/tileZoom';
+ 
+ interface Props {
+ 	themeId: number;
+@@ -152,24 +153,19 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 		return result;
+ 	}, [items, numColumns]);
+ 
+-	// Zoom steps match the earlier plugin's zoom() function: first the column count is changed,
+-	// and once at either end of the column range, the font scale is changed instead.
++	// Zoom steps move along a fixed ladder of (columns, fontScale) pairs (see utils/tileZoom.ts) so
++	// that the same column count always looks the same, regardless of the zoom history that led to
++	// it.
+ 	const zoomIn = useCallback(() => {
+-		const columns = Setting.value('notes.tileColumns');
+-		if (columns > 1) {
+-			Setting.setValue('notes.tileColumns', columns - 1);
+-		} else {
+-			Setting.setValue('notes.tileFontScale', Math.min(160, Setting.value('notes.tileFontScale') + 10));
+-		}
++		const next = zoomStep(Setting.value('notes.tileColumns'), Setting.value('notes.tileFontScale'), 1);
++		Setting.setValue('notes.tileColumns', next.columns);
++		Setting.setValue('notes.tileFontScale', next.fontScale);
+ 	}, []);
+ 
+ 	const zoomOut = useCallback(() => {
+-		const columns = Setting.value('notes.tileColumns');
+-		if (columns < 5) {
+-			Setting.setValue('notes.tileColumns', columns + 1);
+-		} else {
+-			Setting.setValue('notes.tileFontScale', Math.max(60, Setting.value('notes.tileFontScale') - 10));
+-		}
++		const next = zoomStep(Setting.value('notes.tileColumns'), Setting.value('notes.tileFontScale'), -1);
++		Setting.setValue('notes.tileColumns', next.columns);
++		Setting.setValue('notes.tileFontScale', next.fontScale);
+ 	}, []);
+ 
+ 	const pinchStateRef = useRef<{ lastDistance: number }|null>(null);
+diff --git a/packages/app-mobile/utils/tileZoom.test.ts b/packages/app-mobile/utils/tileZoom.test.ts
+new file mode 100644
+index 0000000..88bf19f
+--- /dev/null
++++ b/packages/app-mobile/utils/tileZoom.test.ts
+@@ -0,0 +1,42 @@
++import { findZoomLevel, zoomLevels, zoomStep } from './tileZoom';
++
++describe('tileZoom', () => {
++	// Excludes the two ends of the ladder -- zooming past an end is clamped rather than reversed
++	// (covered separately below), so a round trip through an end doesn't return to the start.
++	test('zooming in then out returns to the starting ladder entry', () => {
++		for (let index = 1; index < zoomLevels.length - 1; index++) {
++			const start = zoomLevels[index];
++			const zoomedIn = zoomStep(start.columns, start.fontScale, 1);
++			const zoomedOut = zoomStep(zoomedIn.columns, zoomedIn.fontScale, -1);
++			expect(zoomedOut).toEqual(start);
++		}
++	});
++
++	test('zooming out then in returns to the starting ladder entry', () => {
++		for (let index = 1; index < zoomLevels.length - 1; index++) {
++			const start = zoomLevels[index];
++			const zoomedOut = zoomStep(start.columns, start.fontScale, -1);
++			const zoomedIn = zoomStep(zoomedOut.columns, zoomedOut.fontScale, 1);
++			expect(zoomedIn).toEqual(start);
++		}
++	});
++
++	test('zooming in from an off-ladder state lands on a ladder entry with 100% font', () => {
++		const result = zoomStep(5, 160, 1);
++		expect(result).toEqual({ columns: 4, fontScale: 100 });
++	});
++
++	test('zooming out is clamped at the most zoomed-out ladder entry', () => {
++		const mostZoomedOut = zoomLevels[0];
++		expect(zoomStep(mostZoomedOut.columns, mostZoomedOut.fontScale, -1)).toEqual(mostZoomedOut);
++	});
++
++	test('zooming in is clamped at the most zoomed-in ladder entry', () => {
++		const mostZoomedIn = zoomLevels[zoomLevels.length - 1];
++		expect(zoomStep(mostZoomedIn.columns, mostZoomedIn.fontScale, 1)).toEqual(mostZoomedIn);
++	});
++
++	test('findZoomLevel finds the exact match when the state is on the ladder', () => {
++		expect(findZoomLevel(3, 100)).toBe(zoomLevels.findIndex(level => level.columns === 3 && level.fontScale === 100));
++	});
++});
+diff --git a/packages/app-mobile/utils/tileZoom.ts b/packages/app-mobile/utils/tileZoom.ts
+new file mode 100644
+index 0000000..c03a850
+--- /dev/null
++++ b/packages/app-mobile/utils/tileZoom.ts
+@@ -0,0 +1,71 @@
++interface ZoomLevel {
++	columns: number;
++	fontScale: number;
++}
++
++// A fixed sequence of (columns, fontScale) pairs, from most zoomed-out to most zoomed-in. Zooming
++// always moves one step along this ladder, which keeps the tile view's appearance a function of
++// the zoom level alone -- unlike changing columns and fontScale independently, where the same
++// column count could look different depending on how the user got there.
++export const zoomLevels: ZoomLevel[] = [
++	{ columns: 5, fontScale: 60 },
++	{ columns: 5, fontScale: 70 },
++	{ columns: 5, fontScale: 80 },
++	{ columns: 5, fontScale: 90 },
++	{ columns: 5, fontScale: 100 },
++	{ columns: 4, fontScale: 100 },
++	{ columns: 3, fontScale: 100 },
++	{ columns: 2, fontScale: 100 },
++	{ columns: 1, fontScale: 100 },
++	{ columns: 1, fontScale: 110 },
++	{ columns: 1, fontScale: 120 },
++	{ columns: 1, fontScale: 130 },
++	{ columns: 1, fontScale: 140 },
++	{ columns: 1, fontScale: 150 },
++	{ columns: 1, fontScale: 160 },
++];
++
++// Finds the ladder entry closest to the given (columns, fontScale) pair. Used to map a
++// possibly-off-ladder state (for example, one saved before the ladder existed) onto the nearest
++// step before zooming in or out.
++export const findZoomLevel = (columns: number, fontScale: number): number => {
++	const exactIndex = zoomLevels.findIndex(level => level.columns === columns && level.fontScale === fontScale);
++	if (exactIndex !== -1) return exactIndex;
++
++	const sameColumns = zoomLevels
++		.map((level, index) => ({ level, index }))
++		.filter(({ level }) => level.columns === columns);
++
++	if (sameColumns.length) {
++		let best = sameColumns[0];
++		let bestDiff = Math.abs(best.level.fontScale - fontScale);
++		for (const candidate of sameColumns.slice(1)) {
++			const diff = Math.abs(candidate.level.fontScale - fontScale);
++			if (diff < bestDiff) {
++				best = candidate;
++				bestDiff = diff;
++			}
++		}
++		return best.index;
++	}
++
++	// No ladder entry has this column count -- fall back to the entry with the closest one.
++	let bestIndex = 0;
++	let bestDiff = Math.abs(zoomLevels[0].columns - columns);
++	for (let index = 1; index < zoomLevels.length; index++) {
++		const diff = Math.abs(zoomLevels[index].columns - columns);
++		if (diff < bestDiff) {
++			bestIndex = index;
++			bestDiff = diff;
++		}
++	}
++	return bestIndex;
++};
++
++// Returns the next ladder entry in the given direction (1 to zoom in, -1 to zoom out), clamped to
++// the ends of the ladder.
++export const zoomStep = (columns: number, fontScale: number, direction: 1|-1): ZoomLevel => {
++	const currentIndex = findZoomLevel(columns, fontScale);
++	const nextIndex = Math.min(zoomLevels.length - 1, Math.max(0, currentIndex + direction));
++	return zoomLevels[nextIndex];
++};

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tile-view <tile-view@localhost>
 Date: Sun, 13 Sep 2026 18:44:18 +0000
-Subject: [PATCH 7/8] Mobile: Use masonry layout for the tile view
+Subject: [PATCH 07/11] Mobile: Use masonry layout for the tile view
 
 Replace the fixed-grid FlatList (numColumns) with a ScrollView containing
 one row of independent column Views. Notes are distributed round-robin
