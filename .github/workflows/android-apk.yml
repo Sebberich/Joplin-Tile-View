@@ -6,6 +6,10 @@ name: android-apk
 
 on:
   push:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'patches/README.md'
   workflow_dispatch:
 
 concurrency:
@@ -62,6 +66,15 @@ jobs:
             sleep 15
           done
           yarn --version
+
+      # Gradle-Abhängigkeiten und NDK zwischen Läufen behalten (halbiert Folgeläufe).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('joplin/packages/app-mobile/android/**/*.gradle', 'joplin/packages/app-mobile/android/gradle/wrapper/gradle-wrapper.properties', 'joplin/yarn.lock') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       - name: Patches anwenden
         run: scripts/apply-patches.sh

@@ -24,9 +24,10 @@ es als Artefakt an den Lauf. Details in [docs/BUILD.md](docs/BUILD.md).
 - [x] Projektgerüst: Submodule, Patch-Workflow, Build-Skripte, CI
 - [ ] Schritt 1: Unveränderter Joplin-Build läuft durch (CI-Lauf abwarten)
 - [ ] Schritt 2: Einstiegspunkte – siehe [docs/ANALYSE.md](docs/ANALYSE.md)
-- [ ] Schritt 3: Kachelkomponente (`TileView`) mit Titel/Vorschau/erstem Bild
-- [ ] Schritt 4: Einstellung Liste/Kacheln, Standard Kacheln
-- [ ] Schritt 5: Pinch-Zoom, Spaltenzahl
+- [x] Schritt 3: Kachelkomponente mit Titel/Vorschau/erstem Bild, Notizbuchfilter (Patches 0002, 0003)
+- [x] Schritt 4: Einstellung und Knopf Liste/Kacheln, Standard Kacheln (Patches 0001, 0004)
+- [x] Schritt 5: Pinch-Zoom, Spaltenzahl, Schriftgröße (Patch 0005); eigene App-ID `net.cozic.joplin.tileview` (Patch 0006)
+- [ ] Gerätetest auf Android: Pinch vs. Scrollen, Bildladen, Filter-Performance
 
 ## Dokumente
 
