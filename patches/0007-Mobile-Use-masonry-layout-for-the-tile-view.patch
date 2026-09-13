@@ -1,0 +1,183 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Sun, 13 Sep 2026 18:44:18 +0000
+Subject: [PATCH 7/8] Mobile: Use masonry layout for the tile view
+
+Replace the fixed-grid FlatList (numColumns) with a ScrollView containing
+one row of independent column Views. Notes are distributed round-robin
+into the columns, as in the original plugin, so each tile keeps its
+natural height instead of being stretched to match the tallest tile in
+its row.
+
+diff --git a/packages/app-mobile/components/NoteTile.tsx b/packages/app-mobile/components/NoteTile.tsx
+index 1df5f92..236007c 100644
+--- a/packages/app-mobile/components/NoteTile.tsx
++++ b/packages/app-mobile/components/NoteTile.tsx
+@@ -27,7 +27,6 @@ interface Props {
+ 	noteSelectionEnabled: boolean;
+ 	selectedNoteIds: string[];
+ 	index?: number;
+-	numColumns: number;
+ 	fontScale: number;
+ }
+ 
+@@ -49,14 +48,14 @@ const stripMarkdown = (body: string) => {
+ 		.trim();
+ };
+ 
+-const useStyles = (themeId: number, numColumns: number, isSelected: boolean, fontScale: number) => {
++const useStyles = (themeId: number, isSelected: boolean, fontScale: number) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
+ 		const gap = theme.marginLeft / 2;
+ 		const scale = fontScale / 100;
+ 
+ 		const outer: ViewStyle = {
+-			width: `${100 / numColumns}%`,
++			width: '100%',
+ 			padding: gap / 2,
+ 		};
+ 
+@@ -131,13 +130,13 @@ const useStyles = (themeId: number, numColumns: number, isSelected: boolean, fon
+ 			},
+ 			uncheckedOpacityStyle: { },
+ 		});
+-	}, [themeId, numColumns, isSelected, fontScale]);
++	}, [themeId, isSelected, fontScale]);
+ };
+ 
+ const NoteTileComponent: React.FC<Props> = memo(props => {
+ 	const note = props.note ?? {};
+ 	const isSelected = props.noteSelectionEnabled && props.selectedNoteIds.includes(note.id);
+-	const styles = useStyles(props.themeId, props.numColumns, isSelected, props.fontScale);
++	const styles = useStyles(props.themeId, isSelected, props.fontScale);
+ 	const dialogs = useContext(DialogContext);
+ 	const [checkboxKey, setCheckboxKey] = useState(0);
+ 	const [previewText, setPreviewText] = useState('');
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+index fa0d5f2..fa20a5c 100644
+--- a/packages/app-mobile/components/NoteTileList.tsx
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -2,7 +2,7 @@ import * as React from 'react';
+ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+ import { connect } from 'react-redux';
+ import { Dispatch } from 'redux';
+-import { FlatList, GestureResponderEvent, Text, StyleSheet, Button, View, ViewStyle, TextStyle } from 'react-native';
++import { ScrollView, GestureResponderEvent, Text, StyleSheet, Button, View, ViewStyle, TextStyle } from 'react-native';
+ import { FolderEntity, NoteEntity } from '@joplin/lib/services/database/types';
+ import { AppState } from '../utils/types';
+ import getEmptyFolderMessage from '@joplin/lib/components/shared/NoteList/getEmptyFolderMessage';
+@@ -53,12 +53,22 @@ const useStyles = (themeId: number) => {
+ 		const noNotebookView: ViewStyle = {};
+ 
+ 		const list: ViewStyle = {
++			flex: 1,
++		};
++
++		const listContent: ViewStyle = {
+ 			paddingHorizontal: theme.marginLeft / 2,
+ 			paddingTop: theme.marginTop / 2,
+ 		};
+ 
+-		const columnWrapper: ViewStyle = {
+-			justifyContent: 'flex-start',
++		const columnRow: ViewStyle = {
++			flexDirection: 'row',
++			alignItems: 'flex-start',
++		};
++
++		const column: ViewStyle = {
++			flex: 1,
++			minWidth: 0,
+ 		};
+ 
+ 		return StyleSheet.create({
+@@ -66,7 +76,9 @@ const useStyles = (themeId: number) => {
+ 			noItemMessage,
+ 			noNotebookView,
+ 			list,
+-			columnWrapper,
++			listContent,
++			columnRow,
++			column,
+ 		});
+ 	}, [themeId]);
+ };
+@@ -82,11 +94,14 @@ const touchDistance = (touches: { pageX: number; pageY: number }[]) => {
+ // implementation.
+ const pinchZoomThreshold = 60;
+ 
+-// Note tiles are laid out in a fixed number of columns, using the same note data (and
+-// selection/dispatch logic, in NoteTile.tsx) as the list view in NoteList.tsx.
++// Note tiles are laid out in a fixed number of masonry columns, using the same note data (and
++// selection/dispatch logic, in NoteTile.tsx) as the list view in NoteList.tsx. Notes are
++// distributed round-robin into the columns (as in the original Google-Keep-style plugin this is
++// based on) so that each tile keeps its natural height instead of being stretched to match the
++// tallest tile in its row.
+ const NoteTileListComponent: React.FC<Props> = props => {
+ 	const styles = useStyles(props.themeId);
+-	const rootRef = useRef<FlatList<NoteEntity>>(null);
++	const rootRef = useRef<ScrollView>(null);
+ 	const previousNotesSource = useRef(props.notesSource);
+ 	const [filteredNotes, setFilteredNotes] = useState<NoteEntity[]|null>(null);
+ 
+@@ -94,7 +109,7 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 	useEffect(() => {
+ 		if (previousNotesSource.current !== props.notesSource) {
+ 			previousNotesSource.current = props.notesSource;
+-			rootRef.current?.scrollToOffset({ offset: 0, animated: false });
++			rootRef.current?.scrollTo({ y: 0, animated: false });
+ 		}
+ 	}, [props.notesSource]);
+ 
+@@ -123,11 +138,20 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 		if (!event.cancelled) setFilteredNotes(notes);
+ 	}, [folderIds, props.notesOrder, props.uncompletedTodosOnTop, props.showCompletedTodos, props.items]);
+ 
+-	const items = folderIds.length ? (filteredNotes ?? []) : props.items;
++	const items = useMemo(() => (folderIds.length ? (filteredNotes ?? []) : props.items), [folderIds, filteredNotes, props.items]);
+ 
+-	// FlatList requires a remount (via `key`) when `numColumns` changes.
+ 	const numColumns = Math.min(5, Math.max(1, props.tileColumns || 1));
+ 
++	// Round-robin distribution into column buckets, keeping each note's original index (used for
++	// keys and passed through to NoteTile) so that order within a column stays top-to-bottom.
++	const columns = useMemo(() => {
++		const result: { note: NoteEntity; index: number }[][] = Array.from({ length: numColumns }, (): { note: NoteEntity; index: number }[] => []);
++		for (const [index, note] of items.entries()) {
++			result[index % numColumns].push({ note, index });
++		}
++		return result;
++	}, [items, numColumns]);
++
+ 	// Zoom steps match the earlier plugin's zoom() function: first the column count is changed,
+ 	// and once at either end of the column range, the font scale is changed instead.
+ 	const zoomIn = useCallback(() => {
+@@ -188,16 +212,19 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 			onResponderTerminate={onResponderEnd}
+ 		>
+ 			{toolbar}
+-			<FlatList
+-				key={`note-tile-list-${numColumns}`}
++			<ScrollView
+ 				ref={rootRef}
+ 				style={styles.list}
+-				data={items}
+-				numColumns={numColumns}
+-				columnWrapperStyle={numColumns > 1 ? styles.columnWrapper : undefined}
+-				renderItem={({ item, index }) => <NoteTile note={item} index={index} numColumns={numColumns} />}
+-				keyExtractor={item => item.id}
+-			/>
++				contentContainerStyle={styles.listContent}
++			>
++				<View style={styles.columnRow}>
++					{columns.map((column, columnIndex) => (
++						<View key={`column-${columnIndex}`} style={styles.column}>
++							{column.map(({ note, index }) => <NoteTile key={note.id} note={note} index={index} />)}
++						</View>
++					))}
++				</View>
++			</ScrollView>
+ 		</View>;
+ 	} else {
+ 		if (folderIds.length) {

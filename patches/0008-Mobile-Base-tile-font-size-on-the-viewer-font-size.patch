@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Sun, 13 Sep 2026 18:46:06 +0000
+Subject: [PATCH 8/8] Mobile: Base tile font size on the viewer font size
+
+Tile titles were rendered at theme.fontSize, noticeably larger than the
+body text of the note shown in the viewer. Read style.viewer.fontSize
+from settings instead and scale it by notes.tileFontScale, using
+viewerFontSize - 2 (minimum 10) for the preview text and lock icon.
+
+Also tighten the pinch-to-zoom handler so a continuous two-finger
+gesture can only trigger one zoom step per threshold crossing.
+
+diff --git a/packages/app-mobile/components/NoteTile.tsx b/packages/app-mobile/components/NoteTile.tsx
+index 236007c..08a58c2 100644
+--- a/packages/app-mobile/components/NoteTile.tsx
++++ b/packages/app-mobile/components/NoteTile.tsx
+@@ -28,6 +28,7 @@ interface Props {
+ 	selectedNoteIds: string[];
+ 	index?: number;
+ 	fontScale: number;
++	viewerFontSize: number;
+ }
+ 
+ // Strips the most common Markdown markup so that the tile preview reads as plain text. This is
+@@ -48,11 +49,13 @@ const stripMarkdown = (body: string) => {
+ 		.trim();
+ };
+ 
+-const useStyles = (themeId: number, isSelected: boolean, fontScale: number) => {
++const useStyles = (themeId: number, isSelected: boolean, fontScale: number, viewerFontSize: number) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
+ 		const gap = theme.marginLeft / 2;
+ 		const scale = fontScale / 100;
++		// Match the font size shown in the note viewer, rather than the (larger) list/UI font.
++		const previewFontSize = Math.max(10, (viewerFontSize - 2) * scale);
+ 
+ 		const outer: ViewStyle = {
+ 			width: '100%',
+@@ -87,7 +90,7 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number) => {
+ 
+ 		const lockIcon: TextStyle = {
+ 			color: theme.colorFaded,
+-			fontSize: theme.fontSizeSmaller * scale,
++			fontSize: previewFontSize,
+ 			marginRight: 6,
+ 			marginTop: 2,
+ 		};
+@@ -96,13 +99,13 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number) => {
+ 			flexShrink: 1,
+ 			fontWeight: 'bold',
+ 			color: theme.color,
+-			fontSize: theme.fontSize * scale,
++			fontSize: viewerFontSize * scale,
+ 		};
+ 
+ 		const previewText: TextStyle = {
+ 			marginTop: 4,
+ 			color: theme.colorFaded,
+-			fontSize: theme.fontSizeSmaller * scale,
++			fontSize: previewFontSize,
+ 		};
+ 
+ 		const checkboxRow: ViewStyle = {
+@@ -130,13 +133,13 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number) => {
+ 			},
+ 			uncheckedOpacityStyle: { },
+ 		});
+-	}, [themeId, isSelected, fontScale]);
++	}, [themeId, isSelected, fontScale, viewerFontSize]);
+ };
+ 
+ const NoteTileComponent: React.FC<Props> = memo(props => {
+ 	const note = props.note ?? {};
+ 	const isSelected = props.noteSelectionEnabled && props.selectedNoteIds.includes(note.id);
+-	const styles = useStyles(props.themeId, isSelected, props.fontScale);
++	const styles = useStyles(props.themeId, isSelected, props.fontScale, props.viewerFontSize);
+ 	const dialogs = useContext(DialogContext);
+ 	const [checkboxKey, setCheckboxKey] = useState(0);
+ 	const [previewText, setPreviewText] = useState('');
+@@ -289,5 +292,6 @@ export default connect((state: AppState) => {
+ 		noteSelectionEnabled: state.noteSelectionEnabled,
+ 		selectedNoteIds: state.selectedNoteIds,
+ 		fontScale: state.settings['notes.tileFontScale'],
++		viewerFontSize: state.settings['style.viewer.fontSize'],
+ 	};
+ })(NoteTileComponent);
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+index fa20a5c..bc9ca3b 100644
+--- a/packages/app-mobile/components/NoteTileList.tsx
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -187,11 +187,15 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 
+ 		const distance = touchDistance(event.nativeEvent.touches);
+ 		const delta = distance - pinchStateRef.current.lastDistance;
+-		if (delta > pinchZoomThreshold) {
+-			zoomIn();
+-			pinchStateRef.current.lastDistance = distance;
+-		} else if (-delta > pinchZoomThreshold) {
+-			zoomOut();
++		// Only one zoom step per threshold crossing -- the reference distance is reset here so
++		// that a continuous two-finger scroll (small back-and-forth changes in finger distance)
++		// can't repeatedly re-cross the same threshold and fire more than one step per crossing.
++		if (Math.abs(delta) > pinchZoomThreshold) {
++			if (delta > 0) {
++				zoomIn();
++			} else {
++				zoomOut();
++			}
+ 			pinchStateRef.current.lastDistance = distance;
+ 		}
+ 	}, [zoomIn, zoomOut]);

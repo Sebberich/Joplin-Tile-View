@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebastian Riempp <sebastian.riempp@gmx.de>
 Date: Sun, 13 Sep 2026 14:35:23 +0000
-Subject: [PATCH 2/6] Mobile: Add tile view for the note list
+Subject: [PATCH 2/8] Mobile: Add tile view for the note list
 
 Adds a Google-Keep-style tile grid (NoteTileList/NoteTile) as an
 alternative to the note list, using the same selection, navigation and
