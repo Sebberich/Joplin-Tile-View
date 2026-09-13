@@ -31,7 +31,9 @@ Dateien geändert hat.
 | Android SDK | compileSdk 36, Build-Tools 36.0.0, NDK 27.1.12297006 | `joplin/packages/app-mobile/android/build.gradle`; NDK lädt Gradle bei Bedarf selbst |
 | Plattenplatz | > 30 GB frei | node_modules ~ 5 GB, Gradle/NDK-Transforms 20 GB+ |
 
-Optional: `libsecret-1-dev` (Linux) für Desktop-Pakete im Monorepo.
+Außerdem `rsync` (Joplins Gulp-Build kopiert damit Quellen, fehlt es, bricht `yarn install` im
+Postinstall von `packages/app-cli` ab; unter Windows daher WSL benutzen) und optional
+`libsecret-1-dev` (Linux) für Desktop-Pakete im Monorepo.
 
 **Mit Android Studio:** SDK, Build-Tools 36.0.0 und NDK 27.1.12297006 über den SDK Manager
 installieren (NDK lädt Gradle sonst beim ersten Build selbst nach). `ANDROID_HOME` auf das
