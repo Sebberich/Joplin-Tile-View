@@ -5,7 +5,7 @@ statt der Titelliste. Das Projekt ist ein Fork von [laurent22/joplin](https://gi
 in Form von Submodule + Patch-Serie, damit die Änderungen bei jedem Joplin-Release nachgezogen und
 später als Upstream-PR eingereicht werden können.
 
-Das bestehende Plugin „Tile View“ (`com.sebastian.tile-view`) bleibt davon unberührt und dient als Fallback.
+
 
 ## Schnellstart
 
