@@ -1,5 +1,11 @@
 # Build
 
+> ⚠️ **Disclaimer: Dieses Projekt ist „vibe-coded“.** Der Code entsteht überwiegend durch einen
+> KI-Assistenten (Claude Code) nach Zuruf; nicht jede Zeile ist von Hand geprüft. Es ist ein
+> privates Bastelprojekt in der Testphase – keine Garantie, keine Haftung, keine Zusage auf
+> Wartung, Sicherheit oder Datenintegrität. Vor der Benutzung mit echten Notizen: Backup
+> anlegen (JEX-Export in Joplin).
+
 ## Aufbau des Projekts
 
 ```

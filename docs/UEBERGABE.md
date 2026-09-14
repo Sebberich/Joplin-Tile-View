@@ -7,8 +7,7 @@ Monorepo: https://github.com/laurent22/joplin (Branch `dev`).
 
 ## Stand
 - Migration nach Joplin ist erledigt (Notally → JEX, Google Keep → JEX). Nicht mehr relevant.
-- **Plugin „Tile View“ existiert und läuft** auf Android (Version 1.0.0, Projektordner `joplin-plugin-tile-view/`,
-  Plugin-ID `com.sebastian.tile-view`). Es ist ein Plugin-Panel, kein eigener Screen. Features:
+- **Plugin „Tile View“ existiert und läuft** auf Android (Version 1.0.0, Projektordner `joplin-plugin-tile-view/`). Es ist ein Plugin-Panel, kein eigener Screen. Features:
   Kacheln mit Titel/Vorschau/erstem Bild, Tippen öffnet Notiz, Suche, Multi-Select-Notizbuchfilter
   (Eltern wählt Kinder mit, einzeln abwählbar), Sortierung, Pinch-Zoom (Spaltenzahl 1–5, dann Schrift),
   Einstellungen werden gespeichert. Reines JS ohne Build-Toolchain, `npm run dist` packt die `.jpl`.
