@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–2 in Patches 0007–0008 (CI-Lauf #5), Issues 3–5 in Patches 0009–0011.
+Stand: Issues 1–5 umgesetzt (Patches 0007–0011, CI-Lauf #6). Issues 6–8 gesammelt für den nächsten Build.
 
 | Nr. | Beobachtung | Erwartung | Hinweis für die Umsetzung |
 |---|---|---|---|
@@ -9,6 +9,9 @@ Stand: Issues 1–2 in Patches 0007–0008 (CI-Lauf #5), Issues 3–5 in Patches
 | 3 | Textgröße bleibt über die Zoomstufen nicht konsistent. | Gleiche Zoomstufe = gleiche Darstellung, egal auf welchem Weg man dort hinkommt. | Ursache: `zoomIn`/`zoomOut` ändern erst Spalten, dann `tileFontScale`, aber ohne Rückweg: von 1 Spalte/160 % zurück auf 5 Spalten bleibt die Schrift bei 160 %. Fix: feste Zoom-Leiter (Spalten, Schriftskala) und Pinch bewegt sich auf dieser Leiter. |
 | 4 | OLED-Dark-Theme: Kacheln sind grau statt schwarz. | Kachelhintergrund = Theme-Hintergrund (bei OLED #000000), Abgrenzung nur über Rahmen. | Kachel nutzt `theme.backgroundColor2`, das OLED von Dark erbt (#181A1D). Auf `theme.backgroundColor` + `theme.dividerColor` als Rahmen umstellen. |
 | 5 | Vorschautext ignoriert die Formatierung der Notiz (Zeilenumbrüche, Listen). | Vorschau spiegelt die Struktur wider: Absätze, Zeilenumbrüche, Listenpunkte, Checkboxen. | `stripMarkdown` in NoteTile.tsx ersetzt alle Zeilenumbrüche durch Leerzeichen. Zeilenumbrüche erhalten, Listen als „• “, Checkboxen als ☐/☑, restliches Markup weiter entfernen. |
+| 6 | Notizbücher im Papierkorb erscheinen bei „Alle Notizen“ und in der Notizbuch-Auswahl. | Gelöschte Notizbücher und Notizen sind standardmäßig ausgeschlossen. | Dialog baut den Baum aus `state.folders` ohne Filter auf `deleted_time`; die Filterabfrage in NoteTileList (`parent_id IN (...)`) ergänzt kein `deleted_time = 0`. Beides filtern; Papierkorb-Ordner (`Folder.trashFolderId`) und Konflikt-Ordner ausblenden. |
+| 7 | Bei „Alle Notizbücher“ sind die einzelnen Notizbücher nicht angehakt, einzelnes Abwählen ist so nicht möglich. | „Alle“ = alle Häkchen gesetzt; ein Haken entfernen wählt genau dieses Notizbuch (mit Unterordnern) ab. | Aktuell bedeutet leere Auswahl „alle“ (`checked={!selectedFolderIds.length}`). Umstellen: Auswahl-Modell explizit; „Alle“ setzt die Liste auf alle sichtbaren IDs; Anzeige der Haken aus der Liste; „Alle“ ist angehakt, wenn alle enthalten sind. |
+| 8 | Über-/Unterordner sind in der Auswahl nicht als Hierarchie erkennbar; Haken des Überordners nimmt Unterordner nicht mit. | Unterordner eingerückt unter dem Überordner; Haken am Überordner (de)selektiert alle Unterordner; teilweise Auswahl ggf. als Zwischenzustand. | Code hat bereits Einrückung (20 px je Ebene) und Eltern/Kind-Regel in `toggleFolderSelection`; auf dem Gerät offenbar nicht wirksam. Prüfen: Baumaufbau über `Folder.buildTree` mit gefilterter Liste (Issue 6 kann Elternbezug kappen), Einrückung deutlicher (Linie/Chevron), Zwischenzustand. Zusammen mit Issue 7 als eine Auswahl-Logik umsetzen. |
 
 ## Ideen (Machbarkeit bewertet, nicht umgesetzt)
 
