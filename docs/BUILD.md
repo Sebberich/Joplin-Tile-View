@@ -96,10 +96,11 @@ Einrichtung in Obtainium:
 
 1. „App hinzufügen“, Quelle: `https://github.com/Sebberich/Joplin-Tile-View`.
 2. Obtainium erkennt GitHub-Releases automatisch; Vorabversionen müssen nicht aktiviert werden.
-3. Erste Installation über Obtainium durchführen. Zuvor manuell installierte APKs aus
-   Workflow-Artefakten sind mit dem Debug-Keystore signiert und müssen vorher deinstalliert
-   werden. Ab dem ersten Release bleibt die Signatur (eigener Keystore) konstant, App-Daten
-   (Sync-Konfiguration, Notizen) bleiben bei Updates erhalten.
+3. Erste Installation über Obtainium durchführen. Solange die Keystore-Secrets fehlen, sind
+   die Releases wie die Workflow-Artefakte mit dem Debug-Keystore signiert; Obtainium kann
+   dann direkt über eine manuell installierte Artefakt-APK aktualisieren. App-Daten
+   (Sync-Konfiguration, Notizen) bleiben erhalten, solange die Signatur gleich bleibt. Beim
+   späteren Wechsel auf den eigenen Keystore ist einmalig eine Neuinstallation nötig.
 
 Hinweis: Beim Nachziehen der Joplin-Version (nächster Abschnitt) steigt die Basis von
 `versionCode`, die Build-Nummer wächst weiter; die Version bleibt damit monoton.
@@ -107,7 +108,8 @@ Hinweis: Beim Nachziehen der Joplin-Version (nächster Abschnitt) steigt die Bas
 ## Eigener Keystore (Signatur)
 
 Der Workflow signiert mit einem eigenen Keystore aus den Repo-Secrets. Fehlen die Secrets,
-baut er mit dem Debug-Keystore und legt **kein** Release an (nur das Artefakt).
+baut er mit dem Debug-Keystore; das Release wird trotzdem angelegt (Testphase), die
+Release-Notes nennen die verwendete Signatur.
 
 Einmalig lokal erzeugen (`keytool` liegt bei Android Studio unter `jbr/bin`):
 
