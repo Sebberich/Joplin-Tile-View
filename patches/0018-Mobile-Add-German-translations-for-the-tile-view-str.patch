@@ -1,0 +1,255 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 14 Sep 2026 14:23:26 +0000
+Subject: [PATCH 18/18] Mobile: Add German translations for the tile view
+ strings
+
+The tile view UI strings introduced in this fork were correctly marked
+for translation with _() but had no German msgstr, so a de_DE UI still
+showed them in English. Add the missing translations to de_DE.po and
+rebuild the corresponding runtime locale file with Joplin's own
+parsePoFile/parseTranslations toolchain.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0122rnadKkGCFMVkX948oRD8
+
+diff --git a/packages/lib/locales/de_DE.json b/packages/lib/locales/de_DE.json
+index f4b6ebe..0452a4f 100644
+--- a/packages/lib/locales/de_DE.json
++++ b/packages/lib/locales/de_DE.json
+@@ -44,12 +44,18 @@
+ 		"%d Notiz wird dauerhaft gelöscht. Fortfahren?",
+ 		"%d Notizen werden dauerhaft gelöscht. Fortfahren?"
+ 	],
++	"%d notebooks": [
++		"%d Notizbücher"
++	],
+ 	"%d photo(s) taken": [
+ 		"%d Foto(s) aufgenommen"
+ 	],
+ 	"%d sections found": [
+ 		""
+ 	],
++	"%d selected": [
++		"%d ausgewählt"
++	],
+ 	"%s": [
+ 		"%s"
+ 	],
+@@ -373,6 +379,9 @@
+ 	"All item sync failures have been marked as \"ignored\".": [
+ 		"Alle fehlerhaft synchronisierten Elemente wurden als „ignoriert“ markiert."
+ 	],
++	"All notebooks": [
++		"Alle Notizbücher"
++	],
+ 	"All notes": [
+ 		"Alle Notizen"
+ 	],
+@@ -647,7 +656,7 @@
+ 		"Kann auf %s nicht zugreifen"
+ 	],
+ 	"Cannot change a locked note while the session is locked": [
+-		""
++		"Eine gesperrte Notiz kann nicht geändert werden, solange die Sitzung gesperrt ist."
+ 	],
+ 	"Cannot change encrypted item": [
+ 		"Kann verschlüsseltes Element nicht ändern"
+@@ -1845,6 +1854,9 @@
+ 	"Filter": [
+ 		"Filter"
+ 	],
++	"Filter by notebook": [
++		"Nach Notizbuch filtern"
++	],
+ 	"Filtered by section [%s]": [
+ 		""
+ 	],
+@@ -2365,6 +2377,9 @@
+ 	"Large": [
+ 		"Groß"
+ 	],
++	"Larger": [
++		"Größer"
++	],
+ 	"Last error: %s": [
+ 		"Letzte Fehlermeldung: %s"
+ 	],
+@@ -2430,6 +2445,9 @@
+ 	"Links": [
+ 		"Links"
+ 	],
++	"List": [
++		"Liste"
++	],
+ 	"List item": [
+ 		"Listeneintrag"
+ 	],
+@@ -2445,6 +2463,9 @@
+ 	"Lock file is already being hold. If you know that no synchronisation is taking place, you may delete the lock file at \"%s\" and resume the operation.": [
+ 		"Eine Sperrdatei ist vorhanden. Wenn du dir sicher bist, dass keine Synchronisation im Gange ist, kannst du die Sperrdatei „%s“ löschen und den Vorgang fortsetzen."
+ 	],
++	"Locked": [
++		"Gesperrt"
++	],
+ 	"Locked notes are encrypted on this device and can only be read after entering your note lock password. The password is required again after locking or restarting Joplin.": [
+ 		""
+ 	],
+@@ -2866,6 +2887,9 @@
+ 	"Note list growth factor": [
+ 		"Notizlisten-Wachstumsfaktor"
+ 	],
++	"Note list layout": [
++		"Notizlisten-Layout"
++	],
+ 	"Note list style": [
+ 		"Stil der Notiz-Liste"
+ 	],
+@@ -2923,6 +2947,9 @@
+ 	"Notes can only be created within a notebook.": [
+ 		"Notizen können nur in einem Notizbuch erstellt werden."
+ 	],
++	"Nothing selected": [
++		"Nichts ausgewählt"
++	],
+ 	"Notifications": [
+ 		"Benachrichtigungen"
+ 	],
+@@ -3890,6 +3917,9 @@
+ 	"Small": [
+ 		"Klein"
+ 	],
++	"Smaller": [
++		"Kleiner"
++	],
+ 	"Solarised Dark": [
+ 		"Solarisiert dunkel"
+ 	],
+@@ -4064,6 +4094,9 @@
+ 	"Switch to front-facing camera": [
+ 		"Zur Frontkamera wechseln"
+ 	],
++	"Switch to list view": [
++		"Zur Listenansicht wechseln"
++	],
+ 	"Switch to note type": [
+ 		"Zu Notiz-Typ wechseln"
+ 	],
+@@ -4079,6 +4112,9 @@
+ 	"Switch to the new editor": [
+ 		"Zum neuen Editor umschalten"
+ 	],
++	"Switch to tile view": [
++		"Zur Kachelansicht wechseln"
++	],
+ 	"Switch to to-do type": [
+ 		"Zu Aufgaben-Typ wechseln"
+ 	],
+@@ -4364,6 +4400,9 @@
+ 	"Theme": [
+ 		"Erscheinungsbild"
+ 	],
++	"There are currently no notes in the selected notebooks.": [
++		"Es gibt momentan keine Notizen in den ausgewählten Notizbüchern."
++	],
+ 	"There are currently no notes. Create one by clicking on the (+) button.": [
+ 		"Momentan existieren noch keine Notizen. Erstelle eine, indem du auf die (+)-Schaltfläche drückst."
+ 	],
+@@ -4494,6 +4533,12 @@
+ 	"This will remove the notebook from your collection and you will no longer have access to its content. Do you wish to continue?": [
+ 		"Das Notizbuch wird aus deiner Sammlung gelöscht und du wirst keinen Zugriff mehr darauf haben. Möchtest du fortfahren?"
+ 	],
++	"Tile columns": [
++		"Kachelspalten"
++	],
++	"Tiles": [
++		"Kacheln"
++	],
+ 	"Time format": [
+ 		"Zeitformat"
+ 	],
+diff --git a/packages/tools/locales/de_DE.po b/packages/tools/locales/de_DE.po
+index 1d5a410..26ba526 100644
+--- a/packages/tools/locales/de_DE.po
++++ b/packages/tools/locales/de_DE.po
+@@ -1295,6 +1295,8 @@ msgstr "Kann verschlüsseltes Element nicht ändern"
+ #: packages/app-desktop/gui/WindowCommandsAndDialogs/commands/toggleNoteType.ts:18
+ msgid "Cannot change a locked note while the session is locked"
+ msgstr ""
++"Eine gesperrte Notiz kann nicht geändert werden, solange die Sitzung "
++"gesperrt ist."
+ 
+ #: packages/app-cli/app/base-command.ts:24
+ msgid "Cannot change encrypted item"
+@@ -9476,6 +9478,71 @@ msgstr "Hineinzoomen"
+ msgid "Zoom Out"
+ msgstr "Herauszoomen"
+ 
++#: packages/app-mobile/components/NoteTileToolbar.tsx:87
++msgid "%d notebooks"
++msgstr "%d Notizbücher"
++
++#: packages/app-mobile/components/NoteTileFolderDialog.tsx:215
++msgid "%d selected"
++msgstr "%d ausgewählt"
++
++#: packages/app-mobile/components/NoteTileFolderDialog.tsx:184
++#: packages/app-mobile/components/NoteTileFolderDialog.tsx:186
++#: packages/app-mobile/components/NoteTileToolbar.tsx:88
++#: packages/app-mobile/components/NoteTileToolbar.tsx:91
++msgid "All notebooks"
++msgstr "Alle Notizbücher"
++
++#: packages/app-mobile/components/NoteTileToolbar.tsx:104
++msgid "Filter by notebook"
++msgstr "Nach Notizbuch filtern"
++
++#: packages/app-mobile/components/NoteTileToolbar.tsx:127
++msgid "Larger"
++msgstr "Größer"
++
++#: packages/lib/models/settings/builtInMetadata.ts:1406
++msgid "List"
++msgstr "Liste"
++
++#: packages/app-mobile/components/NoteItem.tsx:235
++#: packages/app-mobile/components/NoteTile.tsx:298
++msgid "Locked"
++msgstr "Gesperrt"
++
++#: packages/lib/models/settings/builtInMetadata.ts:1403
++msgid "Note list layout"
++msgstr "Notizlisten-Layout"
++
++#: packages/app-mobile/components/NoteTileFolderDialog.tsx:215
++msgid "Nothing selected"
++msgstr "Nichts ausgewählt"
++
++#: packages/app-mobile/components/NoteTileToolbar.tsx:120
++msgid "Smaller"
++msgstr "Kleiner"
++
++#: packages/app-mobile/components/NoteTileToolbar.tsx:134
++msgid "Switch to list view"
++msgstr "Zur Listenansicht wechseln"
++
++#: packages/app-mobile/components/screens/Notes/NoteListLayoutBar.tsx:60
++msgid "Switch to tile view"
++msgstr "Zur Kachelansicht wechseln"
++
++#: packages/app-mobile/components/NoteTileList.tsx:262
++msgid "There are currently no notes in the selected notebooks."
++msgstr "Es gibt momentan keine Notizen in den ausgewählten Notizbüchern."
++
++#: packages/lib/models/settings/builtInMetadata.ts:1420
++msgid "Tile columns"
++msgstr "Kachelspalten"
++
++#: packages/app-mobile/components/screens/Notes/NoteListLayoutBar.tsx:63
++#: packages/lib/models/settings/builtInMetadata.ts:1407
++msgid "Tiles"
++msgstr "Kacheln"
++
+ #~ msgid ""
+ #~ "An error occurred while sending the response. This can happen if the app "
+ #~ "is offline or cannot connect to the server.\n"

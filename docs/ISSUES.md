@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–10 umgesetzt (Patches 0007–0017, Release 3.7.10-tiles.13). Issue 11 gestrichen, Issues 12–13 offen.
+Stand: Issues 1–13 umgesetzt (Patches 0007–0018). Issue 11 gestrichen. Letztes Release: 3.7.10-tiles.13; Issues 12–13 kommen mit dem nächsten Build.
 
 **Freigabe für den Nachtlauf:** Der nächtliche Wartungslauf (siehe [docs/ROUTINE.md](ROUTINE.md)) setzt nur
 Issues um, deren Zeile in der Spalte „Nr." mit `[auto]` markiert ist – z. B. `| 12 [auto] |`. Alles ohne

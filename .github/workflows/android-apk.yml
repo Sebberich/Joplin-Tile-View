@@ -142,13 +142,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KEYSTORE_AVAILABLE: ${{ steps.keystore.outputs.available }}
         run: |
-          if [ "$KEYSTORE_AVAILABLE" = "true" ]; then SIG="Projekt-Keystore"; else SIG="Debug-Keystore (Testphase, Neuinstallation beim Wechsel auf den Projekt-Keystore)"; fi
+          if [ "$KEYSTORE_AVAILABLE" = "true" ]; then SIG="project keystore"; else SIG="debug keystore (test phase, reinstall required when switching to the project keystore)"; fi
           APK=joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
           BASE="$(sed -n 's/.*versionName tileViewBuildNumber > 0 ? "\([0-9.]*\)-tiles.*/\1/p' joplin/packages/app-mobile/android/app/build.gradle)"
           VERSION="${BASE}-tiles.${{ github.run_number }}"
           cp "$APK" "joplin-tiles-${VERSION}.apk"
-          DISCLAIMER="Vibe-coded: Der Code stammt überwiegend von einem KI-Assistenten (Claude Code) und ist nicht Zeile für Zeile von Hand geprüft. Privates Bastelprojekt in der Testphase, keine Garantie und keine Haftung. Vor der Benutzung mit echten Notizen ein Backup anlegen (JEX-Export)."
-          NOTES="$(printf '%s\n\n%s\n' "Build #${{ github.run_number }} aus ${GITHUB_SHA::7}. Signatur: ${SIG}. Installierbar als Update über Builds mit gleicher Signatur." "⚠️ **${DISCLAIMER}**")"
+          DISCLAIMER="Vibe-coded: the code is mostly written by an AI assistant (Claude Code) and has not been reviewed line by line by hand. Private hobby project in the test phase, no warranty and no liability. Back up your data before using this with real notes (JEX export)."
+          NOTES="$(printf '%s\n\n%s\n' "Build #${{ github.run_number }} from ${GITHUB_SHA::7}. Signature: ${SIG}. Installable as an update over builds with the same signature." "⚠️ **${DISCLAIMER}**")"
           gh release create "v${VERSION}" "joplin-tiles-${VERSION}.apk" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Joplin Tiles Beta ${VERSION}" \
