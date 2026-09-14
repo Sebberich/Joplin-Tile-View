@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–5 umgesetzt (Patches 0007–0011, CI-Lauf #6). Issues 6–8 gesammelt für den nächsten Build.
+Stand: Issues 1–8 umgesetzt (Patches 0007–0013). Issues 6–8 im CI-Lauf #7.
 
 | Nr. | Beobachtung | Erwartung | Hinweis für die Umsetzung |
 |---|---|---|---|

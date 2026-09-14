@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Mon, 14 Sep 2026 04:46:42 +0000
+Subject: [PATCH 12/13] Mobile: Exclude trashed and conflict notebooks from the
+ tile view notebook filter
+
+Deleted (trashed) notebooks and the virtual Trash/Conflicts entries were
+being listed in the tile view's notebook filter dialog and, if selected,
+their notes could show up in the filtered tile list. Notes belonging to a
+trashed notebook are already excluded from the filtered query since
+Note.previews() adds a deleted_time = 0 condition on its own, but the
+notebook picker itself needs to filter these out before building the tree.
+
+diff --git a/packages/app-mobile/components/NoteTileFolderDialog.tsx b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+index 012de5c..b2f926f 100644
+--- a/packages/app-mobile/components/NoteTileFolderDialog.tsx
++++ b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+@@ -6,7 +6,7 @@ import Folder from '@joplin/lib/models/Folder';
+ import Setting from '@joplin/lib/models/Setting';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+ import { AppState } from '../utils/types';
+-import { toggleFolderSelection } from '../utils/tileFolderSelection';
++import { getVisibleFolders, toggleFolderSelection } from '../utils/tileFolderSelection';
+ import { _ } from '@joplin/lib/locale';
+ import Checkbox from './Checkbox';
+ import Modal from './Modal';
+@@ -33,7 +33,7 @@ const flattenFolderTree = (folders: FolderEntity[]): FolderListItem[] => {
+ 		const children = [...folder.children].sort((a, b) => Folder.displayTitle(a).localeCompare(Folder.displayTitle(b)));
+ 		for (const child of children) addChildren(child as typeof folder, depth + 1);
+ 	};
+-	const tree = Folder.buildTree(folders.filter(f => f.id !== Folder.conflictFolderId()));
++	const tree = Folder.buildTree(getVisibleFolders(folders));
+ 	const roots = [...tree].sort((a, b) => Folder.displayTitle(a).localeCompare(Folder.displayTitle(b)));
+ 	for (const root of roots) addChildren(root as unknown as { id: string; title: string; children: FolderEntity[] }, 0);
+ 	return output;
+@@ -84,6 +84,7 @@ const useStyles = (themeId: number) => {
+ 
+ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 	const styles = useStyles(props.themeId);
++	const visibleFolders = useMemo(() => getVisibleFolders(props.folders), [props.folders]);
+ 	const items = useMemo(() => flattenFolderTree(props.folders), [props.folders]);
+ 
+ 	if (!props.visible) return null;
+@@ -95,7 +96,7 @@ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 	const onAllPress = () => setSelection([]);
+ 
+ 	const onFolderToggle = (folderId: string, checked: boolean) => {
+-		setSelection(toggleFolderSelection(props.selectedFolderIds, folderId, checked, props.folders));
++		setSelection(toggleFolderSelection(props.selectedFolderIds, folderId, checked, visibleFolders));
+ 	};
+ 
+ 	return (
+diff --git a/packages/app-mobile/components/NoteTileList.test.tsx b/packages/app-mobile/components/NoteTileList.test.tsx
+index 0866d12..835ee6e 100644
+--- a/packages/app-mobile/components/NoteTileList.test.tsx
++++ b/packages/app-mobile/components/NoteTileList.test.tsx
+@@ -67,6 +67,28 @@ describe('NoteTileList', () => {
+ 		});
+ 	});
+ 
++	test('should not show deleted notes when filtering by notebook', async () => {
++		const folder = await Folder.save({ title: 'Folder' });
++		const note1 = await Note.save({ title: 'Kept note', parent_id: folder.id });
++		const note2 = await Note.save({ title: 'Deleted note', parent_id: folder.id });
++		await Note.batchDelete([note2.id], { toTrash: true });
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder] });
++		testStore.dispatch({
++			type: 'NOTE_UPDATE_ALL',
++			notes: [note1],
++			notesSource: 'test',
++		});
++		testStore.dispatch({ type: 'SETTING_UPDATE_ONE', key: 'notes.tileFolderIds', value: folder.id });
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('Kept note')).toBeTruthy();
++			expect(screen.queryByText('Deleted note')).toBeFalsy();
++		});
++	});
++
+ 	test('should show a message when the selected folder has no notes', async () => {
+ 		const folder = await Folder.save({ title: 'Empty folder' });
+ 
+diff --git a/packages/app-mobile/utils/tileFolderSelection.test.ts b/packages/app-mobile/utils/tileFolderSelection.test.ts
+index ea24128..5af5232 100644
+--- a/packages/app-mobile/utils/tileFolderSelection.test.ts
++++ b/packages/app-mobile/utils/tileFolderSelection.test.ts
+@@ -1,7 +1,9 @@
++import Folder from '@joplin/lib/models/Folder';
++import getTrashFolderId from '@joplin/lib/services/trash/getTrashFolderId';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+-import { toggleFolderSelection } from './tileFolderSelection';
++import { getVisibleFolders, toggleFolderSelection } from './tileFolderSelection';
+ 
+-const makeFolder = (id: string, parentId: string): FolderEntity => ({ id, parent_id: parentId } as FolderEntity);
++const makeFolder = (id: string, parentId: string, deletedTime = 0): FolderEntity => ({ id, parent_id: parentId, deleted_time: deletedTime } as FolderEntity);
+ 
+ describe('tileFolderSelection', () => {
+ 	const folders: FolderEntity[] = [
+@@ -28,4 +30,14 @@ describe('tileFolderSelection', () => {
+ 		const result = toggleFolderSelection(selected, 'parent', false, folders);
+ 		expect(result.sort()).toEqual(['other'].sort());
+ 	});
++
++	test('getVisibleFolders excludes deleted folders and the trash/conflict pseudo folders', () => {
++		const withExtras = [
++			...folders,
++			makeFolder('trashed', '', Date.now()),
++			makeFolder(getTrashFolderId(), ''),
++			makeFolder(Folder.conflictFolderId(), ''),
++		];
++		expect(getVisibleFolders(withExtras).map(f => f.id).sort()).toEqual(folders.map(f => f.id).sort());
++	});
+ });
+diff --git a/packages/app-mobile/utils/tileFolderSelection.ts b/packages/app-mobile/utils/tileFolderSelection.ts
+index f1bef12..1172f68 100644
+--- a/packages/app-mobile/utils/tileFolderSelection.ts
++++ b/packages/app-mobile/utils/tileFolderSelection.ts
+@@ -1,5 +1,15 @@
++import Folder from '@joplin/lib/models/Folder';
++import { itemIsInTrash } from '@joplin/lib/services/trash';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+ 
++// The folders that can be picked in the notebook filter dialog -- trashed folders and the
++// virtual trash/conflict folders are excluded, since they don't hold notes that belong in the
++// tile view.
++export const getVisibleFolders = (folders: FolderEntity[]): FolderEntity[] => {
++	const conflictFolderId = Folder.conflictFolderId();
++	return folders.filter(folder => folder.id !== conflictFolderId && !itemIsInTrash(folder));
++};
++
+ // Builds a map from folder ID to the IDs of its direct children.
+ const buildChildrenMap = (folders: FolderEntity[]) => {
+ 	const childrenMap: Record<string, string[]> = {};

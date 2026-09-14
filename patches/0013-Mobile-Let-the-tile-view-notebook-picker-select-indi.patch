@@ -1,0 +1,323 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Mon, 14 Sep 2026 04:47:59 +0000
+Subject: [PATCH 13/13] Mobile: Let the tile view notebook picker select
+ individually from All notebooks, and show subnotebook hierarchy clearly
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Previously an empty selection meant "all" and every checkbox showed
+unchecked, so there was no way to deselect a single notebook while
+starting from "all". The dialog now works on an explicit working set of
+selected notebook IDs: opening it with the stored "all" value seeds the
+set with every visible notebook, the "All notebooks" row is checked
+exactly when all of them are selected, and confirming stores an empty
+value again when everything is still selected (keeping new notebooks
+included automatically) or the explicit ID list otherwise. The set is
+only written to the setting when the user presses Done -- the confirm
+button is disabled while nothing is selected, and shows how many
+notebooks are currently selected.
+
+Also increase the per-level indent, add a "└" marker for nested rows, and
+since the checkbox component has no indeterminate state, show a parent
+notebook as unchecked with a "(n/m)" count when only some of its
+descendants are selected -- the underlying tree-building logic was
+already correctly nesting notebooks by parent_id, so the flat appearance
+on device came down to the 20px indent being too subtle and the
+unfiltered trash/notebook list adding noise, both addressed by this and
+the previous commit.
+
+diff --git a/packages/app-mobile/components/NoteTileFolderDialog.tsx b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+index b2f926f..6e2cd0f 100644
+--- a/packages/app-mobile/components/NoteTileFolderDialog.tsx
++++ b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+@@ -1,12 +1,12 @@
+ import * as React from 'react';
+-import { useMemo } from 'react';
++import { useEffect, useMemo, useRef, useState } from 'react';
+ import { connect } from 'react-redux';
+-import { FlatList, StyleSheet, Text, TouchableHighlight, View, ViewStyle, TextStyle } from 'react-native';
++import { Button, FlatList, StyleSheet, Text, TouchableHighlight, View, ViewStyle, TextStyle } from 'react-native';
+ import Folder from '@joplin/lib/models/Folder';
+ import Setting from '@joplin/lib/models/Setting';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+ import { AppState } from '../utils/types';
+-import { getVisibleFolders, toggleFolderSelection } from '../utils/tileFolderSelection';
++import { getFolderSelectionCounts, getVisibleFolders, isAllSelected, storedValueFromWorkingSet, toggleFolderSelection, workingSetFromStoredValue } from '../utils/tileFolderSelection';
+ import { _ } from '@joplin/lib/locale';
+ import Checkbox from './Checkbox';
+ import Modal from './Modal';
+@@ -15,7 +15,7 @@ import { themeStyle } from './global-style';
+ interface Props {
+ 	themeId: number;
+ 	folders: FolderEntity[];
+-	selectedFolderIds: string[];
++	storedFolderIds: string;
+ 	visible: boolean;
+ 	onClose: ()=> void;
+ }
+@@ -33,12 +33,14 @@ const flattenFolderTree = (folders: FolderEntity[]): FolderListItem[] => {
+ 		const children = [...folder.children].sort((a, b) => Folder.displayTitle(a).localeCompare(Folder.displayTitle(b)));
+ 		for (const child of children) addChildren(child as typeof folder, depth + 1);
+ 	};
+-	const tree = Folder.buildTree(getVisibleFolders(folders));
++	const tree = Folder.buildTree(folders);
+ 	const roots = [...tree].sort((a, b) => Folder.displayTitle(a).localeCompare(Folder.displayTitle(b)));
+ 	for (const root of roots) addChildren(root as unknown as { id: string; title: string; children: FolderEntity[] }, 0);
+ 	return output;
+ };
+ 
++const indentPerDepth = 24;
++
+ const useStyles = (themeId: number) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
+@@ -72,11 +74,35 @@ const useStyles = (themeId: number) => {
+ 			flexShrink: 1,
+ 		};
+ 
++		const depthGuide: TextStyle = {
++			color: theme.colorFaded,
++			fontSize: theme.fontSize,
++			marginRight: 4,
++		};
++
++		const footer: ViewStyle = {
++			flexDirection: 'row',
++			alignItems: 'center',
++			justifyContent: 'space-between',
++			paddingTop: theme.marginTop,
++			borderTopWidth: 1,
++			borderTopColor: theme.dividerColor,
++			marginTop: 8,
++		};
++
++		const footerLabel: TextStyle = {
++			color: theme.colorFaded,
++			fontSize: theme.fontSize,
++		};
++
+ 		return StyleSheet.create({
+ 			container,
+ 			title,
+ 			row,
+ 			rowLabel,
++			depthGuide,
++			footer,
++			footerLabel,
+ 			checkboxStyle: { color: theme.color },
+ 		});
+ 	}, [themeId]);
+@@ -85,18 +111,38 @@ const useStyles = (themeId: number) => {
+ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 	const styles = useStyles(props.themeId);
+ 	const visibleFolders = useMemo(() => getVisibleFolders(props.folders), [props.folders]);
+-	const items = useMemo(() => flattenFolderTree(props.folders), [props.folders]);
++	const items = useMemo(() => flattenFolderTree(visibleFolders), [visibleFolders]);
++
++	const [workingSet, setWorkingSet] = useState<string[]>([]);
++
++	// The working set is (re-)initialized from the stored setting each time the dialog is
++	// opened, rather than tracked continuously, so that changes made while the dialog is open
++	// are only applied when the user confirms. The latest props are read from a ref so that this
++	// only needs to run when `visible` changes.
++	const latestProps = useRef(props);
++	latestProps.current = props;
++	useEffect(() => {
++		if (latestProps.current.visible) {
++			setWorkingSet(workingSetFromStoredValue(latestProps.current.storedFolderIds, getVisibleFolders(latestProps.current.folders)));
++		}
++	}, [props.visible]);
+ 
+ 	if (!props.visible) return null;
+ 
+-	const setSelection = (ids: string[]) => {
+-		Setting.setValue('notes.tileFolderIds', ids.join(','));
+-	};
++	const allSelected = isAllSelected(workingSet, visibleFolders);
++	const selectedCount = workingSet.length;
+ 
+-	const onAllPress = () => setSelection([]);
++	const onAllToggle = (checked: boolean) => {
++		setWorkingSet(checked ? visibleFolders.map(folder => folder.id) : []);
++	};
+ 
+ 	const onFolderToggle = (folderId: string, checked: boolean) => {
+-		setSelection(toggleFolderSelection(props.selectedFolderIds, folderId, checked, visibleFolders));
++		setWorkingSet(toggleFolderSelection(workingSet, folderId, checked, visibleFolders));
++	};
++
++	const onConfirm = () => {
++		Setting.setValue('notes.tileFolderIds', storedValueFromWorkingSet(workingSet, visibleFolders));
++		props.onClose();
+ 	};
+ 
+ 	return (
+@@ -110,8 +156,8 @@ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 			<View style={styles.row}>
+ 				<Checkbox
+ 					style={styles.checkboxStyle}
+-					checked={!props.selectedFolderIds.length}
+-					onChange={onAllPress}
++					checked={allSelected}
++					onChange={onAllToggle}
+ 					accessibilityLabel={_('All notebooks')}
+ 				/>
+ 				<Text style={styles.rowLabel}>{_('All notebooks')}</Text>
+@@ -119,30 +165,43 @@ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 			<FlatList
+ 				data={items}
+ 				keyExtractor={item => item.id}
+-				renderItem={({ item }) => (
+-					<TouchableHighlight onPress={() => onFolderToggle(item.id, !props.selectedFolderIds.includes(item.id))}>
+-						<View style={[styles.row, { paddingLeft: 8 + item.depth * 20 }]}>
+-							<Checkbox
+-								style={styles.checkboxStyle}
+-								checked={props.selectedFolderIds.includes(item.id)}
+-								onChange={checked => onFolderToggle(item.id, checked)}
+-								accessibilityLabel={item.title}
+-							/>
+-							<Text style={styles.rowLabel}>{item.title}</Text>
+-						</View>
+-					</TouchableHighlight>
+-				)}
++				renderItem={({ item }) => {
++					const counts = getFolderSelectionCounts(item.id, workingSet, visibleFolders);
++					const checked = counts.total > 0 && counts.selected === counts.total;
++					const isPartial = !checked && counts.selected > 0;
++					const label = isPartial ? `${item.title} (${counts.selected}/${counts.total})` : item.title;
++
++					return (
++						<TouchableHighlight onPress={() => onFolderToggle(item.id, !checked)}>
++							<View style={[styles.row, { paddingLeft: 8 + item.depth * indentPerDepth }]}>
++								{item.depth > 0 && <Text style={styles.depthGuide}>{'└'}</Text>}
++								<Checkbox
++									style={styles.checkboxStyle}
++									checked={checked}
++									onChange={checked => onFolderToggle(item.id, checked)}
++									accessibilityLabel={label}
++								/>
++								<Text style={styles.rowLabel}>{label}</Text>
++							</View>
++						</TouchableHighlight>
++					);
++				}}
+ 			/>
++			<View style={styles.footer}>
++				<Text style={styles.footerLabel}>
++					{selectedCount ? _('%d selected', selectedCount) : _('Nothing selected')}
++				</Text>
++				<Button title={_('Done')} onPress={onConfirm} disabled={!selectedCount}/>
++			</View>
+ 		</Modal>
+ 	);
+ };
+ 
+ const NoteTileFolderDialog = connect((state: AppState) => {
+-	const raw = state.settings['notes.tileFolderIds'] as string;
+ 	return {
+ 		themeId: state.settings.theme,
+ 		folders: state.folders,
+-		selectedFolderIds: raw ? raw.split(',').filter(Boolean) : [],
++		storedFolderIds: (state.settings['notes.tileFolderIds'] as string) ?? '',
+ 	};
+ })(NoteTileFolderDialogComponent);
+ 
+diff --git a/packages/app-mobile/utils/tileFolderSelection.test.ts b/packages/app-mobile/utils/tileFolderSelection.test.ts
+index 5af5232..80ba552 100644
+--- a/packages/app-mobile/utils/tileFolderSelection.test.ts
++++ b/packages/app-mobile/utils/tileFolderSelection.test.ts
+@@ -1,7 +1,14 @@
+ import Folder from '@joplin/lib/models/Folder';
+ import getTrashFolderId from '@joplin/lib/services/trash/getTrashFolderId';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+-import { getVisibleFolders, toggleFolderSelection } from './tileFolderSelection';
++import {
++	getFolderSelectionCounts,
++	getVisibleFolders,
++	isAllSelected,
++	storedValueFromWorkingSet,
++	toggleFolderSelection,
++	workingSetFromStoredValue,
++} from './tileFolderSelection';
+ 
+ const makeFolder = (id: string, parentId: string, deletedTime = 0): FolderEntity => ({ id, parent_id: parentId, deleted_time: deletedTime } as FolderEntity);
+ 
+@@ -40,4 +47,34 @@ describe('tileFolderSelection', () => {
+ 		];
+ 		expect(getVisibleFolders(withExtras).map(f => f.id).sort()).toEqual(folders.map(f => f.id).sort());
+ 	});
++
++	test('isAllSelected is true only when every visible folder is selected', () => {
++		expect(isAllSelected(folders.map(f => f.id), folders)).toBe(true);
++		expect(isAllSelected(['parent', 'child1', 'child2', 'grandchild'], folders)).toBe(false);
++		expect(isAllSelected([], folders)).toBe(false);
++	});
++
++	test('workingSetFromStoredValue expands an empty (all) value to every visible folder', () => {
++		expect(workingSetFromStoredValue('', folders).sort()).toEqual(folders.map(f => f.id).sort());
++	});
++
++	test('workingSetFromStoredValue drops IDs that no longer refer to a visible folder', () => {
++		expect(workingSetFromStoredValue('parent,child1,missing', folders).sort()).toEqual(['child1', 'parent']);
++	});
++
++	test('storedValueFromWorkingSet stores an empty string when everything is selected', () => {
++		expect(storedValueFromWorkingSet(folders.map(f => f.id), folders)).toBe('');
++	});
++
++	test('storedValueFromWorkingSet stores the ID list otherwise', () => {
++		expect(storedValueFromWorkingSet(['parent', 'child1'], folders).split(',').sort()).toEqual(['child1', 'parent']);
++	});
++
++	test.each([
++		[[], { selected: 0, total: 4 }],
++		[['parent', 'child1', 'child2', 'grandchild'], { selected: 4, total: 4 }],
++		[['child1'], { selected: 1, total: 4 }],
++	])('getFolderSelectionCounts reports how many of "parent" and its descendants are selected (%j)', (selected, expected) => {
++		expect(getFolderSelectionCounts('parent', selected, folders)).toEqual(expected);
++	});
+ });
+diff --git a/packages/app-mobile/utils/tileFolderSelection.ts b/packages/app-mobile/utils/tileFolderSelection.ts
+index 1172f68..a977dcc 100644
+--- a/packages/app-mobile/utils/tileFolderSelection.ts
++++ b/packages/app-mobile/utils/tileFolderSelection.ts
+@@ -49,3 +49,37 @@ export const toggleFolderSelection = (selectedIds: string[], folderId: string, c
+ 	}
+ 	return [...selected];
+ };
++
++// Whether every visible folder is selected -- this is the condition under which the "All
++// notebooks" row is shown as checked.
++export const isAllSelected = (selectedIds: string[], folders: FolderEntity[]) => {
++	const visibleIds = getVisibleFolders(folders).map(folder => folder.id);
++	if (!visibleIds.length) return false;
++	const selected = new Set(selectedIds);
++	return visibleIds.every(id => selected.has(id));
++};
++
++// Converts the stored setting value ('' or a comma-separated ID list) to the set of folder IDs
++// the dialog should start with selected. An empty stored value means "all", so it expands to
++// every currently-visible folder. IDs that no longer refer to a visible folder are dropped.
++export const workingSetFromStoredValue = (stored: string, folders: FolderEntity[]) => {
++	const visibleIds = getVisibleFolders(folders).map(folder => folder.id);
++	if (!stored) return visibleIds;
++	const storedIds = new Set(stored.split(',').filter(Boolean));
++	return visibleIds.filter(id => storedIds.has(id));
++};
++
++// Converts a working selection back to the stored setting format, preserving the "all" (empty
++// string) semantics when every visible folder is selected.
++export const storedValueFromWorkingSet = (selectedIds: string[], folders: FolderEntity[]) => {
++	return isAllSelected(selectedIds, folders) ? '' : selectedIds.join(',');
++};
++
++// How many of `folderId` and its descendants are selected, out of how many there are in total.
++// Used to show a folder as fully checked, unchecked, or partially selected (as an "(n/m)" count,
++// since the checkbox in use has no indeterminate state).
++export const getFolderSelectionCounts = (folderId: string, selectedIds: string[], folders: FolderEntity[]) => {
++	const ids = [folderId, ...getDescendantFolderIds(folderId, folders)];
++	const selected = new Set(selectedIds);
++	return { selected: ids.filter(id => selected.has(id)).length, total: ids.length };
++};
