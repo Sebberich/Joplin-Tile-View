@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tile-view <tile-view@localhost>
 Date: Mon, 14 Sep 2026 04:56:56 +0000
-Subject: [PATCH 14/15] Android: Derive versionCode and versionName from the CI
+Subject: [PATCH 14/17] Android: Derive versionCode and versionName from the CI
  build number
 
 Passing -PTILE_VIEW_BUILD_NUMBER=N yields versionCode 2097819+N and

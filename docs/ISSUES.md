@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–8 umgesetzt (Patches 0007–0013, Release 3.7.10-tiles.10). Issues 9–10 in Umsetzung, Issue 11 gestrichen.
+Stand: Issues 1–10 umgesetzt (Patches 0007–0017). Issue 11 gestrichen. Letztes Release: 3.7.10-tiles.10; Issues 9–10 kommen mit dem nächsten Build.
 
 | Nr. | Beobachtung | Erwartung | Hinweis für die Umsetzung |
 |---|---|---|---|

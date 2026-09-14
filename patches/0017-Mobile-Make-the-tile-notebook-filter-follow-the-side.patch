@@ -1,0 +1,584 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Mon, 14 Sep 2026 06:36:44 +0000
+Subject: [PATCH 17/17] Mobile: Make the tile notebook filter follow the
+ sidebar selection
+
+Previously the notebook filter dialog always offered every notebook,
+regardless of what was selected in the sidebar (drawer) -- picking a
+tag or a search, or switching notebooks, left the tile view's filter
+untouched, so it could easily show notes unrelated to what the
+sidebar was pointing at, or stay narrowed to notebooks that no longer
+made sense.
+
+The sidebar selection now defines the filter's scope: on a notebook,
+the dialog offers only that notebook and its descendants; on "All
+notes", every notebook; for a tag, a search, or anything else, the
+notebook filter doesn't apply at all -- the filter button is hidden
+and the tile list shows state.notes directly, like NoteList does.
+Switching the sidebar selection resets the stored filter so the tile
+view immediately follows it. Add getScopeFolderIds to compute this
+scope, and use it in the toolbar, the dialog and the tile list's
+query so a notebook's tiles are always restricted to its own scope,
+not just to whatever was left checked in a previous scope. Rename the
+dialog's title from "Notebooks" to "Filter".
+
+diff --git a/packages/app-mobile/components/NoteTileFolderDialog.tsx b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+index 6e2cd0f..7a8de8a 100644
+--- a/packages/app-mobile/components/NoteTileFolderDialog.tsx
++++ b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+@@ -6,7 +6,7 @@ import Folder from '@joplin/lib/models/Folder';
+ import Setting from '@joplin/lib/models/Setting';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+ import { AppState } from '../utils/types';
+-import { getFolderSelectionCounts, getVisibleFolders, isAllSelected, storedValueFromWorkingSet, toggleFolderSelection, workingSetFromStoredValue } from '../utils/tileFolderSelection';
++import { getFolderSelectionCounts, getScopeFolderIds, isAllSelected, storedValueFromWorkingSet, toggleFolderSelection, workingSetFromStoredValue } from '../utils/tileFolderSelection';
+ import { _ } from '@joplin/lib/locale';
+ import Checkbox from './Checkbox';
+ import Modal from './Modal';
+@@ -15,6 +15,8 @@ import { themeStyle } from './global-style';
+ interface Props {
+ 	themeId: number;
+ 	folders: FolderEntity[];
++	notesParentType: string;
++	selectedFolderId: string|null;
+ 	storedFolderIds: string;
+ 	visible: boolean;
+ 	onClose: ()=> void;
+@@ -108,10 +110,31 @@ const useStyles = (themeId: number) => {
+ 	}, [themeId]);
+ };
+ 
++// Computes the notebook filter's scope: the sidebar-selected notebook and its descendants, or
++// every visible notebook when the sidebar is on "All notes". Returns the folder entities within
++// that scope, rather than just their IDs, since that's what the dialog needs to build its tree and
++// initialize its working set from.
++const scopeFolders = (folders: FolderEntity[], notesParentType: string, selectedFolderId: string) => {
++	const scopeFolderIds = getScopeFolderIds(folders, notesParentType, selectedFolderId);
++	return scopeFolderIds === null ? [] : folders.filter(folder => scopeFolderIds.includes(folder.id));
++};
++
+ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 	const styles = useStyles(props.themeId);
+-	const visibleFolders = useMemo(() => getVisibleFolders(props.folders), [props.folders]);
++	// The notebook filter only applies when the sidebar is on a real notebook or "All notes" (see
++	// getScopeFolderIds) -- NoteTileToolbar keeps this dialog from being opened otherwise, but
++	// this is checked again below in case props change while it's open.
++	const scopeApplies = useMemo(() => getScopeFolderIds(props.folders, props.notesParentType, props.selectedFolderId) !== null, [props.folders, props.notesParentType, props.selectedFolderId]);
++	// The dialog only offers folders within the current scope -- either the sidebar's selected
++	// notebook and its descendants, or every notebook for "All notes". Since these are the only
++	// folders given to buildTree (via flattenFolderTree), a notebook scope's own root folder
++	// naturally appears at the top of the list, serving as the "select all in scope" row.
++	const visibleFolders = useMemo(() => scopeFolders(props.folders, props.notesParentType, props.selectedFolderId), [props.folders, props.notesParentType, props.selectedFolderId]);
+ 	const items = useMemo(() => flattenFolderTree(visibleFolders), [visibleFolders]);
++	// "All notebooks" is only shown as a separate top row for the "All notes" scope -- for a
++	// notebook scope, the scope folder itself already appears in `items` and toggles all of its
++	// descendants together.
++	const showAllNotebooksRow = props.notesParentType === 'SmartFilter';
+ 
+ 	const [workingSet, setWorkingSet] = useState<string[]>([]);
+ 
+@@ -123,11 +146,11 @@ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 	latestProps.current = props;
+ 	useEffect(() => {
+ 		if (latestProps.current.visible) {
+-			setWorkingSet(workingSetFromStoredValue(latestProps.current.storedFolderIds, getVisibleFolders(latestProps.current.folders)));
++			setWorkingSet(workingSetFromStoredValue(latestProps.current.storedFolderIds, scopeFolders(latestProps.current.folders, latestProps.current.notesParentType, latestProps.current.selectedFolderId)));
+ 		}
+ 	}, [props.visible]);
+ 
+-	if (!props.visible) return null;
++	if (!props.visible || !scopeApplies) return null;
+ 
+ 	const allSelected = isAllSelected(workingSet, visibleFolders);
+ 	const selectedCount = workingSet.length;
+@@ -152,8 +175,8 @@ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 			containerStyle={styles.container}
+ 			scrollOverflow={true}
+ 		>
+-			<Text style={styles.title}>{_('Notebooks')}</Text>
+-			<View style={styles.row}>
++			<Text style={styles.title}>{_('Filter')}</Text>
++			{showAllNotebooksRow && <View style={styles.row}>
+ 				<Checkbox
+ 					style={styles.checkboxStyle}
+ 					checked={allSelected}
+@@ -161,7 +184,7 @@ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 					accessibilityLabel={_('All notebooks')}
+ 				/>
+ 				<Text style={styles.rowLabel}>{_('All notebooks')}</Text>
+-			</View>
++			</View>}
+ 			<FlatList
+ 				data={items}
+ 				keyExtractor={item => item.id}
+@@ -201,6 +224,8 @@ const NoteTileFolderDialog = connect((state: AppState) => {
+ 	return {
+ 		themeId: state.settings.theme,
+ 		folders: state.folders,
++		notesParentType: state.notesParentType,
++		selectedFolderId: state.selectedFolderId,
+ 		storedFolderIds: (state.settings['notes.tileFolderIds'] as string) ?? '',
+ 	};
+ })(NoteTileFolderDialogComponent);
+diff --git a/packages/app-mobile/components/NoteTileList.test.tsx b/packages/app-mobile/components/NoteTileList.test.tsx
+index 2de5767..171ae54 100644
+--- a/packages/app-mobile/components/NoteTileList.test.tsx
++++ b/packages/app-mobile/components/NoteTileList.test.tsx
+@@ -9,6 +9,9 @@ import { render, screen, waitFor } from '../utils/testing/testingLibrary';
+ import { setupDatabaseAndSynchronizer } from '@joplin/lib/testing/test-utils';
+ import Folder from '@joplin/lib/models/Folder';
+ import Note from '@joplin/lib/models/Note';
++import Tag from '@joplin/lib/models/Tag';
++import Setting from '@joplin/lib/models/Setting';
++import { ALL_NOTES_FILTER_ID } from '@joplin/lib/reserved-ids';
+ 
+ let testStore: Store<AppState>;
+ 
+@@ -57,6 +60,9 @@ describe('NoteTileList', () => {
+ 			notes: [note1],
+ 			notesSource: 'test',
+ 		});
++		// The notebook filter's scope is driven by the sidebar -- select "All notes" so that a
++		// filter narrowed to a single notebook (out of several) is meaningful.
++		testStore.dispatch({ type: 'SMART_FILTER_SELECT', id: ALL_NOTES_FILTER_ID });
+ 		testStore.dispatch({ type: 'SETTING_UPDATE_ONE', key: 'notes.tileFolderIds', value: folder1.id });
+ 
+ 		render(<WrappedNoteTileList/>);
+@@ -79,6 +85,7 @@ describe('NoteTileList', () => {
+ 			notes: [note1],
+ 			notesSource: 'test',
+ 		});
++		testStore.dispatch({ type: 'SMART_FILTER_SELECT', id: ALL_NOTES_FILTER_ID });
+ 		testStore.dispatch({ type: 'SETTING_UPDATE_ONE', key: 'notes.tileFolderIds', value: folder.id });
+ 
+ 		render(<WrappedNoteTileList/>);
+@@ -89,6 +96,91 @@ describe('NoteTileList', () => {
+ 		});
+ 	});
+ 
++	test('should follow the sidebar: a notebook scope shows only that notebook and its descendants', async () => {
++		const folder1 = await Folder.save({ title: 'Folder 1' });
++		const folder1a = await Folder.save({ title: 'Folder 1a', parent_id: folder1.id });
++		const folder2 = await Folder.save({ title: 'Folder 2' });
++		const note1 = await Note.save({ title: 'Note in folder 1', parent_id: folder1.id });
++		const note2 = await Note.save({ title: 'Note in folder 1a', parent_id: folder1a.id });
++		const note3 = await Note.save({ title: 'Note in folder 2', parent_id: folder2.id });
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder1, folder1a, folder2] });
++		testStore.dispatch({
++			type: 'NOTE_UPDATE_ALL',
++			notes: [note1, note2, note3],
++			notesSource: 'test',
++		});
++		// As if the user tapped "Folder 1" in the sidebar (drawer).
++		testStore.dispatch({ type: 'NAV_GO', routeName: 'Notes', folderId: folder1.id });
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('Note in folder 1')).toBeTruthy();
++			expect(screen.getByText('Note in folder 1a')).toBeTruthy();
++			expect(screen.queryByText('Note in folder 2')).toBeFalsy();
++		});
++	});
++
++	test('should reset the notebook filter when the sidebar selection changes', async () => {
++		const folder1 = await Folder.save({ title: 'Folder 1' });
++		const folder2 = await Folder.save({ title: 'Folder 2' });
++		const note1 = await Note.save({ title: 'Note in folder 1', parent_id: folder1.id });
++		const note2 = await Note.save({ title: 'Note in folder 2', parent_id: folder2.id });
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder1, folder2] });
++		testStore.dispatch({
++			type: 'NOTE_UPDATE_ALL',
++			notes: [note1, note2],
++			notesSource: 'test',
++		});
++		testStore.dispatch({ type: 'SMART_FILTER_SELECT', id: ALL_NOTES_FILTER_ID });
++		// Setting.setValue (rather than a raw SETTING_UPDATE_ONE dispatch) is used here since the
++		// reset effect under test reads the current value back through the Setting model.
++		Setting.setValue('notes.tileFolderIds', folder1.id);
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('Note in folder 1')).toBeTruthy();
++		});
++
++		// Switching the sidebar to a different notebook should both reset the stored filter and
++		// immediately show the new scope's notes, rather than staying narrowed to the stale
++		// "Folder 1" selection.
++		testStore.dispatch({ type: 'NAV_GO', routeName: 'Notes', folderId: folder2.id });
++
++		await waitFor(() => {
++			expect(testStore.getState().settings['notes.tileFolderIds']).toBe('');
++			expect(screen.getByText('Note in folder 2')).toBeTruthy();
++			expect(screen.queryByText('Note in folder 1')).toBeFalsy();
++		});
++	});
++
++	test('should ignore the notebook filter for tags and show state.notes directly', async () => {
++		const folder = await Folder.save({ title: 'Folder' });
++		const tag = await Tag.save({ title: 'Tag 1' });
++		const note1 = await Note.save({ title: 'Tagged note', parent_id: folder.id });
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder] });
++		testStore.dispatch({ type: 'TAG_UPDATE_ALL', items: [tag] });
++		// A stale filter left over from a previous notebook selection should have no effect once
++		// the sidebar is on a tag.
++		testStore.dispatch({ type: 'SETTING_UPDATE_ONE', key: 'notes.tileFolderIds', value: 'not-a-real-folder-id' });
++		testStore.dispatch({ type: 'NAV_GO', routeName: 'Notes', tagId: tag.id });
++		testStore.dispatch({
++			type: 'NOTE_UPDATE_ALL',
++			notes: [note1],
++			notesSource: 'test',
++		});
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('Tagged note')).toBeTruthy();
++		});
++	});
++
+ 	test('should show a checkmark on a selected tile', async () => {
+ 		const folder = await Folder.save({ title: 'Folder' });
+ 		const note1 = await Note.save({ title: 'First note', parent_id: folder.id });
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+index dff612c..f37d752 100644
+--- a/packages/app-mobile/components/NoteTileList.tsx
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -17,6 +17,7 @@ import NoteTile from './NoteTile';
+ import NoteTileToolbar from './NoteTileToolbar';
+ import { themeStyle } from './global-style';
+ import { zoomStep } from '../utils/tileZoom';
++import { getScopeFolderIds, workingSetFromStoredValue } from '../utils/tileFolderSelection';
+ 
+ interface Props {
+ 	themeId: number;
+@@ -25,6 +26,7 @@ interface Props {
+ 	items: NoteEntity[];
+ 	folders: FolderEntity[];
+ 	noteSelectionEnabled?: boolean;
++	notesParentType: string;
+ 	selectedFolderId: string|null;
+ 	tileColumns: number;
+ 	tileFolderIds: string;
+@@ -114,32 +116,59 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 		}
+ 	}, [props.notesSource]);
+ 
+-	const folderIds = useMemo(() => (props.tileFolderIds ? props.tileFolderIds.split(',').filter(Boolean) : []), [props.tileFolderIds]);
++	// The scope the notebook filter is allowed to work within, driven by the sidebar (drawer)
++	// selection -- null means the filter doesn't apply to the current sidebar selection (a tag, a
++	// search, ...) and the tile list should just show `state.notes`, like NoteList does.
++	const scopeFolderIds = useMemo(() => getScopeFolderIds(props.folders, props.notesParentType, props.selectedFolderId), [props.folders, props.notesParentType, props.selectedFolderId]);
++	const scopeFolders = useMemo(() => (scopeFolderIds === null ? [] : props.folders.filter(folder => scopeFolderIds.includes(folder.id))), [scopeFolderIds, props.folders]);
++	// The IDs to actually query notes from: the stored selection intersected with the scope (see
++	// workingSetFromStoredValue) -- this still restricts to the scope even when nothing has been
++	// unchecked in the filter dialog, so that, for example, viewing a notebook only ever shows
++	// that notebook's (and its descendants') notes, never every note in the app.
++	const queryFolderIds = useMemo(() => (scopeFolderIds === null ? [] : workingSetFromStoredValue(props.tileFolderIds, scopeFolders)), [scopeFolderIds, scopeFolders, props.tileFolderIds]);
++
++	// The notebook filter follows the sidebar: whenever the sidebar selection changes (a different
++	// notebook, or a different kind of selection entirely -- a tag, a search, "All notes", ...) any
++	// notebook subset chosen earlier no longer applies, so the stored filter is reset to '' (the
++	// whole new scope).
++	const previousScopeKey = useRef(`${props.notesParentType}:${props.selectedFolderId}`);
++	useEffect(() => {
++		const scopeKey = `${props.notesParentType}:${props.selectedFolderId}`;
++		if (previousScopeKey.current !== scopeKey) {
++			previousScopeKey.current = scopeKey;
++			if (Setting.value('notes.tileFolderIds')) Setting.setValue('notes.tileFolderIds', '');
++		}
++	}, [props.notesParentType, props.selectedFolderId]);
+ 
+-	// When a notebook filter is set, the tile list no longer shows whatever Joplin currently has
++	// When a notebook filter applies, the tile list no longer shows whatever Joplin currently has
+ 	// loaded into `state.notes` (a single notebook, a tag, a search, ...) -- it loads its own
+-	// notes from the selected notebooks instead. `props.items` is used as a signal that the
++	// notes from the scoped/selected notebooks instead. `props.items` is used as a signal that the
+ 	// database notes may have changed (a note was added, edited, deleted, etc.) and the filtered
+ 	// list should be reloaded.
+ 	useAsyncEffect(async event => {
+-		if (!folderIds.length) {
++		if (scopeFolderIds === null) {
+ 			setFilteredNotes(null);
+ 			return;
+ 		}
+ 
++		if (!queryFolderIds.length) {
++			setFilteredNotes([]);
++			return;
++		}
++
+ 		const options = {
+ 			order: props.notesOrder,
+ 			uncompletedTodosOnTop: props.uncompletedTodosOnTop,
+ 			showCompletedTodos: props.showCompletedTodos,
+-			conditions: [`parent_id IN (${folderIds.map(() => '?').join(',')})`],
+-			conditionsParams: [...folderIds],
++			conditions: [`parent_id IN (${queryFolderIds.map(() => '?').join(',')})`],
++			conditionsParams: [...queryFolderIds],
+ 		};
+ 
+ 		const notes = await Note.previews(null, options);
+ 		if (!event.cancelled) setFilteredNotes(notes);
+-	}, [folderIds, props.notesOrder, props.uncompletedTodosOnTop, props.showCompletedTodos, props.items]);
++	}, [scopeFolderIds, queryFolderIds, props.notesOrder, props.uncompletedTodosOnTop, props.showCompletedTodos, props.items]);
+ 
+-	const items = useMemo(() => (folderIds.length ? (filteredNotes ?? []) : props.items), [folderIds, filteredNotes, props.items]);
++	const items = useMemo(() => (scopeFolderIds !== null ? (filteredNotes ?? []) : props.items), [scopeFolderIds, filteredNotes, props.items]);
+ 
+ 	const numColumns = Math.min(5, Math.max(1, props.tileColumns || 1));
+ 
+@@ -227,7 +256,7 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 			</ScrollView>
+ 		</View>;
+ 	} else {
+-		if (folderIds.length) {
++		if (scopeFolderIds !== null) {
+ 			return <View style={styles.root}>
+ 				{toolbar}
+ 				<Text style={styles.noItemMessage}>{_('There are currently no notes in the selected notebooks.')}</Text>
+@@ -261,6 +290,7 @@ const NoteTileList = connect((state: AppState) => {
+ 		notesSource: state.notesSource,
+ 		themeId: state.settings.theme,
+ 		noteSelectionEnabled: state.noteSelectionEnabled,
++		notesParentType: state.notesParentType,
+ 		selectedFolderId: state.selectedFolderId,
+ 		tileColumns: state.settings['notes.tileColumns'],
+ 		tileFolderIds: state.settings['notes.tileFolderIds'],
+diff --git a/packages/app-mobile/components/NoteTileToolbar.tsx b/packages/app-mobile/components/NoteTileToolbar.tsx
+index 4fb3d80..0f11258 100644
+--- a/packages/app-mobile/components/NoteTileToolbar.tsx
++++ b/packages/app-mobile/components/NoteTileToolbar.tsx
+@@ -3,17 +3,21 @@ import { useMemo, useState } from 'react';
+ import { connect } from 'react-redux';
+ import { Text, StyleSheet, TouchableHighlight, View, ViewStyle, TextStyle } from 'react-native';
+ import Setting from '@joplin/lib/models/Setting';
++import Folder from '@joplin/lib/models/Folder';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+ import { AppState } from '../utils/types';
+ import { _ } from '@joplin/lib/locale';
+ import IconButton from './IconButton';
+ import NoteTileFolderDialog from './NoteTileFolderDialog';
+ import { themeStyle } from './global-style';
++import { getScopeFolderIds, workingSetFromStoredValue } from '../utils/tileFolderSelection';
+ 
+ interface Props {
+ 	themeId: number;
+ 	folders: FolderEntity[];
+-	selectedFolderIds: string[];
++	notesParentType: string;
++	selectedFolderId: string|null;
++	tileFolderIds: string;
+ 	tileColumns: number;
+ 	onZoomIn: ()=> void;
+ 	onZoomOut: ()=> void;
+@@ -65,38 +69,50 @@ const useStyles = (themeId: number) => {
+ 	}, [themeId]);
+ };
+ 
+-const folderTitleById = (folders: FolderEntity[], id: string) => {
+-	return folders.find(f => f.id === id)?.title ?? '';
+-};
+-
+ const NoteTileToolbarComponent: React.FC<Props> = props => {
+ 	const styles = useStyles(props.themeId);
+ 	const [folderDialogVisible, setFolderDialogVisible] = useState(false);
+ 
++	// The notebook filter only applies when the sidebar is on a real notebook or "All notes" --
++	// for a tag, a search, or nothing selected, getScopeFolderIds returns null and the filter
++	// button is hidden (see NoteTileList, which then shows `state.notes` unfiltered).
++	const scopeFolderIds = useMemo(() => getScopeFolderIds(props.folders, props.notesParentType, props.selectedFolderId), [props.folders, props.notesParentType, props.selectedFolderId]);
++
+ 	const folderLabel = useMemo(() => {
+-		if (!props.selectedFolderIds.length) return _('All notebooks');
+-		if (props.selectedFolderIds.length === 1) return folderTitleById(props.folders, props.selectedFolderIds[0]) || _('1 notebook');
+-		return _('%d notebooks', props.selectedFolderIds.length);
+-	}, [props.selectedFolderIds, props.folders]);
++		if (scopeFolderIds === null) return '';
++
++		const scopeFolders = props.folders.filter(folder => scopeFolderIds.includes(folder.id));
++		const selectedIds = workingSetFromStoredValue(props.tileFolderIds, scopeFolders);
++
++		if (selectedIds.length < scopeFolderIds.length) return _('%d notebooks', selectedIds.length);
++		if (props.notesParentType === 'SmartFilter') return _('All notebooks');
++
++		const scopeFolder = props.folders.find(folder => folder.id === props.selectedFolderId);
++		return scopeFolder ? Folder.displayTitle(scopeFolder) : _('All notebooks');
++	}, [scopeFolderIds, props.folders, props.tileFolderIds, props.notesParentType, props.selectedFolderId]);
+ 
+ 	const onSwitchToListPress = () => {
+ 		Setting.setValue('notes.mobileLayout', 'list');
+ 	};
+ 
++	const folderButton = scopeFolderIds === null ? null : (
++		<TouchableHighlight onPress={() => setFolderDialogVisible(true)} accessibilityRole='button'>
++			<View style={styles.folderButton}>
++				<IconButton
++					iconName='fas fa-folder'
++					onPress={() => setFolderDialogVisible(true)}
++					description={_('Filter by notebook')}
++					iconStyle={styles.icon}
++					themeId={props.themeId}
++				/>
++				<Text style={styles.folderButtonLabel} numberOfLines={1}>{folderLabel}</Text>
++			</View>
++		</TouchableHighlight>
++	);
++
+ 	return (
+ 		<View style={styles.root}>
+-			<TouchableHighlight onPress={() => setFolderDialogVisible(true)} accessibilityRole='button'>
+-				<View style={styles.folderButton}>
+-					<IconButton
+-						iconName='fas fa-folder'
+-						onPress={() => setFolderDialogVisible(true)}
+-						description={_('Filter by notebook')}
+-						iconStyle={styles.icon}
+-						themeId={props.themeId}
+-					/>
+-					<Text style={styles.folderButtonLabel} numberOfLines={1}>{folderLabel}</Text>
+-				</View>
+-			</TouchableHighlight>
++			{folderButton}
+ 			<View style={styles.spacer}/>
+ 			<IconButton
+ 				iconName='fas fa-minus'
+@@ -120,7 +136,7 @@ const NoteTileToolbarComponent: React.FC<Props> = props => {
+ 				themeId={props.themeId}
+ 			/>
+ 			<NoteTileFolderDialog
+-				visible={folderDialogVisible}
++				visible={scopeFolderIds !== null && folderDialogVisible}
+ 				onClose={() => setFolderDialogVisible(false)}
+ 			/>
+ 		</View>
+@@ -128,11 +144,12 @@ const NoteTileToolbarComponent: React.FC<Props> = props => {
+ };
+ 
+ const NoteTileToolbar = connect((state: AppState) => {
+-	const raw = state.settings['notes.tileFolderIds'] as string;
+ 	return {
+ 		themeId: state.settings.theme,
+ 		folders: state.folders,
+-		selectedFolderIds: raw ? raw.split(',').filter(Boolean) : [],
++		notesParentType: state.notesParentType,
++		selectedFolderId: state.selectedFolderId,
++		tileFolderIds: (state.settings['notes.tileFolderIds'] as string) ?? '',
+ 		tileColumns: state.settings['notes.tileColumns'],
+ 	};
+ })(NoteTileToolbarComponent);
+diff --git a/packages/app-mobile/utils/tileFolderSelection.test.ts b/packages/app-mobile/utils/tileFolderSelection.test.ts
+index 80ba552..cdba574 100644
+--- a/packages/app-mobile/utils/tileFolderSelection.test.ts
++++ b/packages/app-mobile/utils/tileFolderSelection.test.ts
+@@ -3,6 +3,7 @@ import getTrashFolderId from '@joplin/lib/services/trash/getTrashFolderId';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+ import {
+ 	getFolderSelectionCounts,
++	getScopeFolderIds,
+ 	getVisibleFolders,
+ 	isAllSelected,
+ 	storedValueFromWorkingSet,
+@@ -62,6 +63,12 @@ describe('tileFolderSelection', () => {
+ 		expect(workingSetFromStoredValue('parent,child1,missing', folders).sort()).toEqual(['child1', 'parent']);
+ 	});
+ 
++	test('workingSetFromStoredValue falls back to the whole scope when no stored ID is in it', () => {
++		// e.g. a stored selection left over from a different sidebar selection (a different
++		// notebook, or "All notes") no longer overlaps the current scope at all.
++		expect(workingSetFromStoredValue('missing1,missing2', folders).sort()).toEqual(folders.map(f => f.id).sort());
++	});
++
+ 	test('storedValueFromWorkingSet stores an empty string when everything is selected', () => {
+ 		expect(storedValueFromWorkingSet(folders.map(f => f.id), folders)).toBe('');
+ 	});
+@@ -77,4 +84,28 @@ describe('tileFolderSelection', () => {
+ 	])('getFolderSelectionCounts reports how many of "parent" and its descendants are selected (%j)', (selected, expected) => {
+ 		expect(getFolderSelectionCounts('parent', selected, folders)).toEqual(expected);
+ 	});
++
++	test('getScopeFolderIds scopes to a selected notebook and its descendants', () => {
++		expect(getScopeFolderIds(folders, 'Folder', 'child1').sort()).toEqual(['child1', 'grandchild'].sort());
++		expect(getScopeFolderIds(folders, 'Folder', 'other')).toEqual(['other']);
++	});
++
++	test('getScopeFolderIds scopes to every visible notebook for "All notes"', () => {
++		expect(getScopeFolderIds(folders, 'SmartFilter', null).sort()).toEqual(folders.map(f => f.id).sort());
++	});
++
++	test.each([
++		['Folder', null],
++		['Folder', 'missing'],
++		['Tag', 'parent'],
++		['Search', null],
++		[null, null],
++	])('getScopeFolderIds returns null when the notebook filter does not apply (%s, %s)', (notesParentType, selectedFolderId) => {
++		expect(getScopeFolderIds(folders, notesParentType, selectedFolderId)).toBeNull();
++	});
++
++	test('getScopeFolderIds treats a trashed/conflict selectedFolderId as not a real notebook', () => {
++		const withExtras = [...folders, makeFolder(Folder.conflictFolderId(), '')];
++		expect(getScopeFolderIds(withExtras, 'Folder', Folder.conflictFolderId())).toBeNull();
++	});
+ });
+diff --git a/packages/app-mobile/utils/tileFolderSelection.ts b/packages/app-mobile/utils/tileFolderSelection.ts
+index a977dcc..3a5157f 100644
+--- a/packages/app-mobile/utils/tileFolderSelection.ts
++++ b/packages/app-mobile/utils/tileFolderSelection.ts
+@@ -60,13 +60,18 @@ export const isAllSelected = (selectedIds: string[], folders: FolderEntity[]) =>
+ };
+ 
+ // Converts the stored setting value ('' or a comma-separated ID list) to the set of folder IDs
+-// the dialog should start with selected. An empty stored value means "all", so it expands to
+-// every currently-visible folder. IDs that no longer refer to a visible folder are dropped.
++// that should start selected, within `folders` -- the current filter scope (either the sidebar's
++// selected notebook and its descendants, or every visible notebook when the sidebar is on "All
++// notes"; see getScopeFolderIds). An empty stored value means "the whole scope", so it expands to
++// every folder in `folders`. IDs that no longer refer to a folder in `folders` are dropped, and if
++// none of the stored IDs are in `folders` at all (e.g. the stored value is left over from a
++// different sidebar selection), the whole scope is used, same as an empty stored value.
+ export const workingSetFromStoredValue = (stored: string, folders: FolderEntity[]) => {
+ 	const visibleIds = getVisibleFolders(folders).map(folder => folder.id);
+ 	if (!stored) return visibleIds;
+ 	const storedIds = new Set(stored.split(',').filter(Boolean));
+-	return visibleIds.filter(id => storedIds.has(id));
++	const filtered = visibleIds.filter(id => storedIds.has(id));
++	return filtered.length ? filtered : visibleIds;
+ };
+ 
+ // Converts a working selection back to the stored setting format, preserving the "all" (empty
+@@ -75,6 +80,29 @@ export const storedValueFromWorkingSet = (selectedIds: string[], folders: Folder
+ 	return isAllSelected(selectedIds, folders) ? '' : selectedIds.join(',');
+ };
+ 
++// The scope of the notebook filter, driven by the sidebar (drawer) selection: which folder IDs the
++// filter dialog and the tile list's query are allowed to work with. Returns null when the sidebar
++// selection is one the notebook filter doesn't apply to (a tag, a search, or nothing selected) --
++// in that case the tile list should show `state.notes` unfiltered and the filter button should be
++// hidden.
++//  - Sidebar on a real notebook ("Folder" with a `selectedFolderId` that is a visible folder):
++//    scope is that notebook and all of its descendants.
++//  - Sidebar on "All notes" ("SmartFilter" -- the only smart filter on mobile): scope is every
++//    visible notebook.
++export const getScopeFolderIds = (folders: FolderEntity[], notesParentType: string, selectedFolderId: string): string[]|null => {
++	if (notesParentType === 'SmartFilter') {
++		return getVisibleFolders(folders).map(folder => folder.id);
++	}
++
++	if (notesParentType === 'Folder' && selectedFolderId) {
++		const visibleFolders = getVisibleFolders(folders);
++		if (!visibleFolders.some(folder => folder.id === selectedFolderId)) return null;
++		return [selectedFolderId, ...getDescendantFolderIds(selectedFolderId, visibleFolders)];
++	}
++
++	return null;
++};
++
+ // How many of `folderId` and its descendants are selected, out of how many there are in total.
+ // Used to show a folder as fully checked, unchecked, or partially selected (as an "(n/m)" count,
+ // since the checkbox in use has no indeterminate state).

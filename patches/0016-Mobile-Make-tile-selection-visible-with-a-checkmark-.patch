@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Mon, 14 Sep 2026 06:35:27 +0000
+Subject: [PATCH 16/17] Mobile: Make tile selection visible with a
+ checkmark/checkbox overlay
+
+Long-pressing a tile to enter selection mode, and tapping further
+tiles to add them, already worked -- the selection state just wasn't
+clearly visible on the tile itself, only a 1px vs 2px border change
+that was easy to miss (and, in dark themes, low-contrast).
+
+Add a checkbox overlay in the top-right corner of each tile while
+selection mode is active -- a filled checkmark for selected tiles, an
+outline checkbox otherwise -- on a themed disc so it stays legible
+over note preview images. Use theme.color4 (the app's accent colour)
+rather than theme.selectedColor for the border and checkmark, since
+selectedColor is a low-contrast grey in the dark/OLED themes, and tint
+a selected tile's background slightly.
+
+diff --git a/packages/app-mobile/components/NoteTile.tsx b/packages/app-mobile/components/NoteTile.tsx
+index c555ab4..ca068bc 100644
+--- a/packages/app-mobile/components/NoteTile.tsx
++++ b/packages/app-mobile/components/NoteTile.tsx
+@@ -45,16 +45,39 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 			padding: gap / 2,
+ 		};
+ 
++		// theme.selectedColor is a dark, low-contrast grey in the dark/OLED themes, so it isn't
++		// usable as a selection accent there -- theme.color4 (the accent colour) stays legible
++		// against both light and dark tile backgrounds.
+ 		const card: ViewStyle = {
+ 			flexGrow: 1,
+-			backgroundColor: theme.backgroundColor,
++			backgroundColor: isSelected ? theme.backgroundColorHover3 : theme.backgroundColor,
+ 			borderRadius: 8,
+ 			borderWidth: isSelected ? 2 : 1,
+-			borderColor: isSelected ? theme.selectedColor : theme.dividerColor,
++			borderColor: isSelected ? theme.color4 : theme.dividerColor,
+ 			overflow: 'hidden',
+ 			paddingBottom: 8,
+ 		};
+ 
++		const selectionIndicator: ViewStyle = {
++			position: 'absolute',
++			top: 6,
++			right: 6,
++			zIndex: 1,
++			width: 28,
++			height: 28,
++			borderRadius: 14,
++			backgroundColor: theme.backgroundColor,
++			borderWidth: 2,
++			borderColor: theme.color4,
++			alignItems: 'center',
++			justifyContent: 'center',
++		};
++
++		const selectionIndicatorIcon: TextStyle = {
++			fontSize: 18,
++			color: theme.color4,
++		};
++
+ 		const image: ImageStyle = {
+ 			width: '100%',
+ 			height: 96 * scale,
+@@ -101,6 +124,8 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 		return StyleSheet.create({
+ 			outer,
+ 			card,
++			selectionIndicator,
++			selectionIndicatorIcon,
+ 			image,
+ 			content,
+ 			titleRow,
+@@ -249,6 +274,16 @@ const NoteTileComponent: React.FC<Props> = memo(props => {
+ 		...onLongPressProps,
+ 	};
+ 
++	const selectionIndicator = props.noteSelectionEnabled ? (
++		<View style={styles.selectionIndicator} testID={isSelected ? 'note-tile-selected-icon' : 'note-tile-unselected-icon'}>
++			<Icon
++				name={isSelected ? 'material checkbox-marked' : 'material checkbox-blank-outline'}
++				style={styles.selectionIndicatorIcon}
++				accessibilityLabel={null}
++			/>
++		</View>
++	) : null;
++
+ 	return (
+ 		<View style={[styles.outer, opacityStyle]}>
+ 			<MultiTouchableOpacity
+@@ -256,6 +291,7 @@ const NoteTileComponent: React.FC<Props> = memo(props => {
+ 				onPress={onPress}
+ 				beforePressable={todoCheckbox ? <View style={styles.checkboxRow}>{todoCheckbox}</View> : null}
+ 			>
++				{selectionIndicator}
+ 				{imageUri ? <Image source={{ uri: imageUri }} style={styles.image} resizeMode='cover' /> : null}
+ 				<View style={styles.content}>
+ 					<View style={styles.titleRow}>
+diff --git a/packages/app-mobile/components/NoteTileList.test.tsx b/packages/app-mobile/components/NoteTileList.test.tsx
+index 835ee6e..2de5767 100644
+--- a/packages/app-mobile/components/NoteTileList.test.tsx
++++ b/packages/app-mobile/components/NoteTileList.test.tsx
+@@ -89,6 +89,32 @@ describe('NoteTileList', () => {
+ 		});
+ 	});
+ 
++	test('should show a checkmark on a selected tile', async () => {
++		const folder = await Folder.save({ title: 'Folder' });
++		const note1 = await Note.save({ title: 'First note', parent_id: folder.id });
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder] });
++		testStore.dispatch({
++			type: 'NOTE_UPDATE_ALL',
++			notes: [note1],
++			notesSource: 'test',
++		});
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('First note')).toBeTruthy();
++		});
++
++		expect(screen.queryByTestId('note-tile-selected-icon')).toBeFalsy();
++
++		testStore.dispatch({ type: 'NOTE_SELECTION_START', id: note1.id });
++
++		await waitFor(() => {
++			expect(screen.getByTestId('note-tile-selected-icon')).toBeTruthy();
++		});
++	});
++
+ 	test('should show a message when the selected folder has no notes', async () => {
+ 		const folder = await Folder.save({ title: 'Empty folder' });
+ 
