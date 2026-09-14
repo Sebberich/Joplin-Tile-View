@@ -1,7 +1,8 @@
 # Baut das Android-APK (Release-Variante, mit Debug-Keystore signiert) aus dem
 # Submodule joplin/ plus patches/. Orientiert sich an joplin/.github/workflows/build-android.yml.
 # Läuft bei jedem Push und manuell (workflow_dispatch). Das APK liegt danach als
-# Artefakt "joplin-tile-view-apk" am Workflow-Lauf.
+# Artefakt "joplin-tile-view-apk" am Workflow-Lauf und als GitHub-Release
+# "v<Joplin-Version>-tiles.<Build-Nr>" (Quelle für Obtainium).
 name: android-apk
 
 on:
@@ -15,6 +16,9 @@ on:
 concurrency:
   group: android-apk-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -88,6 +92,8 @@ jobs:
           retry yarn install
 
       - name: Android-APK bauen
+        env:
+          TILE_VIEW_BUILD_NUMBER: ${{ github.run_number }}
         run: scripts/build-android.sh release
 
       - name: 16-KB-Alignment prüfen
@@ -103,3 +109,17 @@ jobs:
           path: joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: GitHub-Release anlegen (Quelle für Obtainium)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
+          BASE="$(sed -n 's/.*versionName tileViewBuildNumber > 0 ? "\([0-9.]*\)-tiles.*/\1/p' joplin/packages/app-mobile/android/app/build.gradle)"
+          VERSION="${BASE}-tiles.${{ github.run_number }}"
+          cp "$APK" "joplin-tiles-${VERSION}.apk"
+          gh release create "v${VERSION}" "joplin-tiles-${VERSION}.apk" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Joplin Tiles ${VERSION}" \
+            --notes "Build #${{ github.run_number }} aus ${GITHUB_SHA::7}. Signiert mit dem Debug-Keystore, installierbar als Update über vorherige Builds."

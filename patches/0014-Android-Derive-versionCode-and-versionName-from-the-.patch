@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Mon, 14 Sep 2026 04:56:56 +0000
+Subject: [PATCH 14/14] Android: Derive versionCode and versionName from the CI
+ build number
+
+Passing -PTILE_VIEW_BUILD_NUMBER=N yields versionCode 2097819+N and
+versionName 3.7.10-tiles.N so that each CI build can be installed as an
+update over the previous one.
+
+diff --git a/packages/app-mobile/android/app/build.gradle b/packages/app-mobile/android/app/build.gradle
+index 6e82589..97f0374 100644
+--- a/packages/app-mobile/android/app/build.gradle
++++ b/packages/app-mobile/android/app/build.gradle
+@@ -83,8 +83,11 @@ android {
+         applicationId "net.cozic.joplin.tileview"
+         minSdkVersion rootProject.ext.minSdkVersion
+         targetSdkVersion rootProject.ext.targetSdkVersion
+-		versionCode 2097819
+-		versionName "3.7.10"
++		// The tile view fork appends the CI build number so that every build has a higher
++		// versionCode and a distinct versionName (needed for in-place updates, e.g. via Obtainium).
++		def tileViewBuildNumber = (findProperty('TILE_VIEW_BUILD_NUMBER') ?: '0').toInteger()
++		versionCode 2097819 + tileViewBuildNumber
++		versionName tileViewBuildNumber > 0 ? "3.7.10-tiles.${tileViewBuildNumber}" : "3.7.10"
+ 
+         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
+ 

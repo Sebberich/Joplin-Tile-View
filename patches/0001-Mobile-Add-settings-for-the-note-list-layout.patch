@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebastian Riempp <sebastian.riempp@gmx.de>
 Date: Sun, 13 Sep 2026 14:35:00 +0000
-Subject: [PATCH 01/13] Mobile: Add settings for the note list layout
+Subject: [PATCH 01/14] Mobile: Add settings for the note list layout
 
 Adds `notes.mobileLayout` (list or tiles, default tiles) and
 `notes.tileColumns` so the mobile note list can be switched between the

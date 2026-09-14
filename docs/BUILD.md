@@ -84,6 +84,26 @@ dauert erfahrungsgemäß 40–80 Minuten, der Großteil ist die NDK-Kompilierung
 - Die App-Version ist die des gepinnten Upstream-Commits; Joplin-Sync mit anderen Geräten
   funktioniert ganz normal.
 
+## Updates mit Obtainium
+
+Jeder Push (außer reinen Doku-Änderungen) erzeugt neben dem Workflow-Artefakt ein
+GitHub-Release `v<Joplin-Version>-tiles.<Build-Nr>` mit der APK als Asset. Die Build-Nummer
+(`github.run_number`) fließt über `-PTILE_VIEW_BUILD_NUMBER` in `versionCode`
+(`2097819 + N`) und `versionName` (`3.7.10-tiles.N`), damit Android jeden neuen Build als
+Update akzeptiert und Obtainium die Version erkennt.
+
+Einrichtung in Obtainium:
+
+1. „App hinzufügen“, Quelle: `https://github.com/Sebberich/Joplin-Tile-View`.
+2. Obtainium erkennt GitHub-Releases automatisch; Vorabversionen müssen nicht aktiviert werden.
+3. Erste Installation über Obtainium durchführen. Ein zuvor manuell installiertes APK aus
+   einem Workflow-Artefakt hat dieselbe Signatur (Debug-Keystore), Obtainium kann direkt
+   darüber aktualisieren. App-Daten (Sync-Konfiguration, Notizen) bleiben erhalten, solange
+   die Signatur gleich bleibt.
+
+Hinweis: Beim Nachziehen der Joplin-Version (nächster Abschnitt) steigt die Basis von
+`versionCode`, die Build-Nummer wächst weiter; die Version bleibt damit monoton.
+
 ## Joplin-Version nachziehen
 
 ```bash
