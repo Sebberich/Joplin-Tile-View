@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–8 umgesetzt (Patches 0007–0013, Release 3.7.10-tiles.10). Issues 9–10 gesammelt für den nächsten Build.
+Stand: Issues 1–8 umgesetzt (Patches 0007–0013, Release 3.7.10-tiles.10). Issues 9–10 in Umsetzung, Issue 11 gesammelt.
 
 | Nr. | Beobachtung | Erwartung | Hinweis für die Umsetzung |
 |---|---|---|---|
@@ -14,6 +14,7 @@ Stand: Issues 1–8 umgesetzt (Patches 0007–0013, Release 3.7.10-tiles.10). Is
 | 8 | Über-/Unterordner sind in der Auswahl nicht als Hierarchie erkennbar; Haken des Überordners nimmt Unterordner nicht mit. | Unterordner eingerückt unter dem Überordner; Haken am Überordner (de)selektiert alle Unterordner; teilweise Auswahl ggf. als Zwischenzustand. | Code hat bereits Einrückung (20 px je Ebene) und Eltern/Kind-Regel in `toggleFolderSelection`; auf dem Gerät offenbar nicht wirksam. Prüfen: Baumaufbau über `Folder.buildTree` mit gefilterter Liste (Issue 6 kann Elternbezug kappen), Einrückung deutlicher (Linie/Chevron), Zwischenzustand. Zusammen mit Issue 7 als eine Auswahl-Logik umsetzen. |
 | 9 | Notizbuch-Auswahl sieht richtig aus, reagiert aber nicht auf die Auswahl im Seitenmenü (Drawer). | Das Seitenmenü bestimmt den Rahmen: Wählt man seitlich ein Notizbuch, bietet der Dialog nur dieses Notizbuch samt Unterordnern an (alle vorausgewählt), einzelne lassen sich abwählen. „Alle Notizen“ im Seitenmenü bietet alle Notizbücher an. Der Dialog heißt „Filter“. | Ist `notes.tileFolderIds` gesetzt, lädt NoteTileList eigene Notizen per `Note.previews` und ignoriert `state.selectedFolderId`/`notesParentType`. Fix: Sichtbare Notizbücher im Dialog = Auswahl des Seitenmenüs (Ordner + Nachkommen) bzw. alle bei „Alle Notizen“; bei Wechsel im Seitenmenü Auswahl auf diesen Rahmen zurücksetzen; Tag/Suche → Filter ignorieren und `state.notes` zeigen. Dialogtitel „Filter“ (`_('Filter')`), Kopfzeile entsprechend. |
 | 10 | Langes Halten auf einer Kachel wählt die Notiz aus (in der oberen Leiste sichtbar), die Kachel selbst zeigt das nicht, weitere Kacheln lassen sich nicht dazuwählen. | Ausgewählte Kachel mit Haken und farbigem Rahmen; im Auswahlmodus Tippen auf weitere Kacheln wählt sie dazu/ab, wie in der Listenansicht. | NoteTile hat Stile für `isSelected` (Rahmen `selectedColor`, Checkbox-Zeile); prüfen, ob `isSelected` aus `state.selectedNoteIds` und `noteSelectionEnabled` korrekt durchgereicht wird (seit Masonry-Umbau ggf. verloren) und ob `onPress` im Auswahlmodus `NOTE_SELECTION_TOGGLE` dispatcht statt die Notiz zu öffnen. Vergleich mit NoteItem.tsx. |
+| 11 | Vorschautext wiederholt den Titel: Notizen, deren Text mit einer Überschrift gleich dem Titel beginnt, zeigen den Titel in der Kachel doppelt („1. Welcome to Joplin!“ / „Welcome to Joplin!“). | Erste Zeile der Vorschau entfällt, wenn sie (nach Entfernen des Markups) dem Titel entspricht oder in ihm enthalten ist. | In `utils/tilePreviewText.ts` nach dem Strippen die erste nichtleere Zeile mit dem Titel vergleichen (Groß-/Kleinschreibung, führende Nummerierung „1. “ ignorieren) und ggf. verwerfen. |
 
 ## Ideen (Machbarkeit bewertet, nicht umgesetzt)
 
