@@ -2,6 +2,10 @@
 
 Stand: Issues 1–10 umgesetzt (Patches 0007–0017, Release 3.7.10-tiles.13). Issue 11 gestrichen, Issues 12–13 offen.
 
+**Freigabe für den Nachtlauf:** Der nächtliche Wartungslauf (siehe [docs/ROUTINE.md](ROUTINE.md)) setzt nur
+Issues um, deren Zeile in der Spalte „Nr." mit `[auto]` markiert ist – z. B. `| 12 [auto] |`. Alles ohne
+Marker bleibt liegen, bis es hier freigegeben oder von Hand umgesetzt wird.
+
 | Nr. | Beobachtung | Erwartung | Hinweis für die Umsetzung |
 |---|---|---|---|
 | 1 | Kacheln sitzen in einem festen Raster, alle Kacheln einer Zeile gleich hoch. | Masonry wie im Plugin: Kacheln haben ihre natürliche Höhe (Bild, Textlänge), Spalten füllen sich unabhängig. | Plugin verteilt Notizen zeilenweise auf N Spalten-Container (`notes[i % ncols]`); in RN: N vertikale Views in einer horizontalen Row innerhalb einer ScrollView, oder FlatList mit `numColumns` ersetzen. Auswahlmodus, Pinch und Leerzustand müssen erhalten bleiben. |
