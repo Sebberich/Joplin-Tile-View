@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–10 umgesetzt (Patches 0007–0017). Issue 11 gestrichen. Letztes Release: 3.7.10-tiles.10; Issues 9–10 kommen mit dem nächsten Build.
+Stand: Issues 1–10 umgesetzt (Patches 0007–0017, Release 3.7.10-tiles.13). Issue 11 gestrichen, Issues 12–13 offen.
 
 | Nr. | Beobachtung | Erwartung | Hinweis für die Umsetzung |
 |---|---|---|---|
@@ -15,6 +15,8 @@ Stand: Issues 1–10 umgesetzt (Patches 0007–0017). Issue 11 gestrichen. Letzt
 | 9 | Notizbuch-Auswahl sieht richtig aus, reagiert aber nicht auf die Auswahl im Seitenmenü (Drawer). | Das Seitenmenü bestimmt den Rahmen: Wählt man seitlich ein Notizbuch, bietet der Dialog nur dieses Notizbuch samt Unterordnern an (alle vorausgewählt), einzelne lassen sich abwählen. „Alle Notizen“ im Seitenmenü bietet alle Notizbücher an. Der Dialog heißt „Filter“. | Ist `notes.tileFolderIds` gesetzt, lädt NoteTileList eigene Notizen per `Note.previews` und ignoriert `state.selectedFolderId`/`notesParentType`. Fix: Sichtbare Notizbücher im Dialog = Auswahl des Seitenmenüs (Ordner + Nachkommen) bzw. alle bei „Alle Notizen“; bei Wechsel im Seitenmenü Auswahl auf diesen Rahmen zurücksetzen; Tag/Suche → Filter ignorieren und `state.notes` zeigen. Dialogtitel „Filter“ (`_('Filter')`), Kopfzeile entsprechend. |
 | 10 | Langes Halten auf einer Kachel wählt die Notiz aus (in der oberen Leiste sichtbar), die Kachel selbst zeigt das nicht, weitere Kacheln lassen sich nicht dazuwählen. | Ausgewählte Kachel mit Haken und farbigem Rahmen; im Auswahlmodus Tippen auf weitere Kacheln wählt sie dazu/ab, wie in der Listenansicht. | NoteTile hat Stile für `isSelected` (Rahmen `selectedColor`, Checkbox-Zeile); prüfen, ob `isSelected` aus `state.selectedNoteIds` und `noteSelectionEnabled` korrekt durchgereicht wird (seit Masonry-Umbau ggf. verloren) und ob `onPress` im Auswahlmodus `NOTE_SELECTION_TOGGLE` dispatcht statt die Notiz zu öffnen. Vergleich mit NoteItem.tsx. |
 | 11 | ~~Vorschautext wiederholt den Titel.~~ Gestrichen: betrifft nur die mitgelieferten Beispielnotizen, die so aufgebaut sind (Überschrift im Text gleich dem Titel). | – | Kein Fix. |
+| 12 | Die neuen Strings der Kachelansicht („Note list layout“, „Tile columns“, „All notebooks“, „Filter“, „Switch to tile view“ …) erscheinen auch dann auf Englisch, wenn die App auf Deutsch läuft. Der Rest der Oberfläche ist übersetzt. | Die Kachelansicht spricht die Sprache der App. | Die Strings sind korrekt englisch und durch `_()` geführt, Joplins Quellsprache ist Englisch – es fehlen nur die Übersetzungen. Deutsche Einträge in `joplin/packages/tools/locales/de_DE.po` ergänzen (msgid = englischer String) und `.po` per Joplin-Toolchain neu bauen. Betrifft nur nicht-englische Oberflächen, in Englisch ist alles korrekt. |
+| 13 | Projektdoku ist Deutsch (README, docs/, Release-Notes), Code und Commit-Nachrichten sind Englisch. | Einheitliche Sprache für alles, was öffentlich sichtbar ist. | Vorschlag: README.md, docs/BUILD.md, Disclaimer und Release-Notes auf Englisch (öffentliches Repo, spätere Upstream-PR); docs/ISSUES.md und docs/UEBERGABE.md als interne Arbeitsnotizen deutsch lassen. Umfang vor der Umsetzung bestätigen. |
 
 ## Ideen (Machbarkeit bewertet, nicht umgesetzt)
 
