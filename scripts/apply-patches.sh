@@ -6,7 +6,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/joplin"
 
-BASE="$(git rev-parse HEAD)"
+# Gepinnter Upstream-Commit aus dem Index des Superprojekts – nicht der aktuelle
+# HEAD des Submodules, der schon auf tile-view stehen kann (sonst würden die
+# Patches auf einen bereits gepatchten Stand angewendet).
+BASE="$(git -C "$ROOT" ls-files -s -- joplin | awk '{print $2}')"
+if [ -z "$BASE" ]; then
+	echo "Konnte gepinnten Submodule-Commit nicht ermitteln." >&2
+	exit 1
+fi
 if git rev-parse --verify --quiet tile-view >/dev/null; then
 	echo "Branch tile-view existiert, wird auf $BASE neu aufgesetzt (alte Commits bleiben als Reflog erhalten)."
 fi
