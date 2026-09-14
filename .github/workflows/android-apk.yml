@@ -147,7 +147,9 @@ jobs:
           BASE="$(sed -n 's/.*versionName tileViewBuildNumber > 0 ? "\([0-9.]*\)-tiles.*/\1/p' joplin/packages/app-mobile/android/app/build.gradle)"
           VERSION="${BASE}-tiles.${{ github.run_number }}"
           cp "$APK" "joplin-tiles-${VERSION}.apk"
+          DISCLAIMER="Vibe-coded: Der Code stammt überwiegend von einem KI-Assistenten (Claude Code) und ist nicht Zeile für Zeile von Hand geprüft. Privates Bastelprojekt in der Testphase, keine Garantie und keine Haftung. Vor der Benutzung mit echten Notizen ein Backup anlegen (JEX-Export)."
+          NOTES="$(printf '%s\n\n%s\n' "Build #${{ github.run_number }} aus ${GITHUB_SHA::7}. Signatur: ${SIG}. Installierbar als Update über Builds mit gleicher Signatur." "⚠️ **${DISCLAIMER}**")"
           gh release create "v${VERSION}" "joplin-tiles-${VERSION}.apk" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Joplin Tiles Beta ${VERSION}" \
-            --notes "Build #${{ github.run_number }} aus ${GITHUB_SHA::7}. Signatur: ${SIG}. Installierbar als Update über Builds mit gleicher Signatur."
+            --notes "$NOTES"
