@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebastian Riempp <sebastian.riempp@gmx.de>
 Date: Sun, 13 Sep 2026 14:49:08 +0000
-Subject: [PATCH 05/14] Mobile: Add pinch zoom and font scale to tile view
+Subject: [PATCH 05/15] Mobile: Add pinch zoom and font scale to tile view
 
 Adds notes.tileFontScale (60-160%) and raises notes.tileColumns' maximum
 to 5. The "smaller"/"larger" toolbar buttons now follow the earlier

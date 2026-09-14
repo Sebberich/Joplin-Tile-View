@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tile-view <tile-view@localhost>
 Date: Sun, 13 Sep 2026 20:07:08 +0000
-Subject: [PATCH 11/14] Mobile: Preserve note structure in tile preview text
+Subject: [PATCH 11/15] Mobile: Preserve note structure in tile preview text
 
 
 diff --git a/.gitignore b/.gitignore

@@ -96,13 +96,39 @@ Einrichtung in Obtainium:
 
 1. „App hinzufügen“, Quelle: `https://github.com/Sebberich/Joplin-Tile-View`.
 2. Obtainium erkennt GitHub-Releases automatisch; Vorabversionen müssen nicht aktiviert werden.
-3. Erste Installation über Obtainium durchführen. Ein zuvor manuell installiertes APK aus
-   einem Workflow-Artefakt hat dieselbe Signatur (Debug-Keystore), Obtainium kann direkt
-   darüber aktualisieren. App-Daten (Sync-Konfiguration, Notizen) bleiben erhalten, solange
-   die Signatur gleich bleibt.
+3. Erste Installation über Obtainium durchführen. Zuvor manuell installierte APKs aus
+   Workflow-Artefakten sind mit dem Debug-Keystore signiert und müssen vorher deinstalliert
+   werden. Ab dem ersten Release bleibt die Signatur (eigener Keystore) konstant, App-Daten
+   (Sync-Konfiguration, Notizen) bleiben bei Updates erhalten.
 
 Hinweis: Beim Nachziehen der Joplin-Version (nächster Abschnitt) steigt die Basis von
 `versionCode`, die Build-Nummer wächst weiter; die Version bleibt damit monoton.
+
+## Eigener Keystore (Signatur)
+
+Der Workflow signiert mit einem eigenen Keystore aus den Repo-Secrets. Fehlen die Secrets,
+baut er mit dem Debug-Keystore und legt **kein** Release an (nur das Artefakt).
+
+Einmalig lokal erzeugen (`keytool` liegt bei Android Studio unter `jbr/bin`):
+
+```
+keytool -genkeypair -v -keystore joplin-tiles.keystore -alias joplintiles \
+  -keyalg RSA -keysize 2048 -validity 10000
+base64 -w0 joplin-tiles.keystore > joplin-tiles.keystore.b64
+```
+
+Repo-Secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Inhalt |
+|---|---|
+| `TILES_KEYSTORE_BASE64` | Inhalt von `joplin-tiles.keystore.b64` |
+| `TILES_KEYSTORE_PASSWORD` | Keystore-Passwort |
+| `TILES_KEY_ALIAS` | `joplintiles` (bzw. der gewählte Alias) |
+| `TILES_KEY_PASSWORD` | Key-Passwort (bei `keytool` ab JDK 9 gleich dem Keystore-Passwort) |
+
+Keystore und Passwörter sicher aufbewahren: geht der Keystore verloren, sind alle künftigen
+Builds wieder Neuinstallationen. Beim Wechsel vom Debug- auf den eigenen Keystore die App
+einmal deinstallieren und aus dem ersten Release neu installieren.
 
 ## Joplin-Version nachziehen
 

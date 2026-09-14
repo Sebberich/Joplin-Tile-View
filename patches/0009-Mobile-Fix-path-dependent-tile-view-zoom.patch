@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tile-view <tile-view@localhost>
 Date: Sun, 13 Sep 2026 20:03:04 +0000
-Subject: [PATCH 09/14] Mobile: Fix path-dependent tile view zoom
+Subject: [PATCH 09/15] Mobile: Fix path-dependent tile view zoom
 
 
 diff --git a/.gitignore b/.gitignore

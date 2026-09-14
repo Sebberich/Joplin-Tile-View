@@ -1,0 +1,17 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tile-view <tile-view@localhost>
+Date: Mon, 14 Sep 2026 05:03:21 +0000
+Subject: [PATCH 15/15] Android: Name the app Joplin Tiles Beta while in the
+ test phase
+
+
+diff --git a/packages/app-mobile/android/app/src/main/res/values/strings.xml b/packages/app-mobile/android/app/src/main/res/values/strings.xml
+index 86e797b..40a25f0 100644
+--- a/packages/app-mobile/android/app/src/main/res/values/strings.xml
++++ b/packages/app-mobile/android/app/src/main/res/values/strings.xml
+@@ -1,4 +1,4 @@
+ <resources>
+-    <string name="app_name">Joplin Tiles</string>
++    <string name="app_name">Joplin Tiles Beta</string>
+     <string name="default_notification_channel_id">net.cozic.joplin.notification</string>
+ </resources>
