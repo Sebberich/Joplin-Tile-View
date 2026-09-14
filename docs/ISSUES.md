@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–8 umgesetzt (Patches 0007–0013). Issues 6–8 im CI-Lauf #7.
+Stand: Issues 1–8 umgesetzt (Patches 0007–0013, Release 3.7.10-tiles.10). Issue 9 gesammelt für den nächsten Build.
 
 | Nr. | Beobachtung | Erwartung | Hinweis für die Umsetzung |
 |---|---|---|---|
@@ -12,6 +12,7 @@ Stand: Issues 1–8 umgesetzt (Patches 0007–0013). Issues 6–8 im CI-Lauf #7.
 | 6 | Notizbücher im Papierkorb erscheinen bei „Alle Notizen“ und in der Notizbuch-Auswahl. | Gelöschte Notizbücher und Notizen sind standardmäßig ausgeschlossen. | Dialog baut den Baum aus `state.folders` ohne Filter auf `deleted_time`; die Filterabfrage in NoteTileList (`parent_id IN (...)`) ergänzt kein `deleted_time = 0`. Beides filtern; Papierkorb-Ordner (`Folder.trashFolderId`) und Konflikt-Ordner ausblenden. |
 | 7 | Bei „Alle Notizbücher“ sind die einzelnen Notizbücher nicht angehakt, einzelnes Abwählen ist so nicht möglich. | „Alle“ = alle Häkchen gesetzt; ein Haken entfernen wählt genau dieses Notizbuch (mit Unterordnern) ab. | Aktuell bedeutet leere Auswahl „alle“ (`checked={!selectedFolderIds.length}`). Umstellen: Auswahl-Modell explizit; „Alle“ setzt die Liste auf alle sichtbaren IDs; Anzeige der Haken aus der Liste; „Alle“ ist angehakt, wenn alle enthalten sind. |
 | 8 | Über-/Unterordner sind in der Auswahl nicht als Hierarchie erkennbar; Haken des Überordners nimmt Unterordner nicht mit. | Unterordner eingerückt unter dem Überordner; Haken am Überordner (de)selektiert alle Unterordner; teilweise Auswahl ggf. als Zwischenzustand. | Code hat bereits Einrückung (20 px je Ebene) und Eltern/Kind-Regel in `toggleFolderSelection`; auf dem Gerät offenbar nicht wirksam. Prüfen: Baumaufbau über `Folder.buildTree` mit gefilterter Liste (Issue 6 kann Elternbezug kappen), Einrückung deutlicher (Linie/Chevron), Zwischenzustand. Zusammen mit Issue 7 als eine Auswahl-Logik umsetzen. |
+| 9 | Notizbuch-Auswahl sieht richtig aus, reagiert aber nicht auf die Auswahl im Seitenmenü (Drawer). | Wählt man seitlich ein Notizbuch, zeigt die Kachelansicht dieses Notizbuch (mit Unterordnern) und der Auswahl-Dialog spiegelt das wider; „Alle Notizen“ im Seitenmenü setzt die Auswahl zurück. | Ist `notes.tileFolderIds` gesetzt, lädt NoteTileList eigene Notizen per `Note.previews` und ignoriert `state.notes`/`state.selectedFolderId`/`notesParentType`. Fix: Auf Wechsel von `selectedFolderId`/`notesParentType` reagieren: Notizbuch gewählt → Auswahl auf dieses Notizbuch samt Nachkommen setzen; „Alle Notizen“ → Auswahl leeren; Tag/Suche → Filter ignorieren und `state.notes` zeigen. Kopfzeile entsprechend. |
 
 ## Ideen (Machbarkeit bewertet, nicht umgesetzt)
 
