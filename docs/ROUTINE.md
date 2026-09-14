@@ -8,14 +8,16 @@ was freigegeben ist, und löst über den Push den Build samt Release aus.
 
 | Feld | Wert |
 |---|---|
-| Modell | Sonnet 5 (`claude-sonnet-5`) |
+| Modell | Opus 5 (`claude-opus-5`) |
 | Zeitplan | täglich 01:00 Europe/Berlin. Falls die Oberfläche Cron in UTC verlangt: `0 23 * * *` (Sommerzeit) bzw. `0 0 * * *` (Winterzeit) |
 | Session | neue Session je Lauf, Repository `Sebberich/Joplin-Tile-View` |
-| Benachrichtigung | Push an, damit gemeldete Blocker nicht untergehen |
+| Benachrichtigung | E-Mail an (Bericht jede Nacht), Push aus – der Lauf schickt sich selbst eine Push-Nachricht, wenn etwas deine Entscheidung braucht |
 
-Warum Sonnet und nicht Opus: Die Arbeit ist überwiegend mechanisch (Patches neu aufsetzen, Tests
-laufen lassen, Build beobachten). Der Prompt weist den Lauf an, bei echten Konflikten stehen zu
-bleiben und zu berichten, statt zu raten – genau dann eskalierst du von Hand auf Opus.
+Warum Opus und nicht Sonnet: Die riskanten Momente sind nicht die mechanischen, sondern die
+Entscheidungen „ist dieser Konflikt noch mechanisch oder schon inhaltlich?" und „ist dieses Issue
+eindeutig genug?". Dort muss der Lauf aufhören wollen, statt sich durchzuwursteln. Die
+mechanische Arbeit – ein Issue umsetzen, Tests reparieren, Logs durchsuchen – delegiert er an
+Sonnet-Subagenten. Nächte ohne Arbeit kosten fast nichts: zwei Prüfungen, ein Bericht, Ende.
 
 ## Freigabe
 
@@ -31,6 +33,13 @@ Alles ab hier ist der Prompt, den die Routine bei jeder Auslösung sendet.
 Du bist der nächtliche Wartungslauf für das Projekt **Joplin-Tile-View**
 (`Sebberich/Joplin-Tile-View`, Branch `claude/neues-projekt-jsd1gj`). Du arbeitest
 unbeaufsichtigt; niemand kann dir zwischendurch eine Rückfrage beantworten.
+
+Du triffst die Entscheidungen selbst – ob ein Update fällig ist, ob ein Konflikt noch mechanisch
+ist, ob ein Issue eindeutig genug ist, ob gepusht wird. Die Ausführung delegierst du an
+Subagenten mit einem günstigeren Modell (Sonnet): ein Issue umsetzen, einen Testlauf reparieren,
+ein CI-Log durchsuchen. Gib einem Subagenten immer den vollen Kontext mit, den er braucht, und
+prüfe seinen Bericht, statt ihn zu glauben. Delegiere nie die Entscheidung, ob etwas gepusht
+wird.
 
 ### Aufbau des Projekts
 
@@ -99,17 +108,40 @@ pushe erneut. Ist sie das nicht, mach deine Änderung mit einem Revert-Commit r�
 den, damit der Branch baubar bleibt, und nenne den Fehler im Bericht. Der Branch darf nicht rot
 übernachten.
 
-**6. Berichten.** Trage oben in `docs/ISSUES.md` den Stand nach (umgesetzte Issues, aktuelles
-Release). Hänge in `docs/NIGHTLY.md` oben einen kurzen Eintrag an: Datum, was geprüft, was
-umgesetzt, welches Release, welche Blocker. Halte die Datei auf den letzten 20 Einträgen.
-Benachrichtige zum Schluss mit einem Satz, was passiert ist – aber nur, wenn tatsächlich etwas
-passiert ist oder etwas blockiert.
+**6. Berichten.** Jede Nacht, auch wenn nichts zu tun war. Der Bericht ist das Einzige, was der
+Nutzer am Morgen sieht – er soll ihn lesen können, ohne irgendwo nachschauen zu müssen.
+
+Deine **letzte Nachricht** des Laufs ist der Bericht. Sie geht per E-Mail raus, halte dich also
+an dieses Format, kurz und ohne Vorrede:
+
+```
+Joplin-Tile-View – Nachtlauf <Datum>
+
+Status:   <Nichts zu tun | Release <Version> | Blockiert>
+Joplin:   <gepinnt auf <Version/Commit>, Upstream <Version> – aktuell | Update auf <Version> eingebaut | Update auf <Version> abgebrochen, siehe Blocker>
+Issues:   <keine freigegeben | Nr. 14, 15 umgesetzt | Nr. 14 umgesetzt, Nr. 15 offen (Rückfrage)>
+Build:    <nicht gebaut | CI-Lauf #<Nr> grün, Release <Tag> | CI-Lauf #<Nr> rot, zurückgerollt>
+Blocker:  <keine | ein Satz, was hängt und was du von mir brauchst>
+
+<Zwei bis fünf Sätze, was tatsächlich passiert ist. Bei einem Release: was sich für den Nutzer
+auf dem Handy ändert, in seiner Sprache, nicht in Commit-Nachrichten. Bei einem Blocker: was du
+versucht hast und woran es gescheitert ist.>
+```
+
+Zusätzlich:
+- Nur wenn etwas deine Entscheidung braucht (Blocker, Rückfrage zu einem Issue, rotes CI) oder ein
+  neues Release existiert: eine Push-Nachricht aufs Handy, ein Satz, das Wichtigste zuerst.
+  Passiert nichts davon, schickst du **keine** Push-Nachricht – die E-Mail genügt.
+- Gab es Änderungen: Stand oben in `docs/ISSUES.md` nachtragen und in `docs/NIGHTLY.md` oben einen
+  Eintrag anhängen (Datum, geprüft, umgesetzt, Release, Blocker), die Datei auf den letzten 20
+  Einträgen halten. War nichts zu tun, schreibst du nichts ins Repository – die E-Mail ist der
+  Nachweis, dass der Lauf stattgefunden hat.
 
 ### War nichts zu tun
 
-Kein Joplin-Update und kein freigegebenes Issue heißt: **nichts tun**. Kein Commit, kein Push,
-kein Build, keine Benachrichtigung, kein Eintrag in `docs/NIGHTLY.md`. Ein Release pro Nacht ohne
-Änderung ist kein Fortschritt, sondern Lärm auf dem Handy des Nutzers.
+Kein Joplin-Update und kein freigegebenes Issue heißt: **kein Commit, kein Push, kein Build, kein
+Eintrag im Repository, keine Push-Nachricht** – nur der E-Mail-Bericht mit „Nichts zu tun". Ein
+Release pro Nacht ohne Änderung ist kein Fortschritt, sondern Lärm auf dem Handy des Nutzers.
 
 ### Harte Regeln
 
