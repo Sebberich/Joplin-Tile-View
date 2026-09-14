@@ -11,7 +11,7 @@ was freigegeben ist, und löst über den Push den Build samt Release aus.
 | Modell | Opus 5 (`claude-opus-5`) |
 | Zeitplan | täglich 01:00 Europe/Berlin. Falls die Oberfläche Cron in UTC verlangt: `0 23 * * *` (Sommerzeit) bzw. `0 0 * * *` (Winterzeit) |
 | Session | neue Session je Lauf, Repository `Sebberich/Joplin-Tile-View` |
-| Benachrichtigung | E-Mail an (Bericht jede Nacht), Push aus – der Lauf schickt sich selbst eine Push-Nachricht, wenn etwas deine Entscheidung braucht |
+| Benachrichtigung | Push **und** E-Mail an. Die Routine meldet sich aufs Handy, wenn ein Lauf etwas Nennenswertes ergeben hat; die E-Mail kommt jede Nacht mit dem vollständigen Bericht |
 
 Warum Opus und nicht Sonnet: Die riskanten Momente sind nicht die mechanischen, sondern die
 Entscheidungen „ist dieser Konflikt noch mechanisch oder schon inhaltlich?" und „ist dieses Issue
@@ -40,6 +40,22 @@ Subagenten mit einem günstigeren Modell (Sonnet): ein Issue umsetzen, einen Tes
 ein CI-Log durchsuchen. Gib einem Subagenten immer den vollen Kontext mit, den er braucht, und
 prüfe seinen Bericht, statt ihn zu glauben. Delegiere nie die Entscheidung, ob etwas gepusht
 wird.
+
+### Zuerst: Arbeitsumgebung herstellen
+
+Prüfe, ob das Repository ausgecheckt ist (ein Verzeichnis mit `patches/`, `scripts/`, `docs/`).
+Wenn nicht, hol es dir selbst – `Sebberich/Joplin-Tile-View`, Branch
+`claude/neues-projekt-jsd1gj`; fehlt dir der Zugriff, füge das Repository der Session hinzu
+(`add_repo`) und klone es. Ohne Repository kannst du nichts prüfen: Dann meldest du das als
+Blocker, statt Vermutungen zu berichten.
+
+Verlass dich nicht auf die GitHub-MCP-Werkzeuge, die stehen in diesem Lauf womöglich nicht zur
+Verfügung. Für den Upstream-Stand reicht `git ls-remote https://github.com/laurent22/joplin`, für
+den Status eines CI-Laufs die öffentliche GitHub-API per `curl` (das Repository ist öffentlich,
+es braucht dafür kein Token).
+
+`scripts/setup.sh` dauert lange (`yarn install`). Führ es erst aus, wenn feststeht, dass diese
+Nacht wirklich Arbeit anfällt – für die beiden Prüfungen in Schritt 1 und 2 brauchst du es nicht.
 
 ### Aufbau des Projekts
 
@@ -129,9 +145,11 @@ versucht hast und woran es gescheitert ist.>
 ```
 
 Zusätzlich:
-- Nur wenn etwas deine Entscheidung braucht (Blocker, Rückfrage zu einem Issue, rotes CI) oder ein
-  neues Release existiert: eine Push-Nachricht aufs Handy, ein Satz, das Wichtigste zuerst.
-  Passiert nichts davon, schickst du **keine** Push-Nachricht – die E-Mail genügt.
+- Die Routine selbst schickt bereits eine Push-Nachricht, wenn ein Lauf etwas Nennenswertes
+  ergeben hat. Zusätzlich schickst du **selbst** eine, wenn etwas deine Entscheidung braucht
+  (Blocker, Rückfrage zu einem Issue, rotes CI) oder ein neues Release entstanden ist – ein Satz,
+  das Wichtigste zuerst. Lieber eine Meldung doppelt als einen Blocker verpasst. War nichts zu
+  tun, schickst du keine.
 - Gab es Änderungen: Stand oben in `docs/ISSUES.md` nachtragen und in `docs/NIGHTLY.md` oben einen
   Eintrag anhängen (Datum, geprüft, umgesetzt, Release, Blocker), die Datei auf den letzten 20
   Einträgen halten. War nichts zu tun, schreibst du nichts ins Repository – die E-Mail ist der
@@ -140,7 +158,7 @@ Zusätzlich:
 ### War nichts zu tun
 
 Kein Joplin-Update und kein freigegebenes Issue heißt: **kein Commit, kein Push, kein Build, kein
-Eintrag im Repository, keine Push-Nachricht** – nur der E-Mail-Bericht mit „Nichts zu tun". Ein
+Eintrag im Repository, keine eigene Push-Nachricht** – nur der Bericht mit „Nichts zu tun". Ein
 Release pro Nacht ohne Änderung ist kein Fortschritt, sondern Lärm auf dem Handy des Nutzers.
 
 ### Harte Regeln
