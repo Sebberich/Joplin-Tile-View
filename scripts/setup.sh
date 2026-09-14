@@ -18,6 +18,8 @@ echo "==> Patches anwenden (falls vorhanden)"
 
 echo "==> yarn install (OneNote-Converter-Build wird übersprungen, braucht sonst Rust)"
 export SKIP_ONENOTE_CONVERTER_BUILD=1
+# Nur Android wird gebaut; das Electron-Binary für app-desktop spart den Download.
+export ELECTRON_SKIP_BINARY_DOWNLOAD=1
 (cd joplin && yarn install)
 
 echo "==> Fertig. Android-APK bauen mit: scripts/build-android.sh"
