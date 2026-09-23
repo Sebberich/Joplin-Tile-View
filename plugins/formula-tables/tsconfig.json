@@ -1,0 +1,20 @@
+{
+	"compilerOptions": {
+		"outDir": "./dist/",
+		"module": "commonjs",
+		"target": "es2018",
+		"jsx": "react",
+		"allowJs": true,
+		"baseUrl": ".",
+		"paths": {
+			"api": ["api/index.ts"],
+			"api/*": ["api/*"]
+		},
+		"strict": true,
+		"isolatedModules": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"resolveJsonModule": true
+	},
+	"exclude": ["node_modules", "dist", "publish"]
+}
