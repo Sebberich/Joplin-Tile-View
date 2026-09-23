@@ -33,13 +33,19 @@ APK and attaches it as an artifact to the run. Details in [docs/BUILD.md](docs/B
 - [x] Step 3: Tile component with title/preview/first image, notebook filter (patches 0002, 0003)
 - [x] Step 4: Setting and button for list/tiles, tiles as default (patches 0001, 0004)
 - [x] Step 5: Pinch zoom, column count, font size (patch 0005); own app ID `net.cozic.joplin.tileview` (patch 0006)
-- [ ] Device testing on Android: pinch vs. scrolling, image loading, filter performance
+- [x] Device test issues 1–14 (patches 0007–0019): masonry layout, zoom ladder, OLED theme, filter follows the side menu, controls moved into the header
+- [x] Shared shopping lists (patches 0020–0022): emoji tiles, invite by QR code/link/code, open or admin-managed lists, sync over Nostr relays – concept in [docs/KONZEPT.md](docs/KONZEPT.md) (German)
+- [x] Formula Tables plugin ([plugins/formula-tables](plugins/formula-tables/README.md)) – formulas with explicit date/time/currency types in Markdown tables; the `.jpl` is attached to every release
+- [ ] Bluetooth (nearby) sync for shopping lists – the status circle stays grey until then
+- [ ] Device testing of shopping lists and the plugin on Android
 
 ## Documents
 
 - [docs/UEBERGABE.md](docs/UEBERGABE.md) (German) – starting point and order of steps
 - [docs/ANALYSE.md](docs/ANALYSE.md) (German) – files and entry points found in Joplin
 - [docs/BUILD.md](docs/BUILD.md) – building locally and in CI, installation pitfalls
+- [docs/KONZEPT.md](docs/KONZEPT.md) (German) – concept for formula tables, shopping lists and sharing
+- [plugins/formula-tables/README.md](plugins/formula-tables/README.md) – the Formula Tables plugin (syntax, install)
 
 ## Workflow
 

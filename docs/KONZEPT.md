@@ -1,7 +1,30 @@
 # Konzept: Tabellen mit Formeln, Einkaufslisten, Teilen
 
-Stand: 23.09.2026. Arbeitsnotiz, nichts davon ist umgesetzt. Entscheidungen, die noch offen sind,
-stehen am Ende jedes Abschnitts.
+Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am Ende jedes Abschnitts.
+
+## Stand der Umsetzung
+
+| Teil | Stand | Wo |
+|---|---|---|
+| Formel-Tabellen | Umgesetzt als Plugin, 60 Tests; noch nicht in einer echten Joplin-Instanz ausprobiert | `plugins/formula-tables/`, `.jpl` hängt am Release |
+| Einkaufsliste: Kern (Datenmodell, SQLite, Merge pro Feld, Krypto, Einladungen) | Umgesetzt, 71 Tests | Patch 0020, `packages/app-mobile/lists/core/` |
+| Einkaufsliste: Relay-Sync (offene und verwaltete Listen, Verzeichnis, Beitritt, Neuveröffentlichung) | Umgesetzt, Tests mit Fake-Relay; gegen öffentliche Relays noch nicht gelaufen | Patch 0021, `lists/sync/` |
+| Einkaufsliste: Oberfläche (Übersicht, Kacheln, Teilen per QR/Link/Code, Beitritt per Scan, Mitglieder, Statuskreis, Einstellungen) | Umgesetzt; Gerätetest steht aus | Patch 0022, `lists/ui/` |
+| Bluetooth-Abgleich | **Offen.** Schnittstelle `NearbyTransport` existiert, Statuskreis bleibt grau | `lists/sync/nearby.ts` |
+
+Abweichungen vom Konzept in der Umsetzung:
+- **Icons sind Emoji** des Systemfonts (Katalog mit 449 Artikeln, 15 Kategorien, deutschen Synonymen in
+  `lists/catalog/`), kein eigenes Bildset. Keine Lizenzfragen, kein Asset-Gewicht; ein gezeichnetes Set
+  kann später denselben Katalog nutzen.
+- **Beitritt zu verwalteten Listen** wird von der Admin-App beim nächsten Abgleich automatisch angenommen,
+  wenn die Einladung gültig ist (Rolle, Ablauf, einmalig). Eine manuelle Bestätigung gibt es nicht.
+- **Verzeichnis-Signatur:** Ein mit dem Listen-Schlüssel signiertes Verzeichnis wird immer akzeptiert
+  (bei offenen Listen haben alle diesen Schlüssel, bei verwalteten nur der Ersteller); Verzeichnisse mit
+  Geräteschlüssel nur von Admins des zuletzt akzeptierten Verzeichnisses.
+- **Artikel-Events** tragen pro Feld einen Zeitstempel im verschlüsselten Inhalt, zusätzlich zu
+  `created_at`; Relays werden mit `#L = Listen-Schlüssel` abgefragt.
+- Voreingestellte Relays: relay.damus.io, nos.lol, relay.primal.net, nostr.mom, relay.nostr.band
+  (Einstellung „Einkaufslisten → Relays“).
 
 ## 1. Tabellen mit Formeln
 

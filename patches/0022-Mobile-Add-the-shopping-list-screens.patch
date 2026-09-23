@@ -1,0 +1,3171 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 17:13:33 +0000
+Subject: [PATCH 22/23] Mobile: Add the shopping list screens
+
+"Shopping lists" entry in the side menu: overview, list screen with
+suggestion chips, emoji tiles grouped by category and a "recently
+bought" section, sharing via QR code, link or code, joining via QR scan
+or pasted invite, members and roles, sync status line and the nearby
+status circle (grey until the Bluetooth transport exists). Settings
+section for relays, device name and nearby auto-off. Invite links open
+the app through an intent filter. German translations included.
+
+diff --git a/packages/app-mobile/android/app/src/main/AndroidManifest.xml b/packages/app-mobile/android/app/src/main/AndroidManifest.xml
+index 29fb943..c2c9100 100644
+--- a/packages/app-mobile/android/app/src/main/AndroidManifest.xml
++++ b/packages/app-mobile/android/app/src/main/AndroidManifest.xml
+@@ -113,6 +113,24 @@
+ 				<data android:scheme="joplin" />
+ 			</intent-filter>
+ 			<!-- /EXTERNAL LINK -->
++
++			<!-- SHOPPING LIST INVITE LINK -->
++			<intent-filter>
++				<action android:name="android.intent.action.VIEW" />
++				<category android:name="android.intent.category.DEFAULT" />
++				<category android:name="android.intent.category.BROWSABLE" />
++				<data android:scheme="joplintiles" />
++			</intent-filter>
++			<intent-filter>
++				<action android:name="android.intent.action.VIEW" />
++				<category android:name="android.intent.category.DEFAULT" />
++				<category android:name="android.intent.category.BROWSABLE" />
++				<data
++					android:scheme="https"
++					android:host="sebberich.github.io"
++					android:pathPrefix="/joplin-tile-view/l" />
++			</intent-filter>
++			<!-- /SHOPPING LIST INVITE LINK -->
+ 		</activity>
+ 
+ 	</application>
+diff --git a/packages/app-mobile/components/ScreenHeader/index.tsx b/packages/app-mobile/components/ScreenHeader/index.tsx
+index ea8138d..65a96cd 100644
+--- a/packages/app-mobile/components/ScreenHeader/index.tsx
++++ b/packages/app-mobile/components/ScreenHeader/index.tsx
+@@ -86,6 +86,11 @@ interface ScreenHeaderProps {
+ 	onSearchButtonPress?: OnPressCallback;
+ 	onDeleteButtonPress?: OnPressCallback;
+ 
++	// A screen-specific element (e.g. a status indicator) rendered at the far
++	// right of the header, after the overflow menu button. Kept generic
++	// (rather than tile-view-specific) so that ScreenHeader stays reusable.
++	rightElement?: React.ReactNode;
++
+ 	showSideMenuButton?: boolean;
+ 	showSearchButton?: boolean;
+ 	showContextMenuButton?: boolean;
+@@ -761,6 +766,7 @@ class ScreenHeaderComponent extends PureComponent<ScreenHeaderProps, ScreenHeade
+ 					{filterButtonComp}
+ 					{sortButtonComp}
+ 					{menuComp}
++					{this.props.rightElement}
+ 				</View>
+ 				<WarningBanner
+ 					showShouldUpgradeSyncTargetMessage={this.props.showShouldUpgradeSyncTargetMessage}
+diff --git a/packages/app-mobile/components/SideMenuContent/SideMenuContent.tsx b/packages/app-mobile/components/SideMenuContent/SideMenuContent.tsx
+index 814a67d..9015fe2 100644
+--- a/packages/app-mobile/components/SideMenuContent/SideMenuContent.tsx
++++ b/packages/app-mobile/components/SideMenuContent/SideMenuContent.tsx
+@@ -412,6 +412,24 @@ const SideMenuContentComponent = (props: Props) => {
+ 	// using padding. So instead creating blank elements for padding bottom and top.
+ 	items.push(<View style={{ height: theme.marginSmall }} key="bottom_top_hack" />);
+ 
++	items.push(
++		<SideMenuItem
++			key="shopping-lists"
++			text={_('Shopping lists')}
++			touchableProps={{
++				onPress: () => {
++					props.dispatch({ type: 'SIDE_MENU_CLOSE' });
++					props.dispatch({ type: 'NAV_GO', routeName: 'Lists' });
++				},
++			}}
++			depth={0}
++			selected={false}
++			icon={<SidebarIcon icon='ionicon cart-outline' style={styles_.sidebarIcon} />}
++			themeId={props.themeId}
++			toggleState={ToggleState.Hidden}
++		/>,
++	);
++
+ 	items.push(
+ 		renderFolderItem(
+ 			{
+diff --git a/packages/app-mobile/lists/ui/JoinScreen.tsx b/packages/app-mobile/lists/ui/JoinScreen.tsx
+new file mode 100644
+index 0000000..93cc24d
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/JoinScreen.tsx
+@@ -0,0 +1,182 @@
++import * as React from 'react';
++import { useCallback, useMemo, useState } from 'react';
++import { Alert, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
++import { CameraView, useCameraPermissions } from 'expo-camera';
++import { Dispatch } from 'redux';
++import Clipboard from '@react-native-clipboard/clipboard';
++import Setting from '@joplin/lib/models/Setting';
++import { _ } from '@joplin/lib/locale';
++import { ScreenHeader } from '../../components/ScreenHeader';
++import { BaseScreenComponent } from '../../components/base-screen';
++import { themeStyle } from '../../components/global-style';
++import { getListsStore } from './listsRuntime';
++import { getListsSync } from './syncApi';
++
++interface Props {
++	navigation: { state: { inviteText?: string } };
++	themeId: number;
++	dispatch: Dispatch;
++}
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++		return StyleSheet.create({
++			container: { flex: 1, padding: theme.margin },
++			input: {
++				borderWidth: 1,
++				borderColor: theme.dividerColor,
++				borderRadius: 8,
++				padding: 10,
++				fontSize: theme.fontSize,
++				color: theme.color,
++				minHeight: 80,
++				textAlignVertical: 'top',
++			},
++			buttonRow: { flexDirection: 'row', marginTop: 16 },
++			button: {
++				paddingVertical: 10,
++				paddingHorizontal: 16,
++				marginRight: 8,
++				borderRadius: 8,
++				backgroundColor: theme.color4,
++			},
++			buttonText: { color: '#ffffff', fontWeight: 'bold' },
++			secondaryButton: {
++				paddingVertical: 10,
++				paddingHorizontal: 16,
++				marginRight: 8,
++				borderRadius: 8,
++				borderWidth: 1,
++				borderColor: theme.dividerColor,
++			},
++			secondaryButtonText: { color: theme.color },
++			errorText: { color: theme.colorError2, marginTop: 16 },
++			camera: { flex: 1 },
++			cameraOverlay: {
++				position: 'absolute',
++				bottom: 40,
++				left: 0,
++				right: 0,
++				alignItems: 'center',
++			},
++			cameraCancel: { backgroundColor: 'rgba(0,0,0,0.6)', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20 },
++			cameraCancelText: { color: '#ffffff' },
++		});
++	}, [themeId]);
++};
++
++const JoinScreenComponent: React.FC<Props> = props => {
++	const styles = useStyles(props.themeId);
++	const store = useMemo(() => getListsStore(), []);
++	const sync = useMemo(() => getListsSync(), []);
++
++	const [text, setText] = useState(props.navigation.state.inviteText ?? '');
++	const [error, setError] = useState<string | null>(null);
++	const [pending, setPending] = useState(false);
++	const [scanning, setScanning] = useState(false);
++	const [permission, requestPermission] = useCameraPermissions();
++	const scannedRef = React.useRef(false);
++
++	const handleJoin = useCallback(async (inviteText: string) => {
++		const trimmed = inviteText.trim();
++		if (!trimmed) return;
++		setError(null);
++		setPending(true);
++		try {
++			const deviceName = Setting.value('lists.deviceName') || undefined;
++			const result = await store.joinFromInvite(trimmed, deviceName);
++			if (result.type === 'open') {
++				props.dispatch({ type: 'NAV_GO', routeName: 'ListsList', listId: result.list.id } as never);
++			} else {
++				await sync.publishJoinRequest(result.list.id, result.joinRequest);
++				Alert.alert(_('Join request sent'), _('Waiting for the admin to accept your request.'));
++				props.dispatch({ type: 'NAV_GO', routeName: 'Lists' } as never);
++			}
++		} catch (e) {
++			setError(e instanceof Error ? e.message : String(e));
++		} finally {
++			setPending(false);
++		}
++	}, [store, sync, props]);
++
++	const onPaste = useCallback(async () => {
++		const clipboardText = await Clipboard.getString();
++		if (clipboardText) setText(clipboardText);
++	}, []);
++
++	const onScanPress = useCallback(async () => {
++		if (!permission?.granted) {
++			const result = await requestPermission();
++			if (!result.granted) return;
++		}
++		scannedRef.current = false;
++		setScanning(true);
++	}, [permission, requestPermission]);
++
++	const onBarcodeScanned = useCallback((result: { data: string }) => {
++		if (scannedRef.current) return;
++		scannedRef.current = true;
++		setScanning(false);
++		setText(result.data);
++		void handleJoin(result.data);
++	}, [handleJoin]);
++
++	if (scanning) {
++		return (
++			<Modal visible animationType='slide' onRequestClose={() => setScanning(false)}>
++				<CameraView
++					style={styles.camera}
++					facing='back'
++					barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
++					onBarcodeScanned={onBarcodeScanned}
++				/>
++				<View style={styles.cameraOverlay}>
++					<TouchableOpacity style={styles.cameraCancel} onPress={() => setScanning(false)}>
++						<Text style={styles.cameraCancelText}>{_('Cancel')}</Text>
++					</TouchableOpacity>
++				</View>
++			</Modal>
++		);
++	}
++
++	return (
++		<View style={styles.container}>
++			<ScreenHeader title={_('Join a list')} showBackButton />
++
++			<TextInput
++				style={styles.input}
++				value={text}
++				onChangeText={setText}
++				placeholder={_('Paste an invite link or code')}
++				multiline
++			/>
++
++			<View style={styles.buttonRow}>
++				<TouchableOpacity style={styles.secondaryButton} onPress={() => void onPaste()}>
++					<Text style={styles.secondaryButtonText}>{_('Paste')}</Text>
++				</TouchableOpacity>
++				<TouchableOpacity style={styles.secondaryButton} onPress={() => void onScanPress()}>
++					<Text style={styles.secondaryButtonText}>{_('Scan QR code')}</Text>
++				</TouchableOpacity>
++			</View>
++
++			{!!error && <Text style={styles.errorText}>{error}</Text>}
++
++			<View style={styles.buttonRow}>
++				<TouchableOpacity style={styles.button} onPress={() => void handleJoin(text)} disabled={pending || !text.trim()}>
++					<Text style={styles.buttonText}>{_('Join')}</Text>
++				</TouchableOpacity>
++			</View>
++		</View>
++	);
++};
++
++class JoinScreenClass extends BaseScreenComponent<Props, Record<string, never>> {
++	public override render() {
++		return <JoinScreenComponent {...this.props} />;
++	}
++}
++
++export default JoinScreenClass;
++export { JoinScreenComponent };
+diff --git a/packages/app-mobile/lists/ui/ListScreen.test.tsx b/packages/app-mobile/lists/ui/ListScreen.test.tsx
+new file mode 100644
+index 0000000..87f3333
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/ListScreen.test.tsx
+@@ -0,0 +1,93 @@
++import * as React from 'react';
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import { Store } from 'redux';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import TestProviderStack from '../../components/testing/TestProviderStack';
++import createMockReduxStore from '../../utils/testing/createMockReduxStore';
++import setupGlobalStore from '../../utils/testing/setupGlobalStore';
++import { render, screen, waitFor } from '../../utils/testing/testingLibrary';
++import { AppState } from '../../utils/types';
++import { ListsDatabase } from '../core/db';
++import { ListsStore } from '../core/store';
++
++// listsRuntime normally opens a real device (expo-sqlite) database, which
++// isn't available under Jest -- swap in a ListsStore/ListsDatabase backed by
++// the Node driver instead, as lists/core's own tests do.
++let testStore: ListsStore;
++let testDatabase: ListsDatabase;
++
++jest.mock('./listsRuntime', () => ({
++	getListsStore: () => testStore,
++	getListsDatabase: async () => { await testDatabase.openOrCreate('ignored'); return testDatabase; },
++	getListsDatabaseInstance: () => testDatabase,
++}));
++
++// The real lists/sync module wires up relay connections; keep this smoke
++// test focused on rendering by using the built-in no-op fallback instead.
++jest.mock('./syncApi', () => ({
++	getListsSync: () => ({
++		syncList: async () => {},
++		subscribe: () => {},
++		unsubscribe: () => {},
++		publishJoinRequest: async () => {},
++		refreshAll: async () => {},
++		onStatus: () => () => {},
++	}),
++	getNearbyTransport: () => ({
++		isAvailable: () => false,
++		start: () => {},
++		stop: () => {},
++		onStateChange: () => () => {},
++	}),
++}));
++
++import { ListScreenComponent } from './ListScreen';
++
++let reduxStore: Store<AppState>;
++let dbPath: string;
++
++const WrappedListScreen: React.FC<{ listId: string }> = ({ listId }) => {
++	return <TestProviderStack store={reduxStore}>
++		<ListScreenComponent navigation={{ state: { listId } }} themeId={reduxStore.getState().settings.theme} dispatch={reduxStore.dispatch} />
++	</TestProviderStack>;
++};
++
++describe('lists/ui/ListScreen', () => {
++	beforeEach(async () => {
++		dbPath = join(tmpdir(), `tiles-lists-screen-test-${uuid.createNano()}.sqlite`);
++		testDatabase = new ListsDatabase(new Database(new DatabaseDriverNode()));
++		testStore = new ListsStore(testDatabase, dbPath);
++
++		reduxStore = createMockReduxStore();
++		setupGlobalStore(reduxStore);
++	});
++
++	afterEach(async () => {
++		await rm(dbPath, { force: true });
++	});
++
++	test('shows items added to the list as tiles', async () => {
++		const list = await testStore.createOpenList('Groceries');
++		await testStore.addItem(list.id, 'Milch');
++
++		render(<WrappedListScreen listId={list.id} />);
++
++		await waitFor(() => {
++			expect(screen.getByText('Milch')).toBeTruthy();
++		});
++	});
++
++	test('shows the empty state when the list has no items', async () => {
++		const list = await testStore.createOpenList('Groceries');
++
++		render(<WrappedListScreen listId={list.id} />);
++
++		await waitFor(() => {
++			expect(screen.getByText('No items yet. Type above to add the first one.')).toBeTruthy();
++		});
++	});
++});
+diff --git a/packages/app-mobile/lists/ui/ListScreen.tsx b/packages/app-mobile/lists/ui/ListScreen.tsx
+new file mode 100644
+index 0000000..3ccaddc
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/ListScreen.tsx
+@@ -0,0 +1,334 @@
++import * as React from 'react';
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import { AppState as RNAppState, FlatList, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
++import { Dispatch } from 'redux';
++import { _ } from '@joplin/lib/locale';
++import shim from '@joplin/lib/shim';
++import time from '@joplin/lib/time';
++import { ScreenHeader, MenuOption } from '../../components/ScreenHeader';
++import { MenuOptionStyle } from '../../components/BottomDrawerMenu';
++import { BaseScreenComponent } from '../../components/base-screen';
++import { themeStyle } from '../../components/global-style';
++import { getListsDatabase, getListsStore } from './listsRuntime';
++import { itemRecordToPayload } from '../core/store';
++import PromptModal from './components/PromptModal';
++import { getListsSync } from './syncApi';
++import { parseItemInput } from './parseItemInput';
++import { groupOpenItems, sortRecentlyBought } from './groupItems';
++import NearbyStatusCircle from './components/NearbyStatusCircle';
++import ItemEditModal from './components/ItemEditModal';
++import { ItemRecord, ListRecord, CatalogMatch } from '../core/types';
++
++interface Props {
++	navigation: { state: { listId: string } };
++	themeId: number;
++	dispatch: Dispatch;
++}
++
++const RECENTLY_BOUGHT_LIMIT = 20;
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++		return StyleSheet.create({
++			container: { flex: 1 },
++			syncLine: {
++				paddingHorizontal: theme.margin,
++				paddingVertical: 4,
++				fontSize: theme.fontSize * 0.75,
++				color: theme.colorFaded,
++			},
++			inputRow: {
++				paddingHorizontal: theme.margin,
++				paddingTop: 8,
++			},
++			input: {
++				borderWidth: 1,
++				borderColor: theme.dividerColor,
++				borderRadius: 8,
++				paddingHorizontal: 12,
++				paddingVertical: 8,
++				fontSize: theme.fontSize,
++				color: theme.color,
++			},
++			suggestionsRow: {
++				paddingVertical: 8,
++			},
++			chip: {
++				flexDirection: 'row',
++				alignItems: 'center',
++				borderWidth: 1,
++				borderColor: theme.dividerColor,
++				borderRadius: 16,
++				paddingVertical: 6,
++				paddingHorizontal: 10,
++				marginLeft: theme.margin,
++			},
++			chipText: { fontSize: theme.fontSize * 0.9, color: theme.color, marginLeft: 4 },
++			sectionHeader: {
++				paddingHorizontal: theme.margin,
++				paddingTop: 16,
++				paddingBottom: 4,
++				fontSize: theme.fontSize,
++				fontWeight: 'bold',
++				color: theme.color,
++			},
++			tileGrid: {
++				flexDirection: 'row',
++				flexWrap: 'wrap',
++				paddingHorizontal: theme.margin - 4,
++			},
++			tile: {
++				width: '31%',
++				margin: '1.16%',
++				backgroundColor: theme.backgroundColor2,
++				borderRadius: 10,
++				paddingVertical: 10,
++				alignItems: 'center',
++			},
++			tileBought: {
++				opacity: 0.5,
++			},
++			tileEmoji: { fontSize: 28 },
++			tileName: { fontSize: theme.fontSize * 0.85, color: theme.color, textAlign: 'center', marginTop: 4 },
++			tileDetail: { fontSize: theme.fontSize * 0.75, color: theme.colorFaded, textAlign: 'center' },
++			emptyState: {
++				padding: theme.margin,
++				alignItems: 'center',
++			},
++			emptyText: { fontSize: theme.fontSize, color: theme.colorFaded, textAlign: 'center' },
++		});
++	}, [themeId]);
++};
++
++const ListScreenComponent: React.FC<Props> = props => {
++	const listId = props.navigation.state.listId;
++	const styles = useStyles(props.themeId);
++	const store = useMemo(() => getListsStore(), []);
++	const sync = useMemo(() => getListsSync(), []);
++
++	const [list, setList] = useState<ListRecord | null>(null);
++	const [openItems, setOpenItems] = useState<ItemRecord[]>([]);
++	const [boughtItems, setBoughtItems] = useState<ItemRecord[]>([]);
++	const [inputText, setInputText] = useState('');
++	const [suggestions, setSuggestions] = useState<CatalogMatch[]>([]);
++	const [editingItem, setEditingItem] = useState<ItemRecord | null>(null);
++	const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
++	const [online, setOnline] = useState(true);
++	const [renaming, setRenaming] = useState(false);
++
++	const reload = useCallback(async () => {
++		const [lists, open, bought] = await Promise.all([
++			store.lists(),
++			store.items(listId, { open: true }),
++			store.items(listId, { open: false }),
++		]);
++		setList(lists.find(l => l.id === listId) ?? null);
++		setOpenItems(open);
++		setBoughtItems(bought);
++	}, [store, listId]);
++
++	useEffect(() => {
++		void reload();
++		const unsubscribeChange = store.onChange(() => { void reload(); });
++
++		sync.subscribe(listId);
++		void sync.syncList(listId);
++		const unsubscribeStatus = sync.onStatus(status => {
++			if (status.listId !== listId) return;
++			setLastSyncedAt(status.lastSyncedAt);
++			setOnline(status.online);
++		});
++
++		const appStateSub = RNAppState.addEventListener('change', state => {
++			if (state === 'active') void sync.syncList(listId);
++		});
++
++		return () => {
++			unsubscribeChange();
++			sync.unsubscribe(listId);
++			unsubscribeStatus();
++			appStateSub.remove();
++		};
++	}, [store, sync, listId, reload]);
++
++	useEffect(() => {
++		let cancelled = false;
++		void (async () => {
++			const results = await store.suggestions(inputText);
++			if (!cancelled) setSuggestions(results);
++		})();
++		return () => { cancelled = true; };
++	}, [store, inputText]);
++
++	const addItemByName = useCallback(async (rawText: string) => {
++		const trimmed = rawText.trim();
++		if (!trimmed) return;
++		const parsed = parseItemInput(trimmed);
++		if (!parsed.name) return;
++		const record = await store.addItem(listId, parsed.name);
++		if (parsed.detail) await store.setDetail(listId, record.dTag, parsed.detail);
++		setInputText('');
++	}, [store, listId]);
++
++	const openGroups = useMemo(() => groupOpenItems(openItems), [openItems]);
++	const recentlyBought = useMemo(() => sortRecentlyBought(boughtItems).slice(0, RECENTLY_BOUGHT_LIMIT), [boughtItems]);
++
++	const onCleanUpBought = useCallback(async () => {
++		if (!boughtItems.length) return;
++		const ok = await shim.showConfirmationDialog(_('Remove all bought items from "Recently bought"?'));
++		if (!ok) return;
++		for (const item of boughtItems) await store.removeItem(listId, item.dTag);
++	}, [store, listId, boughtItems]);
++
++	// The store has no dedicated "set category" call (only setDetail/setOpen),
++	// so this goes through the same LWW merge applyRemoteItem() uses for
++	// incoming events, bumping the category field's timestamp directly. Unlike
++	// setDetail/setOpen this doesn't mark the item `pending`, so a category
++	// change made here won't be picked up for publishing until the store
++	// gains a real setCategory() -- left as an open item for lists/core.
++	const setItemCategory = useCallback(async (item: ItemRecord, category: string | null) => {
++		const payload = itemRecordToPayload(item);
++		payload.category = { v: category ?? '', t: Date.now() };
++		await store.applyRemoteItem(listId, item.dTag, payload);
++	}, [store, listId]);
++
++	const onRenameSubmit = useCallback(async (name: string) => {
++		setRenaming(false);
++		const trimmed = name.trim();
++		if (!trimmed) return;
++		const db = await getListsDatabase();
++		await db.renameList(listId, trimmed);
++		await reload();
++	}, [listId, reload]);
++
++	const goTo = useCallback((routeName: string): void => {
++		props.dispatch({ type: 'NAV_GO', routeName, listId } as never);
++	}, [props, listId]);
++
++	const menuOptions: MenuOption[] = [
++		{ title: _('Share'), onPress: (): void => goTo('ListsShare') },
++		{ title: _('Members'), onPress: (): void => goTo('ListsMembers') },
++		{ title: _('Rename'), onPress: (): void => setRenaming(true) },
++		{ title: _('Clean up bought items'), onPress: (): void => { void onCleanUpBought(); }, style: MenuOptionStyle.Normal },
++	];
++
++	const syncLine = !online
++		? _('Offline – changes will be sent later')
++		: lastSyncedAt
++			? _('Last synced %s', time.formatMsToLocal(lastSyncedAt))
++			: _('Not synced yet');
++
++	const renderTile = (item: ItemRecord, bought: boolean) => (
++		<TouchableOpacity
++			key={item.dTag}
++			style={[styles.tile, bought ? styles.tileBought : null]}
++			onPress={() => void store.toggleOpen(listId, item.dTag)}
++			onLongPress={() => setEditingItem(item)}
++		>
++			<Text style={styles.tileEmoji}>{item.icon ?? item.name.charAt(0).toUpperCase()}</Text>
++			<Text style={styles.tileName} numberOfLines={2}>{item.name}</Text>
++			{!!item.detail && <Text style={styles.tileDetail} numberOfLines={1}>{item.detail}</Text>}
++		</TouchableOpacity>
++	);
++
++	const isEmpty = !openItems.length && !boughtItems.length;
++
++	return (
++		<View style={styles.container}>
++			<ScreenHeader
++				title={list?.name ?? ''}
++				showBackButton
++				menuOptions={menuOptions}
++				rightElement={<NearbyStatusCircle listId={listId} />}
++			/>
++			<Text style={styles.syncLine}>{syncLine}</Text>
++
++			<View style={styles.inputRow}>
++				<TextInput
++					style={styles.input}
++					placeholder={_('Add an item…')}
++					value={inputText}
++					onChangeText={setInputText}
++					onSubmitEditing={() => void addItemByName(inputText)}
++					returnKeyType='done'
++				/>
++			</View>
++
++			{!!inputText.trim() && !!suggestions.length && (
++				<FlatList
++					horizontal
++					data={suggestions}
++					keyExtractor={s => s.canonical}
++					style={styles.suggestionsRow}
++					showsHorizontalScrollIndicator={false}
++					renderItem={({ item }) => (
++						<TouchableOpacity style={styles.chip} onPress={() => void addItemByName(item.canonical)}>
++							{!!item.emoji && <Text>{item.emoji}</Text>}
++							<Text style={styles.chipText}>{item.canonical}</Text>
++						</TouchableOpacity>
++					)}
++				/>
++			)}
++
++			<ScrollView>
++				{isEmpty && (
++					<View style={styles.emptyState}>
++						<Text style={styles.emptyText}>{_('No items yet. Type above to add the first one.')}</Text>
++					</View>
++				)}
++
++				{openGroups.map(group => (
++					<View key={group.categoryId}>
++						<Text style={styles.sectionHeader}>{group.emoji} {group.categoryName}</Text>
++						<View style={styles.tileGrid}>
++							{group.items.map(item => renderTile(item, false))}
++						</View>
++					</View>
++				))}
++
++				{!!recentlyBought.length && (
++					<View>
++						<Text style={styles.sectionHeader}>{_('Recently bought')}</Text>
++						<View style={styles.tileGrid}>
++							{recentlyBought.map(item => renderTile(item, true))}
++						</View>
++					</View>
++				)}
++			</ScrollView>
++
++			<PromptModal
++				visible={renaming}
++				title={_('Rename list')}
++				initialValue={list?.name ?? ''}
++				onSubmit={name => void onRenameSubmit(name)}
++				onCancel={() => setRenaming(false)}
++			/>
++
++			<ItemEditModal
++				item={editingItem}
++				onClose={() => setEditingItem(null)}
++				onSave={async (detail, category) => {
++					if (!editingItem) return;
++					await store.setDetail(listId, editingItem.dTag, detail);
++					if (category !== editingItem.category) await setItemCategory(editingItem, category);
++					setEditingItem(null);
++				}}
++				onDelete={async () => {
++					if (!editingItem) return;
++					await store.removeItem(listId, editingItem.dTag);
++					setEditingItem(null);
++				}}
++			/>
++		</View>
++	);
++};
++
++class ListScreenClass extends BaseScreenComponent<Props, Record<string, never>> {
++	public override render() {
++		return <ListScreenComponent {...this.props} />;
++	}
++}
++
++export default ListScreenClass;
++export { ListScreenComponent };
+diff --git a/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx b/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx
+new file mode 100644
+index 0000000..d21b542
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx
+@@ -0,0 +1,174 @@
++import * as React from 'react';
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { Dispatch } from 'redux';
++import { _ } from '@joplin/lib/locale';
++import { ScreenHeader } from '../../components/ScreenHeader';
++import Icon from '../../components/Icon';
++import { BaseScreenComponent } from '../../components/base-screen';
++import { themeStyle } from '../../components/global-style';
++import { getListsDatabase, getListsStore } from './listsRuntime';
++import CreateListModal from './components/CreateListModal';
++import PromptModal from './components/PromptModal';
++import { ListKind, ListRecord } from '../core/types';
++
++interface Props {
++	navigation: { state: Record<string, never> };
++	themeId: number;
++	dispatch: Dispatch;
++}
++
++interface ListRow {
++	list: ListRecord;
++	openCount: number;
++	memberCount: number;
++}
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++		return StyleSheet.create({
++			container: { flex: 1 },
++			row: {
++				flexDirection: 'row',
++				alignItems: 'center',
++				paddingHorizontal: theme.margin,
++				paddingVertical: 14,
++				borderBottomWidth: 1,
++				borderBottomColor: theme.dividerColor,
++			},
++			kindIcon: { fontSize: 22, color: theme.color, marginRight: 12, width: 26, textAlign: 'center' },
++			name: { fontSize: theme.fontSize, color: theme.color, flex: 1 },
++			meta: { fontSize: theme.fontSize * 0.8, color: theme.colorFaded },
++			emptyState: { padding: theme.margin, alignItems: 'center' },
++			emptyText: { fontSize: theme.fontSize, color: theme.colorFaded, textAlign: 'center' },
++			fab: {
++				position: 'absolute',
++				right: 20,
++				bottom: 20,
++				width: 56,
++				height: 56,
++				borderRadius: 28,
++				backgroundColor: theme.color4,
++				alignItems: 'center',
++				justifyContent: 'center',
++				elevation: 4,
++			},
++			fabIcon: { fontSize: 26, color: '#ffffff' },
++		});
++	}, [themeId]);
++};
++
++const ListsOverviewComponent: React.FC<Props> = props => {
++	const styles = useStyles(props.themeId);
++	const store = useMemo(() => getListsStore(), []);
++
++	const [rows, setRows] = useState<ListRow[]>([]);
++	const [createVisible, setCreateVisible] = useState(false);
++	const [renamingList, setRenamingList] = useState<ListRecord | null>(null);
++
++	const reload = useCallback(async () => {
++		const lists = await store.lists();
++		const db = await getListsDatabase();
++		const nextRows = await Promise.all(lists.map(async list => {
++			const [openItems, members] = await Promise.all([
++				store.items(list.id, { open: true }),
++				db.members(list.id),
++			]);
++			return { list, openCount: openItems.length, memberCount: members.filter(m => !m.removedAt).length };
++		}));
++		setRows(nextRows);
++	}, [store]);
++
++	useEffect(() => {
++		void reload();
++		return store.onChange(() => { void reload(); });
++	}, [store, reload]);
++
++	const openList = useCallback((listId: string) => {
++		props.dispatch({ type: 'NAV_GO', routeName: 'ListsList', listId } as never);
++	}, [props]);
++
++	const onCreate = useCallback(async (name: string, kind: ListKind) => {
++		setCreateVisible(false);
++		if (!name) return;
++		const list = kind === 'open' ? await store.createOpenList(name) : await store.createManagedList(name);
++		openList(list.id);
++	}, [store, openList]);
++
++	const onEnterInvite = useCallback(() => {
++		setCreateVisible(false);
++		props.dispatch({ type: 'NAV_GO', routeName: 'ListsJoin' } as never);
++	}, [props]);
++
++	const onRenameSubmit = useCallback(async (name: string) => {
++		const list = renamingList;
++		setRenamingList(null);
++		if (!list) return;
++		const trimmed = name.trim();
++		if (!trimmed) return;
++		const db = await getListsDatabase();
++		await db.renameList(list.id, trimmed);
++		await reload();
++	}, [renamingList, reload]);
++
++	return (
++		<View style={styles.container}>
++			<ScreenHeader title={_('Shopping lists')} showBackButton />
++
++			{!rows.length && (
++				<View style={styles.emptyState}>
++					<Text style={styles.emptyText}>{_('No shopping lists yet. Tap + to create one, or join an existing one with an invite.')}</Text>
++				</View>
++			)}
++
++			<FlatList
++				data={rows}
++				keyExtractor={row => row.list.id}
++				renderItem={({ item }) => (
++					<TouchableOpacity
++						style={styles.row}
++						onPress={() => openList(item.list.id)}
++						onLongPress={() => setRenamingList(item.list)}
++					>
++						<Icon
++							name={item.list.kind === 'managed' ? 'ionicon shield-checkmark-outline' : 'ionicon people-outline'}
++							style={styles.kindIcon}
++							accessibilityLabel={item.list.kind === 'managed' ? _('Managed list') : _('Open list')}
++						/>
++						<Text style={styles.name} numberOfLines={1}>{item.list.name}</Text>
++						<Text style={styles.meta}>{_('%d open, %d members', item.openCount, item.memberCount)}</Text>
++					</TouchableOpacity>
++				)}
++			/>
++
++			<TouchableOpacity style={styles.fab} onPress={() => setCreateVisible(true)} accessibilityLabel={_('New list')} accessibilityRole='button'>
++				<Icon name='ionicon add' style={styles.fabIcon} accessibilityLabel={null} />
++			</TouchableOpacity>
++
++			<CreateListModal
++				visible={createVisible}
++				onCreate={(name, kind) => void onCreate(name, kind)}
++				onEnterInvite={onEnterInvite}
++				onCancel={() => setCreateVisible(false)}
++			/>
++
++			<PromptModal
++				visible={!!renamingList}
++				title={_('Rename list')}
++				initialValue={renamingList?.name ?? ''}
++				onSubmit={name => void onRenameSubmit(name)}
++				onCancel={() => setRenamingList(null)}
++			/>
++		</View>
++	);
++};
++
++class ListsOverviewScreenClass extends BaseScreenComponent<Props, Record<string, never>> {
++	public override render() {
++		return <ListsOverviewComponent {...this.props} />;
++	}
++}
++
++export default ListsOverviewScreenClass;
++export { ListsOverviewComponent };
+diff --git a/packages/app-mobile/lists/ui/MembersScreen.tsx b/packages/app-mobile/lists/ui/MembersScreen.tsx
+new file mode 100644
+index 0000000..75df707
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/MembersScreen.tsx
+@@ -0,0 +1,169 @@
++import * as React from 'react';
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { Dispatch } from 'redux';
++import shim from '@joplin/lib/shim';
++import time from '@joplin/lib/time';
++import { _ } from '@joplin/lib/locale';
++import { ScreenHeader } from '../../components/ScreenHeader';
++import { BaseScreenComponent } from '../../components/base-screen';
++import { themeStyle } from '../../components/global-style';
++import { getListsDatabase, getListsStore } from './listsRuntime';
++import { getListsSync, PendingJoinRequest } from './syncApi';
++import { ListRecord, MemberRecord } from '../core/types';
++
++interface Props {
++	navigation: { state: { listId: string } };
++	themeId: number;
++	dispatch: Dispatch;
++}
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++		return StyleSheet.create({
++			container: { flex: 1 },
++			sectionHeader: {
++				paddingHorizontal: theme.margin,
++				paddingTop: 16,
++				paddingBottom: 4,
++				fontSize: theme.fontSize * 0.9,
++				fontWeight: 'bold',
++				color: theme.colorFaded,
++			},
++			row: {
++				flexDirection: 'row',
++				alignItems: 'center',
++				paddingHorizontal: theme.margin,
++				paddingVertical: 12,
++				borderBottomWidth: 1,
++				borderBottomColor: theme.dividerColor,
++			},
++			name: { fontSize: theme.fontSize, color: theme.color, flex: 1 },
++			meta: { fontSize: theme.fontSize * 0.8, color: theme.colorFaded },
++			actionText: { color: theme.colorBright2, marginLeft: 12 },
++			hintText: { padding: theme.margin, color: theme.colorFaded, fontSize: theme.fontSize * 0.85 },
++		});
++	}, [themeId]);
++};
++
++const MembersScreenComponent: React.FC<Props> = props => {
++	const listId = props.navigation.state.listId;
++	const styles = useStyles(props.themeId);
++	const sync = useMemo(() => getListsSync(), []);
++
++	const [list, setList] = useState<ListRecord | null>(null);
++	const [members, setMembers] = useState<MemberRecord[]>([]);
++	const [isAdmin, setIsAdmin] = useState(false);
++	const [pendingRequests, setPendingRequests] = useState<PendingJoinRequest[]>([]);
++	const [pendingRequestsSupported, setPendingRequestsSupported] = useState(false);
++
++	const reload = useCallback(async () => {
++		const [store, db] = await Promise.all([getListsStore(), getListsDatabase()]);
++		const [lists, memberRows, identity] = await Promise.all([
++			store.lists(), db.members(listId), db.deviceIdentity(),
++		]);
++		const current = lists.find(l => l.id === listId) ?? null;
++		setList(current);
++		setMembers(memberRows.filter(m => !m.removedAt));
++		const self = memberRows.find(m => m.pubkey === identity.publicKey && !m.removedAt);
++		setIsAdmin(current?.kind === 'managed' && self?.role === 'admin');
++
++		if (current?.kind === 'managed' && sync.pendingJoinRequests) {
++			setPendingRequestsSupported(true);
++			setPendingRequests(await sync.pendingJoinRequests(listId));
++		} else {
++			setPendingRequestsSupported(false);
++			setPendingRequests([]);
++		}
++	}, [listId, sync]);
++
++	useEffect(() => { void reload(); }, [reload]);
++
++	const onRemoveMember = useCallback(async (member: MemberRecord) => {
++		const ok = await shim.showConfirmationDialog(_('Remove %s from this list?', member.name || member.pubkey.slice(0, 8)));
++		if (!ok) return;
++		const db = await getListsDatabase();
++		await db.removeMember(listId, member.pubkey, Date.now());
++		await reload();
++	}, [listId, reload]);
++
++	const onToggleRole = useCallback(async (member: MemberRecord) => {
++		const db = await getListsDatabase();
++		await db.upsertMember({ ...member, role: member.role === 'admin' ? 'member' : 'admin' });
++		await reload();
++	}, [reload]);
++
++	const onAcceptRequest = useCallback(async (request: PendingJoinRequest) => {
++		if (!sync.acceptJoinRequest) return;
++		await sync.acceptJoinRequest(listId, request.pubkey);
++		await reload();
++	}, [sync, listId, reload]);
++
++	return (
++		<View style={styles.container}>
++			<ScreenHeader title={_('Members')} showBackButton />
++
++			{list?.kind === 'managed' && (
++				<>
++					<Text style={styles.sectionHeader}>{_('Pending join requests')}</Text>
++					{!pendingRequestsSupported && (
++						<Text style={styles.hintText}>{_('Valid join requests are accepted automatically the next time this device syncs.')}</Text>
++					)}
++					{pendingRequestsSupported && !pendingRequests.length && (
++						<Text style={styles.hintText}>{_('No pending join requests.')}</Text>
++					)}
++					<FlatList
++						data={pendingRequests}
++						keyExtractor={r => r.pubkey}
++						renderItem={({ item }) => (
++							<View style={styles.row}>
++								<Text style={styles.name}>{item.deviceName || item.pubkey.slice(0, 8)}</Text>
++								{isAdmin && !!sync.acceptJoinRequest && (
++									<TouchableOpacity onPress={() => void onAcceptRequest(item)}>
++										<Text style={styles.actionText}>{_('Accept')}</Text>
++									</TouchableOpacity>
++								)}
++							</View>
++						)}
++					/>
++				</>
++			)}
++
++			<Text style={styles.sectionHeader}>{_('Members')}</Text>
++			<FlatList
++				data={members}
++				keyExtractor={m => m.pubkey}
++				renderItem={({ item }) => (
++					<View style={styles.row}>
++						<Text style={styles.name} numberOfLines={1}>{item.name || item.pubkey.slice(0, 8)}</Text>
++						<Text style={styles.meta}>
++							{list?.kind === 'managed' ? (item.role === 'admin' ? _('Admin') : _('Member')) : ''}
++							{'  ·  '}
++							{time.formatMsToLocal(item.since)}
++						</Text>
++						{isAdmin && (
++							<>
++								<TouchableOpacity onPress={() => void onToggleRole(item)}>
++									<Text style={styles.actionText}>{item.role === 'admin' ? _('Make member') : _('Make admin')}</Text>
++								</TouchableOpacity>
++								<TouchableOpacity onPress={() => void onRemoveMember(item)}>
++									<Text style={styles.actionText}>{_('Remove')}</Text>
++								</TouchableOpacity>
++							</>
++						)}
++					</View>
++				)}
++			/>
++		</View>
++	);
++};
++
++class MembersScreenClass extends BaseScreenComponent<Props, Record<string, never>> {
++	public override render() {
++		return <MembersScreenComponent {...this.props} />;
++	}
++}
++
++export default MembersScreenClass;
++export { MembersScreenComponent };
+diff --git a/packages/app-mobile/lists/ui/ShareScreen.tsx b/packages/app-mobile/lists/ui/ShareScreen.tsx
+new file mode 100644
+index 0000000..eaf7cc8
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/ShareScreen.tsx
+@@ -0,0 +1,163 @@
++import * as React from 'react';
++import { useEffect, useMemo, useState } from 'react';
++import { Alert, Share as RNShare, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { Dispatch } from 'redux';
++import Clipboard from '@react-native-clipboard/clipboard';
++import { _ } from '@joplin/lib/locale';
++import { ScreenHeader } from '../../components/ScreenHeader';
++import { BaseScreenComponent } from '../../components/base-screen';
++import { themeStyle } from '../../components/global-style';
++import { getListsDatabase, getListsStore } from './listsRuntime';
++import QrCode from './components/QrCode';
++import { EncodedInvite } from '../core/invite';
++import { Role } from '../core/types';
++
++interface Props {
++	navigation: { state: { listId: string } };
++	themeId: number;
++	dispatch: Dispatch;
++}
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++		return StyleSheet.create({
++			container: { flex: 1, alignItems: 'center', padding: theme.margin },
++			qrWrapper: { marginTop: 24, padding: 12, backgroundColor: '#ffffff', borderRadius: 8 },
++			roleRow: { flexDirection: 'row', marginTop: 16 },
++			roleOption: {
++				borderWidth: 1,
++				borderColor: theme.dividerColor,
++				borderRadius: 16,
++				paddingVertical: 6,
++				paddingHorizontal: 14,
++				marginHorizontal: 6,
++			},
++			roleOptionSelected: { backgroundColor: theme.selectedColor, borderColor: theme.colorBright2 },
++			roleOptionText: { color: theme.color },
++			codeBox: {
++				marginTop: 24,
++				paddingVertical: 12,
++				paddingHorizontal: 16,
++				borderWidth: 1,
++				borderColor: theme.dividerColor,
++				borderRadius: 8,
++			},
++			codeText: { fontFamily: 'monospace', fontSize: 18, color: theme.color, textAlign: 'center' },
++			linkText: { color: theme.color, marginTop: 16, textAlign: 'center' },
++			buttonRow: { flexDirection: 'row', marginTop: 16 },
++			button: { paddingVertical: 10, paddingHorizontal: 16 },
++			buttonText: { color: theme.colorBright2, fontWeight: 'bold' },
++			errorText: { color: theme.colorError2, marginTop: 24, textAlign: 'center' },
++		});
++	}, [themeId]);
++};
++
++const ShareScreenComponent: React.FC<Props> = props => {
++	const listId = props.navigation.state.listId;
++	const styles = useStyles(props.themeId);
++	const store = useMemo(() => getListsStore(), []);
++
++	const [managed, setManaged] = useState(false);
++	const [isAdmin, setIsAdmin] = useState(true);
++	const [role, setRole] = useState<Role>('member');
++	const [invite, setInvite] = useState<EncodedInvite | null>(null);
++	const [error, setError] = useState<string | null>(null);
++
++	useEffect(() => {
++		void (async () => {
++			const [lists, db] = await Promise.all([store.lists(), getListsDatabase()]);
++			const list = lists.find(l => l.id === listId);
++			setManaged(list?.kind === 'managed');
++			if (list?.kind === 'managed') {
++				const identity = await db.deviceIdentity();
++				const members = await db.members(listId);
++				const self = members.find(m => m.pubkey === identity.publicKey && !m.removedAt);
++				setIsAdmin(self?.role === 'admin');
++			}
++		})();
++	}, [store, listId]);
++
++	useEffect(() => {
++		setError(null);
++		setInvite(null);
++		if (managed && !isAdmin) return;
++		void (async () => {
++			try {
++				setInvite(await store.inviteFor(listId, role));
++			} catch (e) {
++				setError(e instanceof Error ? e.message : String(e));
++			}
++		})();
++	}, [store, listId, managed, isAdmin, role]);
++
++	const copy = (text: string) => {
++		Clipboard.setString(text);
++		Alert.alert(_('Copied'));
++	};
++
++	return (
++		<View style={styles.container}>
++			<ScreenHeader title={_('Share list')} showBackButton />
++
++			{managed && !isAdmin && (
++				<Text style={styles.errorText}>{_('Only an admin can invite people to this list.')}</Text>
++			)}
++
++			{(!managed || isAdmin) && (
++				<>
++					{managed && (
++						<View style={styles.roleRow}>
++							{(['member', 'admin'] as Role[]).map(r => (
++								<TouchableOpacity
++									key={r}
++									style={[styles.roleOption, role === r ? styles.roleOptionSelected : null]}
++									onPress={() => setRole(r)}
++								>
++									<Text style={styles.roleOptionText}>{r === 'admin' ? _('Admin') : _('Member')}</Text>
++								</TouchableOpacity>
++							))}
++						</View>
++					)}
++
++					{!!error && <Text style={styles.errorText}>{error}</Text>}
++
++					{!!invite && (
++						<>
++							<View style={styles.qrWrapper}>
++								<QrCode value={invite.link} size={220} />
++							</View>
++
++							<Text style={styles.linkText} numberOfLines={2} selectable>{invite.link}</Text>
++
++							<View style={styles.codeBox}>
++								<Text style={styles.codeText} selectable>{invite.code}</Text>
++							</View>
++
++							<View style={styles.buttonRow}>
++								<TouchableOpacity style={styles.button} onPress={() => copy(invite.link)}>
++									<Text style={styles.buttonText}>{_('Copy link')}</Text>
++								</TouchableOpacity>
++								<TouchableOpacity style={styles.button} onPress={() => copy(invite.code)}>
++									<Text style={styles.buttonText}>{_('Copy code')}</Text>
++								</TouchableOpacity>
++								<TouchableOpacity style={styles.button} onPress={() => void RNShare.share({ message: invite.link })}>
++									<Text style={styles.buttonText}>{_('Share')}</Text>
++								</TouchableOpacity>
++							</View>
++						</>
++					)}
++				</>
++			)}
++		</View>
++	);
++};
++
++class ShareScreenClass extends BaseScreenComponent<Props, Record<string, never>> {
++	public override render() {
++		return <ShareScreenComponent {...this.props} />;
++	}
++}
++
++export default ShareScreenClass;
++export { ShareScreenComponent };
+diff --git a/packages/app-mobile/lists/ui/components/CreateListModal.tsx b/packages/app-mobile/lists/ui/components/CreateListModal.tsx
+new file mode 100644
+index 0000000..8ff871a
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/components/CreateListModal.tsx
+@@ -0,0 +1,96 @@
++import * as React from 'react';
++import { useState } from 'react';
++import { Modal, View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
++import { _ } from '@joplin/lib/locale';
++import { ListKind } from '../../core/types';
++
++interface Props {
++	visible: boolean;
++	onCreate: (name: string, kind: ListKind)=> void;
++	onEnterInvite: ()=> void;
++	onCancel: ()=> void;
++}
++
++const styles = StyleSheet.create({
++	backdrop: {
++		flex: 1,
++		backgroundColor: 'rgba(0,0,0,0.5)',
++		justifyContent: 'center',
++		padding: 24,
++	},
++	card: {
++		backgroundColor: '#ffffff',
++		borderRadius: 8,
++		padding: 16,
++	},
++	title: { fontSize: 16, fontWeight: 'bold', marginBottom: 12 },
++	input: {
++		borderWidth: 1,
++		borderColor: '#cccccc',
++		borderRadius: 4,
++		padding: 8,
++		fontSize: 16,
++	},
++	kindRow: { flexDirection: 'row', marginTop: 12 },
++	kindOption: {
++		flex: 1,
++		borderWidth: 1,
++		borderColor: '#cccccc',
++		borderRadius: 4,
++		padding: 10,
++		marginRight: 8,
++		alignItems: 'center',
++	},
++	kindOptionSelected: { backgroundColor: '#dfefff', borderColor: '#3498db' },
++	linkRow: { marginTop: 16 },
++	linkText: { color: '#3498db' },
++	buttonRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 16 },
++	button: { paddingVertical: 8, paddingHorizontal: 16 },
++	buttonText: { fontSize: 15 },
++});
++
++// The FAB dialog: create a new list (name + open/managed), or switch to
++// pasting/scanning an invite instead.
++const CreateListModal: React.FC<Props> = ({ visible, onCreate, onEnterInvite, onCancel }) => {
++	const [name, setName] = useState('');
++	const [kind, setKind] = useState<ListKind>('open');
++
++	React.useEffect(() => {
++		if (visible) { setName(''); setKind('open'); }
++	}, [visible]);
++
++	return (
++		<Modal visible={visible} transparent animationType='fade' onRequestClose={onCancel}>
++			<View style={styles.backdrop}>
++				<View style={styles.card}>
++					<Text style={styles.title}>{_('New list')}</Text>
++					<TextInput style={styles.input} value={name} onChangeText={setName} placeholder={_('List name')} autoFocus />
++
++					<View style={styles.kindRow}>
++						<TouchableOpacity style={[styles.kindOption, kind === 'open' ? styles.kindOptionSelected : null]} onPress={() => setKind('open')}>
++							<Text>{_('Open (everyone is equal)')}</Text>
++						</TouchableOpacity>
++						<TouchableOpacity style={[styles.kindOption, kind === 'managed' ? styles.kindOptionSelected : null]} onPress={() => setKind('managed')}>
++							<Text>{_('Managed (admins)')}</Text>
++						</TouchableOpacity>
++					</View>
++
++					<TouchableOpacity style={styles.linkRow} onPress={onEnterInvite}>
++						<Text style={styles.linkText}>{_('Or enter an invite (link, code or QR code)')}</Text>
++					</TouchableOpacity>
++
++					<View style={styles.buttonRow}>
++						<TouchableOpacity style={styles.button} onPress={onCancel}>
++							<Text style={styles.buttonText}>{_('Cancel')}</Text>
++						</TouchableOpacity>
++						<TouchableOpacity style={styles.button} onPress={() => onCreate(name.trim(), kind)} disabled={!name.trim()}>
++							<Text style={styles.buttonText}>{_('Create')}</Text>
++						</TouchableOpacity>
++					</View>
++				</View>
++			</View>
++		</Modal>
++	);
++};
++
++export default CreateListModal;
+diff --git a/packages/app-mobile/lists/ui/components/ItemEditModal.tsx b/packages/app-mobile/lists/ui/components/ItemEditModal.tsx
+new file mode 100644
+index 0000000..5c3c229
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/components/ItemEditModal.tsx
+@@ -0,0 +1,138 @@
++import * as React from 'react';
++import { useEffect, useState } from 'react';
++import { Modal, View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
++import { _ } from '@joplin/lib/locale';
++import { categoryOrder } from '../../core/normalize';
++import { ItemRecord } from '../../core/types';
++
++interface Props {
++	item: ItemRecord | null;
++	onSave: (detail: string | null, category: string | null)=> void;
++	onDelete: ()=> void;
++	onClose: ()=> void;
++}
++
++const styles = StyleSheet.create({
++	backdrop: {
++		flex: 1,
++		backgroundColor: 'rgba(0,0,0,0.5)',
++		justifyContent: 'flex-end',
++	},
++	card: {
++		backgroundColor: '#ffffff',
++		borderTopLeftRadius: 12,
++		borderTopRightRadius: 12,
++		padding: 16,
++		maxHeight: '80%',
++	},
++	title: {
++		fontSize: 18,
++		fontWeight: 'bold',
++		marginBottom: 12,
++	},
++	label: {
++		fontSize: 13,
++		opacity: 0.7,
++		marginTop: 12,
++		marginBottom: 4,
++	},
++	input: {
++		borderWidth: 1,
++		borderColor: '#cccccc',
++		borderRadius: 4,
++		padding: 8,
++		fontSize: 16,
++	},
++	categoryRow: {
++		flexDirection: 'row',
++		flexWrap: 'wrap',
++	},
++	categoryChip: {
++		borderWidth: 1,
++		borderColor: '#cccccc',
++		borderRadius: 16,
++		paddingVertical: 6,
++		paddingHorizontal: 12,
++		marginRight: 8,
++		marginBottom: 8,
++	},
++	categoryChipSelected: {
++		backgroundColor: '#dfefff',
++		borderColor: '#3498db',
++	},
++	buttonRow: {
++		flexDirection: 'row',
++		justifyContent: 'space-between',
++		marginTop: 16,
++	},
++	button: {
++		paddingVertical: 10,
++		paddingHorizontal: 16,
++	},
++	buttonText: {
++		fontSize: 15,
++	},
++	deleteText: {
++		fontSize: 15,
++		color: '#c0392b',
++	},
++});
++
++// Long-press editor for a single tile: quantity/note ("detail"), category and
++// delete. Rendered for every ListScreen instance but only visible while
++// `item` is set.
++const ItemEditModal: React.FC<Props> = ({ item, onSave, onDelete, onClose }) => {
++	const [detail, setDetail] = useState('');
++	const [category, setCategory] = useState<string | null>(null);
++
++	useEffect(() => {
++		setDetail(item?.detail ?? '');
++		setCategory(item?.category ?? null);
++	}, [item]);
++
++	if (!item) return null;
++
++	return (
++		<Modal visible transparent animationType='slide' onRequestClose={onClose}>
++			<View style={styles.backdrop}>
++				<View style={styles.card}>
++					<ScrollView keyboardShouldPersistTaps='handled'>
++						<Text style={styles.title}>{item.name}</Text>
++
++						<Text style={styles.label}>{_('Quantity / note')}</Text>
++						<TextInput style={styles.input} value={detail} onChangeText={setDetail} placeholder={_('e.g. 2, 1 kg')} />
++
++						<Text style={styles.label}>{_('Category')}</Text>
++						<View style={styles.categoryRow}>
++							{categoryOrder().map(c => (
++								<TouchableOpacity
++									key={c.id}
++									style={[styles.categoryChip, category === c.id ? styles.categoryChipSelected : null]}
++									onPress={() => setCategory(category === c.id ? null : c.id)}
++								>
++									<Text>{c.emoji} {c.name}</Text>
++								</TouchableOpacity>
++							))}
++						</View>
++
++						<View style={styles.buttonRow}>
++							<TouchableOpacity style={styles.button} onPress={onDelete}>
++								<Text style={styles.deleteText}>{_('Delete')}</Text>
++							</TouchableOpacity>
++							<View style={{ flexDirection: 'row' }}>
++								<TouchableOpacity style={styles.button} onPress={onClose}>
++									<Text style={styles.buttonText}>{_('Cancel')}</Text>
++								</TouchableOpacity>
++								<TouchableOpacity style={styles.button} onPress={() => onSave(detail.trim() || null, category)}>
++									<Text style={styles.buttonText}>{_('Save')}</Text>
++								</TouchableOpacity>
++							</View>
++						</View>
++					</ScrollView>
++				</View>
++			</View>
++		</Modal>
++	);
++};
++
++export default ItemEditModal;
+diff --git a/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx b/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx
+new file mode 100644
+index 0000000..74439ec
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx
+@@ -0,0 +1,108 @@
++import * as React from 'react';
++import { useEffect, useRef, useState } from 'react';
++import { Alert, Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { _ } from '@joplin/lib/locale';
++import { getNearbyTransport, NearbyStatus } from '../syncApi';
++
++interface Props {
++	listId: string;
++}
++
++const COLORS: Record<NearbyStatus['state'], string> = {
++	off: '#c0392b',
++	searching: '#e1b12c',
++	found: '#27ae60',
++	unavailable: '#9e9e9e',
++};
++
++const styles = StyleSheet.create({
++	touchable: {
++		padding: 10,
++	},
++	circle: {
++		width: 22,
++		height: 22,
++		borderRadius: 11,
++		alignItems: 'center',
++		justifyContent: 'center',
++		overflow: 'hidden',
++	},
++	ring: {
++		position: 'absolute',
++		width: 22,
++		height: 22,
++		borderRadius: 11,
++		borderWidth: 2,
++		borderColor: 'rgba(255,255,255,0.85)',
++		borderTopColor: 'transparent',
++	},
++	countText: {
++		fontSize: 9,
++		color: '#ffffff',
++		fontWeight: 'bold',
++	},
++});
++
++// The "circle in the top right" from docs/KONZEPT.md section 3: shows and
++// toggles the nearby (Bluetooth) sync state for the currently open list. With
++// no real transport wired up yet, it stays grey ("unavailable") and tapping
++// it explains why; see UnavailableNearbyTransport in syncApi.ts.
++const NearbyStatusCircle: React.FC<Props> = ({ listId }) => {
++	const transport = useRef(getNearbyTransport()).current;
++	const available = transport.isAvailable();
++
++	const [status, setStatus] = useState<NearbyStatus>({
++		state: available ? 'off' : 'unavailable',
++		foundCount: 0,
++		memberCount: 0,
++	});
++
++	useEffect(() => {
++		return transport.onStateChange(setStatus);
++	}, [transport]);
++
++	const spin = useRef(new Animated.Value(0)).current;
++	useEffect(() => {
++		if (status.state !== 'searching') {
++			spin.setValue(0);
++			return undefined;
++		}
++		const animation = Animated.loop(
++			Animated.timing(spin, { toValue: 1, duration: 1200, easing: Easing.linear, useNativeDriver: true }),
++		);
++		animation.start();
++		return () => animation.stop();
++	}, [status.state, spin]);
++
++	const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
++
++	const onPress = () => {
++		if (!available) {
++			Alert.alert(_('Nearby sync'), _('Bluetooth sync will come in a later version.'));
++			return;
++		}
++		if (status.state === 'off') {
++			transport.start(listId);
++		} else {
++			transport.stop();
++		}
++	};
++
++	const description =
++		status.state === 'off' ? _('Nearby sync is off. Tap to search for nearby devices.')
++			: status.state === 'searching' ? _('Searching for nearby devices…')
++				: status.state === 'found' ? _('%d of %d members nearby', status.foundCount, status.memberCount)
++					: _('Nearby sync is not available on this device.');
++
++	return (
++		<TouchableOpacity style={styles.touchable} onPress={onPress}
++			accessibilityRole='button' accessibilityLabel={description}>
++			<View style={[styles.circle, { backgroundColor: COLORS[status.state] }]}>
++				{status.state === 'searching' && <Animated.View style={[styles.ring, { transform: [{ rotate }] }]} />}
++				{status.state === 'found' && <Text style={styles.countText}>{status.foundCount}/{status.memberCount}</Text>}
++			</View>
++		</TouchableOpacity>
++	);
++};
++
++export default NearbyStatusCircle;
+diff --git a/packages/app-mobile/lists/ui/components/PromptModal.tsx b/packages/app-mobile/lists/ui/components/PromptModal.tsx
+new file mode 100644
+index 0000000..5a03883
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/components/PromptModal.tsx
+@@ -0,0 +1,90 @@
++import * as React from 'react';
++import { useState } from 'react';
++import { Modal, View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
++import { _ } from '@joplin/lib/locale';
++
++interface Props {
++	visible: boolean;
++	title: string;
++	initialValue?: string;
++	placeholder?: string;
++	submitLabel?: string;
++	onSubmit: (value: string)=> void;
++	onCancel: ()=> void;
++}
++
++const styles = StyleSheet.create({
++	backdrop: {
++		flex: 1,
++		backgroundColor: 'rgba(0,0,0,0.5)',
++		justifyContent: 'center',
++		padding: 24,
++	},
++	card: {
++		backgroundColor: '#ffffff',
++		borderRadius: 8,
++		padding: 16,
++	},
++	title: {
++		fontSize: 16,
++		fontWeight: 'bold',
++		marginBottom: 12,
++	},
++	input: {
++		borderWidth: 1,
++		borderColor: '#cccccc',
++		borderRadius: 4,
++		padding: 8,
++		fontSize: 16,
++	},
++	buttonRow: {
++		flexDirection: 'row',
++		justifyContent: 'flex-end',
++		marginTop: 16,
++	},
++	button: {
++		paddingVertical: 8,
++		paddingHorizontal: 16,
++	},
++	buttonText: {
++		fontSize: 15,
++	},
++});
++
++// Simple, dependency-free single-line text prompt, used for renaming a list,
++// entering an invite code and similar short inputs.
++const PromptModal: React.FC<Props> = props => {
++	const [value, setValue] = useState(props.initialValue ?? '');
++
++	// Reset the field's value whenever the modal is (re-)opened.
++	React.useEffect(() => {
++		if (props.visible) setValue(props.initialValue ?? '');
++	}, [props.visible, props.initialValue]);
++
++	return (
++		<Modal visible={props.visible} transparent animationType='fade' onRequestClose={props.onCancel}>
++			<View style={styles.backdrop}>
++				<View style={styles.card}>
++					<Text style={styles.title}>{props.title}</Text>
++					<TextInput
++						style={styles.input}
++						value={value}
++						onChangeText={setValue}
++						placeholder={props.placeholder}
++						autoFocus
++					/>
++					<View style={styles.buttonRow}>
++						<TouchableOpacity style={styles.button} onPress={props.onCancel}>
++							<Text style={styles.buttonText}>{_('Cancel')}</Text>
++						</TouchableOpacity>
++						<TouchableOpacity style={styles.button} onPress={() => props.onSubmit(value)}>
++							<Text style={styles.buttonText}>{props.submitLabel ?? _('OK')}</Text>
++						</TouchableOpacity>
++					</View>
++				</View>
++			</View>
++		</Modal>
++	);
++};
++
++export default PromptModal;
+diff --git a/packages/app-mobile/lists/ui/components/QrCode.tsx b/packages/app-mobile/lists/ui/components/QrCode.tsx
+new file mode 100644
+index 0000000..012e067
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/components/QrCode.tsx
+@@ -0,0 +1,56 @@
++import * as React from 'react';
++import { useMemo } from 'react';
++import Svg, { Rect } from 'react-native-svg';
++import qrcode = require('qrcode-generator');
++
++interface Props {
++	value: string;
++	size?: number;
++	color?: string;
++	backgroundColor?: string;
++}
++
++const QrCode: React.FC<Props> = ({ value, size = 220, color = '#000000', backgroundColor = '#ffffff' }) => {
++	const modules = useMemo(() => {
++		const qr = qrcode(0, 'M');
++		qr.addData(value);
++		qr.make();
++		const count = qr.getModuleCount();
++		const dark: boolean[][] = [];
++		for (let row = 0; row < count; row++) {
++			dark.push([]);
++			for (let col = 0; col < count; col++) {
++				dark[row].push(qr.isDark(row, col));
++			}
++		}
++		return { count, dark };
++	}, [value]);
++
++	const cellSize = size / modules.count;
++
++	const rects = [];
++	for (let row = 0; row < modules.count; row++) {
++		for (let col = 0; col < modules.count; col++) {
++			if (!modules.dark[row][col]) continue;
++			rects.push(
++				<Rect
++					key={`${row}-${col}`}
++					x={col * cellSize}
++					y={row * cellSize}
++					width={cellSize}
++					height={cellSize}
++					fill={color}
++				/>,
++			);
++		}
++	}
++
++	return (
++		<Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
++			<Rect x={0} y={0} width={size} height={size} fill={backgroundColor} />
++			{rects}
++		</Svg>
++	);
++};
++
++export default QrCode;
+diff --git a/packages/app-mobile/lists/ui/groupItems.test.ts b/packages/app-mobile/lists/ui/groupItems.test.ts
+new file mode 100644
+index 0000000..7712d7c
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/groupItems.test.ts
+@@ -0,0 +1,58 @@
++import { groupOpenItems, sortRecentlyBought } from './groupItems';
++import { ItemRecord } from '../core/types';
++
++const makeItem = (overrides: Partial<ItemRecord>): ItemRecord => ({
++	listId: 'list-1',
++	dTag: overrides.name ?? 'item',
++	name: 'Item',
++	detail: null,
++	detailT: null,
++	category: null,
++	categoryT: null,
++	icon: null,
++	iconT: null,
++	open: true,
++	openT: 0,
++	deleted: false,
++	deletedT: null,
++	device: 'device1',
++	pending: false,
++	...overrides,
++});
++
++describe('lists/ui/groupItems', () => {
++	test('groups items by the catalog\'s category order, not insertion order', () => {
++		const items = [
++			makeItem({ name: 'Sonstiges Ding', category: 'sonstiges' }),
++			makeItem({ name: 'Milch', category: 'kuehlregal' }),
++			makeItem({ name: 'Äpfel', category: 'obst_gemuese' }),
++		];
++
++		const groups = groupOpenItems(items);
++
++		expect(groups.map(g => g.categoryId)).toEqual(['obst_gemuese', 'kuehlregal', 'sonstiges']);
++	});
++
++	test('items with an unknown or missing category fall back to "sonstiges"', () => {
++		const items = [
++			makeItem({ name: 'Unbekannt', category: 'does-not-exist' }),
++			makeItem({ name: 'Ohne Kategorie', category: null }),
++		];
++
++		const groups = groupOpenItems(items);
++
++		expect(groups).toHaveLength(1);
++		expect(groups[0].categoryId).toBe('sonstiges');
++		expect(groups[0].items.map(i => i.name)).toEqual(['Ohne Kategorie', 'Unbekannt']);
++	});
++
++	test('sortRecentlyBought puts the most recently bought item first', () => {
++		const items = [
++			makeItem({ name: 'Alt', openT: 100 }),
++			makeItem({ name: 'Neu', openT: 300 }),
++			makeItem({ name: 'Mittel', openT: 200 }),
++		];
++
++		expect(sortRecentlyBought(items).map(i => i.name)).toEqual(['Neu', 'Mittel', 'Alt']);
++	});
++});
+diff --git a/packages/app-mobile/lists/ui/groupItems.ts b/packages/app-mobile/lists/ui/groupItems.ts
+new file mode 100644
+index 0000000..a4268f3
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/groupItems.ts
+@@ -0,0 +1,44 @@
++// Grouping/ordering helpers for the tile grid: open items grouped by category
++// (in the same walk-the-store order as the shipped catalog, see
++// lists/catalog/categories.json) and bought items ordered most-recently-bought
++// first.
++
++import { categoryOrder, fallbackCategoryId } from '../core/normalize';
++import { ItemRecord } from '../core/types';
++
++export interface ItemGroup {
++	categoryId: string;
++	categoryName: string;
++	emoji: string;
++	items: ItemRecord[];
++}
++
++export const groupOpenItems = (items: ItemRecord[]): ItemGroup[] => {
++	const categories = categoryOrder();
++	const knownIds = new Set(categories.map(c => c.id));
++	const itemsByCategory = new Map<string, ItemRecord[]>();
++
++	for (const item of items) {
++		const categoryId = item.category && knownIds.has(item.category) ? item.category : fallbackCategoryId;
++		if (!itemsByCategory.has(categoryId)) itemsByCategory.set(categoryId, []);
++		itemsByCategory.get(categoryId).push(item);
++	}
++
++	const groups: ItemGroup[] = [];
++	for (const category of categories) {
++		const categoryItems = itemsByCategory.get(category.id);
++		if (!categoryItems || !categoryItems.length) continue;
++		groups.push({
++			categoryId: category.id,
++			categoryName: category.name,
++			emoji: category.emoji,
++			items: categoryItems.slice().sort((a, b) => a.name.localeCompare(b.name)),
++		});
++	}
++	return groups;
++};
++
++// Most recently marked as bought first.
++export const sortRecentlyBought = (items: ItemRecord[]): ItemRecord[] => {
++	return items.slice().sort((a, b) => b.openT - a.openT);
++};
+diff --git a/packages/app-mobile/lists/ui/listsRuntime.ts b/packages/app-mobile/lists/ui/listsRuntime.ts
+new file mode 100644
+index 0000000..ff8b1e1
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/listsRuntime.ts
+@@ -0,0 +1,37 @@
++// Singleton access to the shopping-list database and store, opened lazily on
++// first use by a screen rather than at app startup (see docs/KONZEPT.md
++// section 2 and the mobile-map.md startup task for the sibling log.sqlite
++// file this mirrors).
++
++import Database from '@joplin/lib/database';
++import DatabaseDriverReactNative from '../../utils/database-driver-react-native';
++import { ListsDatabase } from '../core/db';
++import { ListsStore } from '../core/store';
++
++export const LISTS_DB_FILENAME = 'tiles-lists.sqlite';
++
++let database: ListsDatabase | null = null;
++let store: ListsStore | null = null;
++
++const ensureInstances = () => {
++	if (!database) database = new ListsDatabase(new Database(new DatabaseDriverReactNative()));
++	if (!store) store = new ListsStore(database, LISTS_DB_FILENAME);
++	return { database, store };
++};
++
++export const getListsStore = (): ListsStore => ensureInstances().store;
++
++// Synchronous access to the (not-necessarily-open) ListsDatabase instance,
++// for code that only needs the object reference itself -- e.g. wiring up
++// lists/sync's ListsSync.init(store, db) once, without forcing the database
++// open before the person has visited a shopping-list screen.
++export const getListsDatabaseInstance = (): ListsDatabase => ensureInstances().database;
++
++// Direct database access for reads the ListsStore façade doesn't expose
++// (member lists, list renaming). openOrCreate() is idempotent, so calling it
++// here is safe whether or not the store has already opened the database.
++export const getListsDatabase = async (): Promise<ListsDatabase> => {
++	const { database } = ensureInstances();
++	await database.openOrCreate(LISTS_DB_FILENAME);
++	return database;
++};
+diff --git a/packages/app-mobile/lists/ui/parseItemInput.test.ts b/packages/app-mobile/lists/ui/parseItemInput.test.ts
+new file mode 100644
+index 0000000..cbf9855
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/parseItemInput.test.ts
+@@ -0,0 +1,17 @@
++import { parseItemInput } from './parseItemInput';
++
++describe('lists/ui/parseItemInput', () => {
++	test.each([
++		['2 Milch', { name: 'Milch', detail: '2' }],
++		['Milch 2l', { name: 'Milch', detail: '2l' }],
++		['3x Eier', { name: 'Eier', detail: '3x' }],
++		['3 x Eier', { name: 'Eier', detail: '3 x' }],
++		['Äpfel 1 kg', { name: 'Äpfel', detail: '1 kg' }],
++		['1,5 kg Hackfleisch', { name: 'Hackfleisch', detail: '1,5 kg' }],
++		['Milch', { name: 'Milch', detail: null }],
++		['  Bio-Milch   H  ', { name: 'Bio-Milch H', detail: null }],
++		['', { name: '', detail: null }],
++	])('parses %s', (input, expected) => {
++		expect(parseItemInput(input)).toEqual(expected);
++	});
++});
+diff --git a/packages/app-mobile/lists/ui/parseItemInput.ts b/packages/app-mobile/lists/ui/parseItemInput.ts
+new file mode 100644
+index 0000000..d49f5d2
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/parseItemInput.ts
+@@ -0,0 +1,40 @@
++// Simple quantity heuristic for the "add item" field: pulls a leading or
++// trailing amount (with an optional unit) out of free-typed text, e.g.
++// "2 Milch", "Milch 2l", "3x Eier", "Äpfel 1 kg". The amount becomes the
++// item's `detail`; the rest is passed on to the catalog matcher (normalize.ts)
++// as the name. No autocomplete or catalog lookup happens here -- see
++// docs/KONZEPT.md section 2 for why quantity itself stays free text.
++
++export interface ParsedItemInput {
++	name: string;
++	detail: string | null;
++}
++
++const UNIT_WORDS = ['kg', 'g', 'l', 'ml', 'stk', 'stück', 'st', 'pkg', 'pck', 'dose', 'dosen', 'flasche', 'flaschen', 'packung', 'packungen', 'bund', 'bündel'];
++
++const NUMBER = '\\d+(?:[.,]\\d+)?';
++const UNIT = UNIT_WORDS.join('|');
++
++// "<amount>[x|<unit>] <name>", e.g. "2 Milch", "3x Eier", "2kg Möhren".
++const LEADING_AMOUNT = new RegExp(`^(${NUMBER}\\s*(?:x|${UNIT})?)\\s+(.+)$`, 'i');
++// "<name> <amount>[<unit>]", e.g. "Milch 2l", "Äpfel 1 kg".
++const TRAILING_AMOUNT = new RegExp(`^(.+?)\\s+(${NUMBER}\\s*(?:${UNIT})?)$`, 'i');
++
++export const parseItemInput = (text: string): ParsedItemInput => {
++	const trimmed = text.trim().replace(/\s+/g, ' ');
++	if (!trimmed) return { name: '', detail: null };
++
++	const leading = trimmed.match(LEADING_AMOUNT);
++	if (leading) {
++		const [, amount, name] = leading;
++		return { name: name.trim(), detail: amount.trim() };
++	}
++
++	const trailing = trimmed.match(TRAILING_AMOUNT);
++	if (trailing) {
++		const [, name, amount] = trailing;
++		return { name: name.trim(), detail: amount.trim() };
++	}
++
++	return { name: trimmed, detail: null };
++};
+diff --git a/packages/app-mobile/lists/ui/qrcode-generator.d.ts b/packages/app-mobile/lists/ui/qrcode-generator.d.ts
+new file mode 100644
+index 0000000..42c3b73
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/qrcode-generator.d.ts
+@@ -0,0 +1,15 @@
++declare module 'qrcode-generator' {
++	interface QrCodeInstance {
++		addData(data: string): void;
++		make(): void;
++		getModuleCount(): number;
++		isDark(row: number, col: number): boolean;
++	}
++
++	type ErrorCorrectionLevel = 'L' | 'M' | 'Q' | 'H';
++
++	// typeNumber 0 lets the library pick the smallest version that fits the data.
++	function qrcode(typeNumber: number, errorCorrectionLevel: ErrorCorrectionLevel): QrCodeInstance;
++
++	export = qrcode;
++}
+diff --git a/packages/app-mobile/lists/ui/syncApi.ts b/packages/app-mobile/lists/ui/syncApi.ts
+new file mode 100644
+index 0000000..45191fa
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/syncApi.ts
+@@ -0,0 +1,228 @@
++// Thin interface onto the lists/sync module (owned by a separate agent, see
++// docs/KONZEPT.md section 3), plus a lazy, failure-tolerant loader for it and
++// a small adapter translating its field names to the shape this UI code
++// wants. The UI imports the sync API from here rather than from '../sync'
++// directly, so it keeps compiling and running (with the transport reporting
++// as unavailable) whether or not that module exists yet, and so a field
++// rename on the sync side only needs to be reflected in the adapter below.
++
++import { getListsDatabaseInstance, getListsStore } from './listsRuntime';
++
++export type NearbyState = 'off' | 'searching' | 'found' | 'unavailable';
++
++export interface NearbyStatus {
++	state: NearbyState;
++	// Members currently in range, out of the list's total member count.
++	foundCount: number;
++	memberCount: number;
++}
++
++export interface NearbyTransport {
++	isAvailable(): boolean;
++	start(listId: string): void;
++	stop(): void;
++	onStateChange(listener: (status: NearbyStatus)=> void): ()=> void;
++}
++
++export interface SyncStatus {
++	listId: string;
++	// Milliseconds since epoch, or null if this list has never synced.
++	lastSyncedAt: number | null;
++	online: boolean;
++}
++
++export interface PendingJoinRequest {
++	pubkey: string;
++	deviceName: string;
++	requestedAt: number;
++}
++
++export interface ListsSyncApi {
++	syncList(listId: string): Promise<void>;
++	subscribe(listId: string): void;
++	unsubscribe(listId: string): void;
++	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the join request event's shape is owned by lists/core, not by this interface
++	publishJoinRequest(listId: string, event: any): Promise<void>;
++	refreshAll(): Promise<void>;
++	onStatus(listener: (status: SyncStatus)=> void): ()=> void;
++	// Not offered by lists/sync: a managed list's admin device accepts valid
++	// join requests automatically the next time it syncs (see
++	// ListsSync#acceptJoinRequests), rather than through a manual UI action.
++	// Kept optional here in case a future version adds one.
++	acceptJoinRequest?(listId: string, pubkey: string): Promise<void>;
++	pendingJoinRequests?(listId: string): Promise<PendingJoinRequest[]>;
++}
++
++class NoopListsSync implements ListsSyncApi {
++	public async syncList(_listId: string): Promise<void> {
++		// lists/sync isn't available yet -- nothing to do.
++	}
++
++	public subscribe(_listId: string): void {
++		// no-op
++	}
++
++	public unsubscribe(_listId: string): void {
++		// no-op
++	}
++
++	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see ListsSyncApi#publishJoinRequest
++	public async publishJoinRequest(_listId: string, _event: any): Promise<void> {
++		// no-op
++	}
++
++	public async refreshAll(): Promise<void> {
++		// no-op
++	}
++
++	public onStatus(_listener: (status: SyncStatus)=> void): ()=> void {
++		return () => {};
++	}
++}
++
++class UnavailableNearbyTransportFallback implements NearbyTransport {
++	public isAvailable(): boolean {
++		return false;
++	}
++
++	public start(_listId: string): void {
++		// no-op
++	}
++
++	public stop(): void {
++		// no-op
++	}
++
++	public onStateChange(_listener: (status: NearbyStatus)=> void): ()=> void {
++		return () => {};
++	}
++}
++
++// --- shapes of the real lists/sync module (see lists/sync/listSync.ts and
++// lists/sync/nearby.ts), kept minimal and local so this file doesn't need to
++// import from '../sync' statically. -------------------------------------
++
++interface RealSyncStatus {
++	listId: string;
++	state: 'idle' | 'syncing' | 'offline' | 'error';
++	lastSync?: number;
++	message?: string;
++}
++
++interface RealListsSync {
++	syncList(listId: string): Promise<void>;
++	subscribe(listId: string): Promise<void>;
++	unsubscribe(listId: string): void;
++	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see ListsSyncApi#publishJoinRequest
++	publishJoinRequest(listId: string, event: any): Promise<unknown>;
++	refreshAll(): Promise<void>;
++	onStatus(listener: (status: RealSyncStatus)=> void): ()=> void;
++}
++
++interface RealListsSyncStatic {
++	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- ListsStore/ListsDatabase, typed loosely to avoid a static import of lists/core just for this
++	init(store: any, db: any, poolFactory?: unknown): RealListsSync;
++	instance(): RealListsSync;
++}
++
++interface RealNearbyState {
++	mode: NearbyState;
++	found: number;
++	total: number;
++}
++
++interface RealNearbyTransport {
++	isAvailable(): boolean;
++	start(listId: string): Promise<void>;
++	stop(): Promise<void>;
++	onState(listener: (state: RealNearbyState)=> void): ()=> void;
++}
++
++interface SyncModule {
++	ListsSync?: RealListsSyncStatic;
++	startListsSyncLifecycle?: ()=> void;
++}
++
++interface NearbyModule {
++	UnavailableNearbyTransport?: new ()=> RealNearbyTransport;
++}
++
++const adaptSyncStatus = (status: RealSyncStatus): SyncStatus => ({
++	listId: status.listId,
++	lastSyncedAt: status.lastSync ?? null,
++	online: status.state !== 'offline',
++});
++
++const adaptListsSync = (real: RealListsSync): ListsSyncApi => ({
++	syncList: (listId: string) => real.syncList(listId),
++	subscribe: (listId: string) => { void real.subscribe(listId); },
++	unsubscribe: (listId: string) => real.unsubscribe(listId),
++	publishJoinRequest: async (listId: string, event: unknown) => { await real.publishJoinRequest(listId, event); },
++	refreshAll: () => real.refreshAll(),
++	onStatus: listener => real.onStatus(status => listener(adaptSyncStatus(status))),
++});
++
++const adaptNearbyTransport = (real: RealNearbyTransport): NearbyTransport => ({
++	isAvailable: () => real.isAvailable(),
++	start: (listId: string) => { void real.start(listId); },
++	stop: () => { void real.stop(); },
++	onStateChange: listener => real.onState(state => listener({
++		state: state.mode,
++		foundCount: state.found,
++		memberCount: state.total,
++	})),
++});
++
++// eslint-disable-next-line @typescript-eslint/no-explicit-any -- require() has no typings for an as-yet-unbuilt module
++const tryRequire = (path: string): any => {
++	try {
++		// eslint-disable-next-line @typescript-eslint/no-var-requires -- lazy, optional load of a module that may not exist yet
++		return require(path);
++	} catch {
++		return null;
++	}
++};
++
++let cachedSync: ListsSyncApi | null = null;
++let cachedNearby: NearbyTransport | null = null;
++
++export const getListsSync = (): ListsSyncApi => {
++	if (!cachedSync) {
++		const syncModule = tryRequire('../sync') as SyncModule | null;
++		if (!syncModule?.ListsSync) {
++			cachedSync = new NoopListsSync();
++		} else {
++			// ListsSync.instance() throws until init() has been called once;
++			// do so lazily here (with the same store/db this runtime module
++			// owns) rather than forcing it at app startup.
++			let real: RealListsSync;
++			try {
++				real = syncModule.ListsSync.instance();
++			} catch {
++				real = syncModule.ListsSync.init(getListsStore(), getListsDatabaseInstance());
++			}
++			cachedSync = adaptListsSync(real);
++		}
++	}
++	return cachedSync;
++};
++
++export const getNearbyTransport = (): NearbyTransport => {
++	if (!cachedNearby) {
++		const nearbyModule = tryRequire('../sync/nearby') as NearbyModule | null;
++		cachedNearby = nearbyModule?.UnavailableNearbyTransport
++			? adaptNearbyTransport(new nearbyModule.UnavailableNearbyTransport())
++			: new UnavailableNearbyTransportFallback();
++	}
++	return cachedNearby;
++};
++
++// Starts the sync agent's background lifecycle (relay subscriptions, periodic
++// refresh, ...). Safe to call even if lists/sync doesn't exist yet. Ensures
++// ListsSync is initialized first, so the AppState-driven refresh this wires
++// up doesn't hit ListsSync.instance()'s "not initialized" error.
++export const startListsSyncLifecycle = (): void => {
++	getListsSync();
++	const syncModule = tryRequire('../sync') as SyncModule | null;
++	if (syncModule?.startListsSyncLifecycle) syncModule.startListsSyncLifecycle();
++};
+diff --git a/packages/app-mobile/package.json b/packages/app-mobile/package.json
+index b3757e1..d65c358 100644
+--- a/packages/app-mobile/package.json
++++ b/packages/app-mobile/package.json
+@@ -64,6 +64,7 @@
+     "path-browserify": "1.0.1",
+     "prop-types": "15.8.1",
+     "punycode": "2.3.1",
++    "qrcode-generator": "2.0.4",
+     "react": "19.1.4",
+     "react-native": "0.81.6",
+     "react-native-device-info": "15.0.2",
+diff --git a/packages/app-mobile/root.tsx b/packages/app-mobile/root.tsx
+index 19a1d8d..33083f9 100644
+--- a/packages/app-mobile/root.tsx
++++ b/packages/app-mobile/root.tsx
+@@ -112,6 +112,13 @@ import SamlShared from '@joplin/lib/components/shared/SamlShared';
+ import NoteRevisionViewer from './components/screens/NoteRevisionViewer';
+ import DocumentScanner from './components/screens/DocumentScanner/DocumentScanner';
+ import buildStartupTasks from './utils/buildStartupTasks';
++import ListsOverviewScreen from './lists/ui/ListsOverviewScreen';
++import ListScreen from './lists/ui/ListScreen';
++import ListsShareScreen from './lists/ui/ShareScreen';
++import ListsJoinScreen from './lists/ui/JoinScreen';
++import ListsMembersScreen from './lists/ui/MembersScreen';
++import { startListsSyncLifecycle } from './lists/ui/syncApi';
++import { INVITE_LINK_PREFIX } from './lists/core/invite';
+ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+ import appReducer from './utils/appReducer';
+ import SyncWizard from './components/SyncWizard/SyncWizard';
+@@ -299,6 +306,13 @@ async function initialize(dispatch: Dispatch) {
+ 	logger.info('Application initialized');
+ }
+ 
++// A shopping-list invite: either the joplintiles:// scheme, or the https://
++// link handled by the Android intent filter in AndroidManifest.xml (see
++// lists/core/invite.ts for the encoding).
++const isListsInviteUrl = (url: string): boolean => {
++	return url.startsWith('joplintiles://') || url.startsWith(INVITE_LINK_PREFIX);
++};
++
+ interface AppComponentProps {
+ 	dispatch: Dispatch;
+ 	themeId: number;
+@@ -329,6 +343,7 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 	private keyboardHideListener_: EmitterSubscription|null = null;
+ 	private dropdownAlert_: (data?: DropdownAlertData)=> Promise<DropdownAlertData> = (_data?: DropdownAlertData) => new Promise<DropdownAlertData>(res => res);
+ 	private callbackUrl: string|null = null;
++	private listsInviteUrl: string|null = null;
+ 
+ 	private lastSyncStarted_ = false;
+ 	private quickActionShortcutListener_: EmitterSubscription|undefined;
+@@ -376,6 +391,12 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 				if (this.props.biometricsDone) {
+ 					void this.handleCallbackUrl();
+ 				}
++			} else if (isListsInviteUrl(event.url)) {
++				logger.info('received shopping list invite url');
++				this.listsInviteUrl = event.url;
++				if (this.props.biometricsDone) {
++					void this.handleListsInviteUrl();
++				}
+ 			}
+ 		};
+ 
+@@ -452,6 +473,12 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 				throw error;
+ 			}
+ 
++			// The shopping-list database itself opens lazily on first screen use
++			// (see lists/ui/listsRuntime.ts), but the sync agent's background
++			// lifecycle (relay subscriptions, periodic refresh) can start now that
++			// Joplin's own startup has completed.
++			startListsSyncLifecycle();
++
+ 			// https://reactnative.dev/docs/linking#handling-deep-links
+ 			//
+ 			// The handler added with Linking.addEventListener() is only triggered when app is already open.
+@@ -465,6 +492,9 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 			if (url && isCallbackUrl(url)) {
+ 				logger.info('received initial callback url: ', url);
+ 				this.callbackUrl = url;
++			} else if (url && isListsInviteUrl(url)) {
++				logger.info('received initial shopping list invite url');
++				this.listsInviteUrl = url;
+ 			}
+ 
+ 			const loadedSensorInfo = await sensorInfo();
+@@ -595,6 +625,7 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 			logger.info('Sharing: componentDidUpdate: biometricsDone');
+ 			void this.handleShareData();
+ 			void this.handleCallbackUrl();
++			void this.handleListsInviteUrl();
+ 		}
+ 	}
+ 
+@@ -687,6 +718,20 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 		}
+ 	}
+ 
++	private async handleListsInviteUrl() {
++		const url = this.listsInviteUrl;
++		this.listsInviteUrl = null;
++		if (url === null) return;
++
++		this.props.dispatch({ type: 'NAV_BACK' });
++		this.props.dispatch({ type: 'SIDE_MENU_CLOSE' });
++		this.props.dispatch({
++			type: 'NAV_GO',
++			routeName: 'ListsJoin',
++			inviteText: url,
++		});
++	}
++
+ 	private async handleScreenWidthChange_() {
+ 		this.setState({ sideMenuWidth: this.getSideMenuWidth() });
+ 	}
+@@ -777,6 +822,11 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 			NoteResources: { screen: ResourceScreen },
+ 			Config: { screen: ConfigScreen },
+ 			DocumentScanner: { screen: DocumentScanner },
++			Lists: { screen: ListsOverviewScreen },
++			ListsList: { screen: ListScreen },
++			ListsShare: { screen: ListsShareScreen },
++			ListsJoin: { screen: ListsJoinScreen },
++			ListsMembers: { screen: ListsMembersScreen },
+ 		};
+ 
+ 
+diff --git a/packages/app-mobile/utils/types.ts b/packages/app-mobile/utils/types.ts
+index 071cb48..f7c38be 100644
+--- a/packages/app-mobile/utils/types.ts
++++ b/packages/app-mobile/utils/types.ts
+@@ -10,6 +10,10 @@ export interface Route {
+ 	tagId?: string;
+ 	noteId?: string;
+ 	isDeleted?: boolean;
++	// Shopping-list screens (lists/ui/*): which list to show, and a prefilled
++	// invite link/code for the join screen (see root.tsx's deep-link handling).
++	listId?: string;
++	inviteText?: string;
+ }
+ 
+ export interface AppState extends State {
+diff --git a/packages/lib/locales/de_DE.json b/packages/lib/locales/de_DE.json
+index 2f2b20b..14837a1 100644
+--- a/packages/lib/locales/de_DE.json
++++ b/packages/lib/locales/de_DE.json
+@@ -44,6 +44,12 @@
+ 		"%d Notiz wird dauerhaft gelöscht. Fortfahren?",
+ 		"%d Notizen werden dauerhaft gelöscht. Fortfahren?"
+ 	],
++	"%d of %d members nearby": [
++		"%d von %d Mitgliedern in der Nähe"
++	],
++	"%d open, %d members": [
++		"%d offen, %d Mitglieder"
++	],
+ 	"%d photo(s) taken": [
+ 		"%d Foto(s) aufgenommen"
+ 	],
+@@ -294,6 +300,9 @@
+ 	"Add a text card": [
+ 		""
+ 	],
++	"Add an item…": [
++		"Artikel hinzufügen …"
++	],
+ 	"Add body": [
+ 		"Text hinzufügen"
+ 	],
+@@ -598,6 +607,9 @@
+ 	"Block code": [
+ 		"Blockcode"
+ 	],
++	"Bluetooth sync will come in a later version.": [
++		"Der Bluetooth-Abgleich folgt in einer späteren Version."
++	],
+ 	"Bold": [
+ 		"Fett"
+ 	],
+@@ -703,6 +715,9 @@
+ 	"Case sensitive": [
+ 		"Groß- und Kleinschreibung beachtend"
+ 	],
++	"Category": [
++		"Kategorie"
++	],
+ 	"Certain Markdown formatting is now rendered in the editor by default. For example, **bold** will appear as actual bold text. You can change this behaviour in the \"Editor\" section of Settings.": [
+ 		""
+ 	],
+@@ -760,6 +775,9 @@
+ 	"Chrome Web Store": [
+ 		"Chrome-Webstore"
+ 	],
++	"Clean up bought items": [
++		"Erledigte aufräumen"
++	],
+ 	"Clear": [
+ 		"Leeren"
+ 	],
+@@ -847,6 +865,9 @@
+ 	"Comma-separated list of paths to directories to load the certificates from, or path to individual cert files. For example: /my/cert_dir, /other/custom.pem. Note that if you make changes to the TLS settings, you must save your changes before clicking on \"Check synchronisation configuration\".": [
+ 		"Kommagetrennte Liste von Pfaden zu Verzeichnissen, aus denen die Zertifikate geladen werden, oder Pfad zu einzelnen Zertifikatsdateien. Zum Beispiel: /my/cert_dir, /other/custom.pem. Wenn du Änderungen an den TLS-Einstellungen vornimmst, musst du deine Änderungen speichern, bevor du auf „Synchronisationskonfiguration prüfen“ klickst."
+ 	],
++	"Comma-separated list of wss:// relay URLs used to sync shopping lists. Leave empty to use the app defaults.": [
++		"Kommagetrennte Liste von wss://-Relay-Adressen für den Abgleich der Einkaufslisten. Leer lassen, um die App-Voreinstellung zu verwenden."
++	],
+ 	"command": [
+ 		"Befehl"
+ 	],
+@@ -968,9 +989,15 @@
+ 	"Converting speech to text...": [
+ 		"Wandle Sprache in Text um..."
+ 	],
++	"Copied": [
++		"Kopiert"
++	],
+ 	"Copy": [
+ 		"Kopieren"
+ 	],
++	"Copy code": [
++		"Code kopieren"
++	],
+ 	"Copy dev mode command to clipboard": [
+ 		"Entwicklermodus-Befehl in Zwischenablage kopieren"
+ 	],
+@@ -980,6 +1007,9 @@
+ 	"Copy image": [
+ 		"Bild kopieren"
+ 	],
++	"Copy link": [
++		"Link kopieren"
++	],
+ 	"Copy Link Address": [
+ 		"Link-Adresse kopieren"
+ 	],
+@@ -1284,6 +1314,9 @@
+ 	"Dev": [
+ 		"Entwicklung"
+ 	],
++	"Device name": [
++		"Gerätename"
++	],
+ 	"Device: %s": [
+ 		"Gerät: %s"
+ 	],
+@@ -1464,6 +1497,9 @@
+ 	"Duration: %s": [
+ 		"Dauer: %s"
+ 	],
++	"e.g. 2, 1 kg": [
++		"z. B. 2, 1 kg"
++	],
+ 	"Edit": [
+ 		"Bearbeiten"
+ 	],
+@@ -2257,6 +2293,15 @@
+ 	"Items with error: %s": [
+ 		"Elemente mit Fehlern: %s"
+ 	],
++	"Join": [
++		"Beitreten"
++	],
++	"Join a list": [
++		"Liste beitreten"
++	],
++	"Join request sent": [
++		"Beitrittsanfrage gesendet"
++	],
+ 	"Join us on %s": [
+ 		"Folge uns auf %s"
+ 	],
+@@ -2380,6 +2425,9 @@
+ 	"Last error: %s": [
+ 		"Letzte Fehlermeldung: %s"
+ 	],
++	"Last synced %s": [
++		"Zuletzt abgeglichen %s"
++	],
+ 	"Later": [
+ 		"Später"
+ 	],
+@@ -2448,6 +2496,9 @@
+ 	"List item": [
+ 		"Listeneintrag"
+ 	],
++	"List name": [
++		"Listenname"
++	],
+ 	"Loaded": [
+ 		"Geladen"
+ 	],
+@@ -2496,6 +2547,12 @@
+ 	"Make a donation": [
+ 		"Spenden"
+ 	],
++	"Make admin": [
++		"Zum Admin machen"
++	],
++	"Make member": [
++		"Zum Mitglied machen"
++	],
+ 	"Manage master password": [
+ 		"Master-Passwort verwalten"
+ 	],
+@@ -2523,6 +2580,12 @@
+ 	"Manage your profiles. You can rename or delete profiles. The active profile cannot be deleted.": [
+ 		"Verwalte deine Profile. Du kannst Profile umbenennen oder löschen. Das aktive Profil kann nicht gelöscht werden."
+ 	],
++	"Managed (admins)": [
++		"Verwaltet (Admins)"
++	],
++	"Managed list": [
++		"Verwaltete Liste"
++	],
+ 	"Manages E2EE configuration. Commands are `enable`, `disable`, `decrypt`, `status`, `decrypt-file`, and `target-status`.": [
+ 		"Verwaltet die E2EE-Konfiguration. Die Befehle lauten `enable`, `disable`, `decrypt`, `status`, `decrypt-file` und `target-status`."
+ 	],
+@@ -2592,6 +2655,12 @@
+ 	"Medium": [
+ 		"Mittel"
+ 	],
++	"Member": [
++		"Mitglied"
++	],
++	"Members": [
++		"Mitglieder"
++	],
+ 	"Minimise": [
+ 		"Minimieren"
+ 	],
+@@ -2674,6 +2743,21 @@
+ 	"N": [
+ 		"N"
+ 	],
++	"Name shown to other members of your shopping lists. Leave empty to use the default.": [
++		"Name, der anderen Mitgliedern deiner Einkaufslisten angezeigt wird. Leer lassen, um die Voreinstellung zu verwenden."
++	],
++	"Nearby (Bluetooth) sync automatically turns off after this many minutes, to save battery.": [
++		"Der Nahbereichs-Abgleich (Bluetooth) schaltet sich nach dieser Anzahl Minuten automatisch aus, um Akku zu sparen."
++	],
++	"Nearby sync": [
++		"Nahbereichs-Abgleich"
++	],
++	"Nearby sync is not available on this device.": [
++		"Der Nahbereichs-Abgleich ist auf diesem Gerät nicht verfügbar."
++	],
++	"Nearby sync is off. Tap to search for nearby devices.": [
++		"Der Nahbereichs-Abgleich ist aus. Antippen, um nach Geräten in der Nähe zu suchen."
++	],
+ 	"Never resize": [
+ 		"Größe nie anpassen"
+ 	],
+@@ -2686,6 +2770,9 @@
+ 	"New invitations": [
+ 		"Neue Einladungen"
+ 	],
++	"New list": [
++		"Neue Liste"
++	],
+ 	"New model available\nA new voice typing model is available. Do you want to download it?": [
+ 		"Neues Modell verfügbar.\nSoll sie jetzt heruntergeladen werden?"
+ 	],
+@@ -2764,6 +2851,9 @@
+ 	"No embedding model is installed. It is downloaded automatically on first use — check Settings → AI for progress.": [
+ 		""
+ 	],
++	"No items yet. Type above to add the first one.": [
++		"Noch keine Artikel. Oben eintippen, um den ersten hinzuzufügen."
++	],
+ 	"No new invitations": [
+ 		"Keine neuen Einladungen"
+ 	],
+@@ -2776,6 +2866,9 @@
+ 	"No notes in here. Create one by clicking on \"New note\".": [
+ 		"Keine Notizen vorhanden. Erstelle eine, indem du auf „Neue Notiz“ klickst."
+ 	],
++	"No pending join requests.": [
++		"Keine offenen Beitrittsanfragen."
++	],
+ 	"No plugins are installed.": [
+ 		"Es sind keine Erweiterungen installiert."
+ 	],
+@@ -2788,6 +2881,9 @@
+ 	"No revision selected": [
+ 		"Keine Revision ausgewählt"
+ 	],
++	"No shopping lists yet. Tap + to create one, or join an existing one with an invite.": [
++		"Noch keine Einkaufslisten. Mit + eine neue anlegen oder mit einer Einladung einer bestehenden beitreten."
++	],
+ 	"No such command: %s": [
+ 		"Befehl nicht gefunden: %s"
+ 	],
+@@ -2836,6 +2932,9 @@
+ 	"Not now": [
+ 		"Nicht jetzt"
+ 	],
++	"Not synced yet": [
++		"Noch nicht abgeglichen"
++	],
+ 	"note": [
+ 		"Notiz"
+ 	],
+@@ -2974,6 +3073,9 @@
+ 	"OCR: Search in extracted content": [
+ 		"OCR: Extrahierten Inhalt durchsuchen"
+ 	],
++	"Offline – changes will be sent later": [
++		"Offline – Änderungen werden später gesendet"
++	],
+ 	"OK": [
+ 		"OK"
+ 	],
+@@ -3004,6 +3106,9 @@
+ 	"OneNote Notebook": [
+ 		"OneNote-Notizbuch"
+ 	],
++	"Only an admin can invite people to this list.": [
++		"Nur ein Admin kann für diese Liste einladen."
++	],
+ 	"Only do this if you've forgotten your current password. A new password will be created, and any notes locked with the old one will become permanently unreadable.": [
+ 		""
+ 	],
+@@ -3016,6 +3121,9 @@
+ 	"Open %s": [
+ 		"Öffne %s"
+ 	],
++	"Open (everyone is equal)": [
++		"Offen (alle gleichberechtigt)"
++	],
+ 	"Open in external editor": [
+ 		"In externem Editor öffnen"
+ 	],
+@@ -3025,6 +3133,9 @@
+ 	"Open it": [
+ 		"Öffne es"
+ 	],
++	"Open list": [
++		"Offene Liste"
++	],
+ 	"Open log": [
+ 		"Öffne Bericht"
+ 	],
+@@ -3076,6 +3187,9 @@
+ 	"Options that should be used whenever rendering ABC code. It must be a JSON5 object. The full list of options is available at: %s": [
+ 		"Optionen, die beim Rendern von ABC-Code verwendet werden sollten. Es muss sich um ein JSON5-Objekt handeln. Die vollständige Liste der Optionen findest du unter: %s"
+ 	],
++	"Or enter an invite (link, code or QR code)": [
++		"Oder eine Einladung eingeben (Link, Code oder QR-Code)"
++	],
+ 	"Ordered list": [
+ 		"Geordnete Liste"
+ 	],
+@@ -3115,6 +3229,9 @@
+ 	"Paste": [
+ 		"Einfügen"
+ 	],
++	"Paste an invite link or code": [
++		"Einladungslink oder -code einfügen"
++	],
+ 	"Paste as text": [
+ 		"Einfügen als Text"
+ 	],
+@@ -3124,6 +3241,9 @@
+ 	"PDF File": [
+ 		"PDF-Datei"
+ 	],
++	"Pending join requests": [
++		"Offene Beitrittsanfragen"
++	],
+ 	"Per user. Minimum of 2 users.": [
+ 		"Pro Nutzer. Minimum von %d Nutzern."
+ 	],
+@@ -3371,6 +3491,9 @@
+ 	"QR Code": [
+ 		"QR-Code"
+ 	],
++	"Quantity / note": [
++		"Menge / Notiz"
++	],
+ 	"Quit": [
+ 		"Beenden"
+ 	],
+@@ -3410,6 +3533,9 @@
+ 	"Reading this note requires the note lock password, which has not been set up on this device yet.": [
+ 		""
+ 	],
++	"Recently bought": [
++		"Zuletzt gekauft"
++	],
+ 	"Recipient has accepted the invitation": [
+ 		"Empfänger hat die Einladung akzeptiert"
+ 	],
+@@ -3458,6 +3584,9 @@
+ 	"Rejecting share...": [
+ 		"Freigabe zurückweisen..."
+ 	],
++	"Relay servers": [
++		"Relay-Server"
++	],
+ 	"Remove": [
+ 		"Entfernen"
+ 	],
+@@ -3470,6 +3599,12 @@
+ 	"Remove %s from share": [
+ 		"Freigabe von %s entfernen"
+ 	],
++	"Remove %s from this list?": [
++		"%s aus dieser Liste entfernen?"
++	],
++	"Remove all bought items from \"Recently bought\"?": [
++		"Alle erledigten Artikel aus „Zuletzt gekauft“ entfernen?"
++	],
+ 	"Remove tag \"%s\" from all notes?": [
+ 		"Schlagwort „%s“ von allen Notizen entfernen?"
+ 	],
+@@ -3482,6 +3617,9 @@
+ 	"Rename": [
+ 		"Umbenennen"
+ 	],
++	"Rename list": [
++		"Liste umbenennen"
++	],
+ 	"Rename notebook:": [
+ 		"Notizbuch umbenennen:"
+ 	],
+@@ -3671,6 +3809,9 @@
+ 	"Scan notebook": [
+ 		"Notizbuch scannen"
+ 	],
++	"Scan QR code": [
++		"QR-Code scannen"
++	],
+ 	"Scanned code": [
+ 		"Eingescannter Code"
+ 	],
+@@ -3713,6 +3854,9 @@
+ 	"Searches for the given <pattern> in all the notes.": [
+ 		"Sucht in allen Notizen nach dem angegebenen <pattern>."
+ 	],
++	"Searching for nearby devices…": [
++		"Suche nach Geräten in der Nähe …"
++	],
+ 	"See changelog": [
+ 		"Änderungsprotokoll anschauen"
+ 	],
+@@ -3806,6 +3950,9 @@
+ 	"Share from %s (%s)": [
+ 		"Freigeben von %s (%s)"
+ 	],
++	"Share list": [
++		"Liste teilen"
++	],
+ 	"Share Notebook": [
+ 		"Notizbuch freigeben"
+ 	],
+@@ -3827,6 +3974,9 @@
+ 	"Sharing notebook...": [
+ 		"Notizbuch freigeben..."
+ 	],
++	"Shopping lists": [
++		"Einkaufslisten"
++	],
+ 	"Shortcuts are not available in CLI mode.": [
+ 		"Tastenkürzel sind im CLI-Modus nicht verfügbar."
+ 	],
+@@ -4674,6 +4824,9 @@
+ 	"Try again": [
+ 		"Versuche es erneut"
+ 	],
++	"Turn off nearby sync after": [
++		"Nahbereichs-Abgleich ausschalten nach"
++	],
+ 	"TYPE": [
+ 		"TYPE"
+ 	],
+@@ -4881,6 +5034,9 @@
+ 	"Valid": [
+ 		"Gültig"
+ 	],
++	"Valid join requests are accepted automatically the next time this device syncs.": [
++		"Gültige Beitrittsanfragen werden automatisch angenommen, sobald dieses Gerät das nächste Mal abgleicht."
++	],
+ 	"Vector search is not available on this platform": [
+ 		""
+ 	],
+@@ -4929,6 +5085,9 @@
+ 	"Waiting for authorisation...": [
+ 		"Warte auf Autorisierung..."
+ 	],
++	"Waiting for the admin to accept your request.": [
++		"Warte auf die Bestätigung durch den Admin."
++	],
+ 	"Waiting: Notebook %s from %s": [
+ 		"Warten: Notizbuch %s von %s"
+ 	],
+diff --git a/packages/lib/models/Setting.ts b/packages/lib/models/Setting.ts
+index fa08cb2..16a6746 100644
+--- a/packages/lib/models/Setting.ts
++++ b/packages/lib/models/Setting.ts
+@@ -1300,6 +1300,7 @@ class Setting extends BaseModel {
+ 			'plugins',
+ 			'markdownPlugins',
+ 			'note',
++			'lists',
+ 			'revisionService',
+ 			'server',
+ 			'keymap',
+@@ -1359,6 +1360,7 @@ class Setting extends BaseModel {
+ 		if (name === 'editor') return _('Editor');
+ 		if (name === 'note') return _('Note');
+ 		if (name === 'folder') return _('Notebook');
++		if (name === 'lists') return _('Shopping lists');
+ 		if (name === 'markdownPlugins') return _('Markdown');
+ 		if (name === 'plugins') return _('Plugins');
+ 		if (name === 'application') return _('Application');
+diff --git a/packages/lib/models/settings/builtInMetadata.ts b/packages/lib/models/settings/builtInMetadata.ts
+index dd0d82a..613b975 100644
+--- a/packages/lib/models/settings/builtInMetadata.ts
++++ b/packages/lib/models/settings/builtInMetadata.ts
+@@ -2608,6 +2608,48 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			label: () => _('Show Joplin icon for note links'),
+ 			appTypes: [AppType.Desktop, AppType.Mobile],
+ 		},
++
++		'lists.relays': {
++			value: '',
++			type: SettingItemType.String,
++			section: 'lists',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Relay servers'),
++			description: () => _('Comma-separated list of wss:// relay URLs used to sync shopping lists. Leave empty to use the app defaults.'),
++			storage: SettingStorage.File,
++			isGlobal: true,
++		},
++
++		'lists.deviceName': {
++			value: '',
++			type: SettingItemType.String,
++			section: 'lists',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Device name'),
++			description: () => _('Name shown to other members of your shopping lists. Leave empty to use the default.'),
++			storage: SettingStorage.File,
++			isGlobal: true,
++		},
++
++		'lists.nearbyAutoOffMinutes': {
++			value: 120,
++			type: SettingItemType.Int,
++			section: 'lists',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Turn off nearby sync after'),
++			description: () => _('Nearby (Bluetooth) sync automatically turns off after this many minutes, to save battery.'),
++			minimum: 5,
++			maximum: 720,
++			step: 5,
++			unitLabel: (value: number = null) => {
++				return value === null ? _('minutes') : _n('%d minute', '%d minutes', value, value);
++			},
++			storage: SettingStorage.File,
++			isGlobal: true,
++		},
+ 	} satisfies Record<string, SettingItem>;
+ 
+ 	for (const [key, md] of Object.entries(output)) {
+diff --git a/packages/tools/locales/de_DE.po b/packages/tools/locales/de_DE.po
+index 86809b3..4da0f1c 100644
+--- a/packages/tools/locales/de_DE.po
++++ b/packages/tools/locales/de_DE.po
+@@ -16,6 +16,14 @@ msgstr ""
+ "Plural-Forms: nplurals=2; plural=(n != 1);\n"
+ "X-Generator: Poedit 3.8\n"
+ 
++#: packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx:94
++msgid "%d of %d members nearby"
++msgstr "%d von %d Mitgliedern in der Nähe"
++
++#: packages/app-mobile/lists/ui/ListsOverviewScreen.tsx:140
++msgid "%d open, %d members"
++msgstr "%d offen, %d Mitglieder"
++
+ #: packages/app-mobile/components/screens/ConfigScreen/ConfigScreen.tsx:634
+ msgid "- Camera: to allow taking a picture and attaching it to a note."
+ msgstr ""
+@@ -35,6 +43,210 @@ msgstr ""
+ "- Speicher: Erlaubt das Anhängen von Dateien an Notizen und die "
+ "Synchronisation des Dateisystems."
+ 
++#: packages/app-mobile/lists/ui/ListScreen.tsx:250
++msgid "Add an item…"
++msgstr "Artikel hinzufügen …"
++
++#: packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx:81
++msgid "Bluetooth sync will come in a later version."
++msgstr "Der Bluetooth-Abgleich folgt in einer späteren Version."
++
++#: packages/app-mobile/lists/ui/components/ItemEditModal.tsx:105
++msgid "Category"
++msgstr "Kategorie"
++
++#: packages/app-mobile/lists/ui/ListScreen.tsx:213
++msgid "Clean up bought items"
++msgstr "Erledigte aufräumen"
++
++#: packages/lib/models/settings/builtInMetadata.ts:2619
++msgid "Comma-separated list of wss:// relay URLs used to sync shopping lists. Leave empty to use the app defaults."
++msgstr "Kommagetrennte Liste von wss://-Relay-Adressen für den Abgleich der Einkaufslisten. Leer lassen, um die App-Voreinstellung zu verwenden."
++
++#: packages/app-mobile/lists/ui/ShareScreen.tsx:96
++msgid "Copied"
++msgstr "Kopiert"
++
++#: packages/app-mobile/lists/ui/ShareScreen.tsx:142
++msgid "Copy code"
++msgstr "Code kopieren"
++
++#: packages/app-mobile/lists/ui/ShareScreen.tsx:139
++msgid "Copy link"
++msgstr "Link kopieren"
++
++#: packages/lib/models/settings/builtInMetadata.ts:2630
++msgid "Device name"
++msgstr "Gerätename"
++
++#: packages/app-mobile/lists/ui/JoinScreen.tsx:168
++msgid "Join"
++msgstr "Beitreten"
++
++#: packages/app-mobile/lists/ui/JoinScreen.tsx:145
++msgid "Join a list"
++msgstr "Liste beitreten"
++
++#: packages/app-mobile/lists/ui/JoinScreen.tsx:93
++msgid "Join request sent"
++msgstr "Beitrittsanfrage gesendet"
++
++#: packages/app-mobile/lists/ui/ListScreen.tsx:219
++msgid "Last synced %s"
++msgstr "Zuletzt abgeglichen %s"
++
++#: packages/app-mobile/lists/ui/components/CreateListModal.tsx:67
++msgid "List name"
++msgstr "Listenname"
++
++#: packages/app-mobile/lists/ui/MembersScreen.tsx:148
++msgid "Make admin"
++msgstr "Zum Admin machen"
++
++#: packages/app-mobile/lists/ui/MembersScreen.tsx:148
++msgid "Make member"
++msgstr "Zum Mitglied machen"
++
++#: packages/app-mobile/lists/ui/components/CreateListModal.tsx:74
++msgid "Managed (admins)"
++msgstr "Verwaltet (Admins)"
++
++#: packages/app-mobile/lists/ui/ListsOverviewScreen.tsx:137
++msgid "Managed list"
++msgstr "Verwaltete Liste"
++
++#: packages/app-mobile/lists/ui/MembersScreen.tsx:141
++msgid "Member"
++msgstr "Mitglied"
++
++#: packages/app-mobile/lists/ui/MembersScreen.tsx:105
++msgid "Members"
++msgstr "Mitglieder"
++
++#: packages/lib/models/settings/builtInMetadata.ts:2631
++msgid "Name shown to other members of your shopping lists. Leave empty to use the default."
++msgstr "Name, der anderen Mitgliedern deiner Einkaufslisten angezeigt wird. Leer lassen, um die Voreinstellung zu verwenden."
++
++#: packages/lib/models/settings/builtInMetadata.ts:2643
++msgid "Nearby (Bluetooth) sync automatically turns off after this many minutes, to save battery."
++msgstr "Der Nahbereichs-Abgleich (Bluetooth) schaltet sich nach dieser Anzahl Minuten automatisch aus, um Akku zu sparen."
++
++#: packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx:81
++msgid "Nearby sync"
++msgstr "Nahbereichs-Abgleich"
++
++#: packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx:95
++msgid "Nearby sync is not available on this device."
++msgstr "Der Nahbereichs-Abgleich ist auf diesem Gerät nicht verfügbar."
++
++#: packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx:92
++msgid "Nearby sync is off. Tap to search for nearby devices."
++msgstr "Der Nahbereichs-Abgleich ist aus. Antippen, um nach Geräten in der Nähe zu suchen."
++
++#: packages/app-mobile/lists/ui/components/CreateListModal.tsx:66
++msgid "New list"
++msgstr "Neue Liste"
++
++#: packages/app-mobile/lists/ui/ListScreen.tsx:277
++msgid "No items yet. Type above to add the first one."
++msgstr "Noch keine Artikel. Oben eintippen, um den ersten hinzuzufügen."
++
++#: packages/app-mobile/lists/ui/MembersScreen.tsx:114
++msgid "No pending join requests."
++msgstr "Keine offenen Beitrittsanfragen."
++
++#: packages/app-mobile/lists/ui/ListsOverviewScreen.tsx:121
++msgid "No shopping lists yet. Tap + to create one, or join an existing one with an invite."
++msgstr "Noch keine Einkaufslisten. Mit + eine neue anlegen oder mit einer Einladung einer bestehenden beitreten."
++
++#: packages/app-mobile/lists/ui/ListScreen.tsx:220
++msgid "Not synced yet"
++msgstr "Noch nicht abgeglichen"
++
++#: packages/app-mobile/lists/ui/ListScreen.tsx:217
++msgid "Offline – changes will be sent later"
++msgstr "Offline – Änderungen werden später gesendet"
++
++#: packages/app-mobile/lists/ui/ShareScreen.tsx:104
++msgid "Only an admin can invite people to this list."
++msgstr "Nur ein Admin kann für diese Liste einladen."
++
++#: packages/app-mobile/lists/ui/components/CreateListModal.tsx:71
++msgid "Open (everyone is equal)"
++msgstr "Offen (alle gleichberechtigt)"
++
++#: packages/app-mobile/lists/ui/ListsOverviewScreen.tsx:137
++msgid "Open list"
++msgstr "Offene Liste"
++
++#: packages/app-mobile/lists/ui/components/CreateListModal.tsx:79
++msgid "Or enter an invite (link, code or QR code)"
++msgstr "Oder eine Einladung eingeben (Link, Code oder QR-Code)"
++
++#: packages/app-mobile/lists/ui/JoinScreen.tsx:151
++msgid "Paste an invite link or code"
++msgstr "Einladungslink oder -code einfügen"
++
++#: packages/app-mobile/lists/ui/MembersScreen.tsx:109
++msgid "Pending join requests"
++msgstr "Offene Beitrittsanfragen"
++
++#: packages/app-mobile/lists/ui/components/ItemEditModal.tsx:102
++msgid "Quantity / note"
++msgstr "Menge / Notiz"
++
++#: packages/app-mobile/lists/ui/ListScreen.tsx:292
++msgid "Recently bought"
++msgstr "Zuletzt gekauft"
++
++#: packages/lib/models/settings/builtInMetadata.ts:2618
++msgid "Relay servers"
++msgstr "Relay-Server"
++
++#: packages/app-mobile/lists/ui/MembersScreen.tsx:84
++msgid "Remove %s from this list?"
++msgstr "%s aus dieser Liste entfernen?"
++
++#: packages/app-mobile/lists/ui/ListScreen.tsx:179
++msgid "Remove all bought items from \"Recently bought\"?"
++msgstr "Alle erledigten Artikel aus „Zuletzt gekauft“ entfernen?"
++
++#: packages/app-mobile/lists/ui/ListsOverviewScreen.tsx:158
++msgid "Rename list"
++msgstr "Liste umbenennen"
++
++#: packages/app-mobile/lists/ui/JoinScreen.tsx:160
++msgid "Scan QR code"
++msgstr "QR-Code scannen"
++
++#: packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx:93
++msgid "Searching for nearby devices…"
++msgstr "Suche nach Geräten in der Nähe …"
++
++#: packages/app-mobile/lists/ui/ShareScreen.tsx:101
++msgid "Share list"
++msgstr "Liste teilen"
++
++#: packages/app-mobile/lists/ui/ListsOverviewScreen.tsx:117
++msgid "Shopping lists"
++msgstr "Einkaufslisten"
++
++#: packages/lib/models/settings/builtInMetadata.ts:2642
++msgid "Turn off nearby sync after"
++msgstr "Nahbereichs-Abgleich ausschalten nach"
++
++#: packages/app-mobile/lists/ui/MembersScreen.tsx:111
++msgid "Valid join requests are accepted automatically the next time this device syncs."
++msgstr "Gültige Beitrittsanfragen werden automatisch angenommen, sobald dieses Gerät das nächste Mal abgleicht."
++
++#: packages/app-mobile/lists/ui/JoinScreen.tsx:93
++msgid "Waiting for the admin to accept your request."
++msgstr "Warte auf die Bestätigung durch den Admin."
++
++#: packages/app-mobile/lists/ui/components/ItemEditModal.tsx:103
++msgid "e.g. 2, 1 kg"
++msgstr "z. B. 2, 1 kg"
++
+ #: packages/app-desktop/gui/ChatPanel/ChatPanel.tsx:147
+ msgid "— now viewing: %s —"
+ msgstr ""
+diff --git a/yarn.lock b/yarn.lock
+index 8b8c70d..ddd607c 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -12658,6 +12658,7 @@ __metadata:
+     path-browserify: "npm:1.0.1"
+     prop-types: "npm:15.8.1"
+     punycode: "npm:2.3.1"
++    qrcode-generator: "npm:2.0.4"
+     react: "npm:19.1.4"
+     react-dom: "npm:19.1.4"
+     react-native: "npm:0.81.6"
+@@ -49259,6 +49260,13 @@ __metadata:
+   languageName: node
+   linkType: hard
+ 
++"qrcode-generator@npm:2.0.4":
++  version: 2.0.4
++  resolution: "qrcode-generator@npm:2.0.4"
++  checksum: 10/c488558bca2869d8837300da299a9653030dbb486ce6113153585b117fa0ab6822a03c8312cc794d41c2e3f8353dc64b950e8a3ffe90f89022593c4e7060cd53
++  languageName: node
++  linkType: hard
++
+ "qrcode-terminal@npm:0.11.0":
+   version: 0.11.0
+   resolution: "qrcode-terminal@npm:0.11.0"

@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–13 umgesetzt (Patches 0007–0018). Issue 11 gestrichen. Issue 14 offen. Letztes Release: 3.7.10-tiles.13; Issues 12–13 kommen mit dem nächsten Build.
+Stand: Issues 1–14 umgesetzt (Patches 0007–0019). Issue 11 gestrichen. Einkaufslisten (Patches 0020–0022) und Formel-Tabellen-Plugin (plugins/formula-tables) nach docs/KONZEPT.md umgesetzt; Bluetooth-Abgleich steht noch aus. Letztes Release: 3.7.10-tiles.13; Issues 12–14, Listen und Plugin kommen mit dem nächsten Build.
 
 **Freigabe für den Nachtlauf:** Der nächtliche Wartungslauf (siehe [docs/ROUTINE.md](ROUTINE.md)) setzt nur
 Issues um, deren Zeile in der Spalte „Nr." mit `[auto]` markiert ist – z. B. `| 12 [auto] |`. Alles ohne

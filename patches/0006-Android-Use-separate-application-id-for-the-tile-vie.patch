@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 14:49:31 +0000
-Subject: [PATCH 06/18] Android: Use separate application id for the tile view
+Subject: [PATCH 06/23] Android: Use separate application id for the tile view
  fork
 
 Changes applicationId to net.cozic.joplin.tileview (the Kotlin namespace
