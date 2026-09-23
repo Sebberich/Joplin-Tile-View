@@ -24,6 +24,8 @@ Marker bleibt liegen, bis es hier freigegeben oder von Hand umgesetzt wird.
 
 ## Ideen (Machbarkeit bewertet, nicht umgesetzt)
 
+Tabellen mit Formeln, Einkaufslisten und deren Teilen: siehe [docs/KONZEPT.md](KONZEPT.md).
+
 ### Themes und Layouts installierbar machen
 
 **Themes: machbar, mittlerer Aufwand.** Ein Joplin-Theme ist eine flache Farbtabelle (`packages/lib/themes/*.ts`, 20–70 Zeilen), registriert in `packages/lib/theme.ts` unter einer festen ID und im Setting `theme` als Enum. Ein installierbares Theme wäre eine JSON-Datei mit denselben Schlüsseln, per Dateiauswahl importiert, im Profilordner abgelegt und beim Start zusätzlich registriert. Offene Punkte: Theme-IDs sind Zahlen (Setting-Enum), für importierte Themes bräuchte es dynamische IDs; `themeStyle()` cached pro ID; unvollständige JSONs müssen auf ein Basistheme zurückfallen. Ein separater Kanal (Custom-CSS für gerenderte Notizen) existiert in Joplin bereits, betrifft aber nur den Viewer, nicht die App-Oberfläche.
