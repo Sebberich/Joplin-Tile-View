@@ -1,6 +1,6 @@
 # Gerätetest: gesammelte Issues
 
-Stand: Issues 1–13 umgesetzt (Patches 0007–0018). Issue 11 gestrichen. Letztes Release: 3.7.10-tiles.13; Issues 12–13 kommen mit dem nächsten Build.
+Stand: Issues 1–14 umgesetzt (Patches 0007–0019). Issue 11 gestrichen. Einkaufslisten (Patches 0020–0022) und Formel-Tabellen-Plugin (plugins/formula-tables) nach docs/KONZEPT.md umgesetzt; Bluetooth-Abgleich steht noch aus. Letztes Release: 3.7.10-tiles.13; Issues 12–14, Listen und Plugin kommen mit dem nächsten Build.
 
 **Freigabe für den Nachtlauf:** Der nächtliche Wartungslauf (siehe [docs/ROUTINE.md](ROUTINE.md)) setzt nur
 Issues um, deren Zeile in der Spalte „Nr." mit `[auto]` markiert ist – z. B. `| 12 [auto] |`. Alles ohne
@@ -21,8 +21,11 @@ Marker bleibt liegen, bis es hier freigegeben oder von Hand umgesetzt wird.
 | 11 | ~~Vorschautext wiederholt den Titel.~~ Gestrichen: betrifft nur die mitgelieferten Beispielnotizen, die so aufgebaut sind (Überschrift im Text gleich dem Titel). | – | Kein Fix. |
 | 12 | Die neuen Strings der Kachelansicht („Note list layout“, „Tile columns“, „All notebooks“, „Filter“, „Switch to tile view“ …) erscheinen auch dann auf Englisch, wenn die App auf Deutsch läuft. Der Rest der Oberfläche ist übersetzt. | Die Kachelansicht spricht die Sprache der App. | Die Strings sind korrekt englisch und durch `_()` geführt, Joplins Quellsprache ist Englisch – es fehlen nur die Übersetzungen. Deutsche Einträge in `joplin/packages/tools/locales/de_DE.po` ergänzen (msgid = englischer String) und `.po` per Joplin-Toolchain neu bauen. Betrifft nur nicht-englische Oberflächen, in Englisch ist alles korrekt. |
 | 13 | Projektdoku ist Deutsch (README, docs/, Release-Notes), Code und Commit-Nachrichten sind Englisch. | Einheitliche Sprache für alles, was öffentlich sichtbar ist. | Vorschlag: README.md, docs/BUILD.md, Disclaimer und Release-Notes auf Englisch (öffentliches Repo, spätere Upstream-PR); docs/ISSUES.md und docs/UEBERGABE.md als interne Arbeitsnotizen deutsch lassen. Umfang vor der Umsetzung bestätigen. |
+| 14 | Die Leiste unter der Kopfzeile (Notizbuch-Symbol, „Alle Notizbücher“, −, +, Listen-Umschalter) nimmt zu viel Platz weg. | Leiste entfällt. Filter, Zoom und Umschalter wandern in die Kopfzeile darüber (dort sitzen schon Suche und Sortierung) und sind da besser aufgehoben. | Die Leiste ist `NoteTileToolbar` (Patch 0003, Zoom aus 0005, Umschalter aus 0004). Kopfzeile ist Joplins `ScreenHeader`: Filter als eigenes Symbol neben der Suche, Zoom über Pinch (bleibt) und ggf. ins Sortier-/Überlauf-Menü, Listen-/Kachel-Umschalter ebenfalls ins Menü. Der Filtertext „Alle Notizbücher“ kann als Untertitel der Kopfzeile oder gar nicht erscheinen – die Auswahl im Seitenmenü setzt ohnehin den Rahmen (Issue 9). |
 
 ## Ideen (Machbarkeit bewertet, nicht umgesetzt)
+
+Tabellen mit Formeln, Einkaufslisten und deren Teilen: siehe [docs/KONZEPT.md](KONZEPT.md).
 
 ### Themes und Layouts installierbar machen
 

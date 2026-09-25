@@ -1,0 +1,3427 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:11:44 +0000
+Subject: [PATCH 26/29] Mobile: Add Bluetooth nearby sync for shopping lists
+ (Android)
+
+Native module that advertises a rotating per-list token, scans, and runs
+a GATT server and client (coded PHY when available). The protocol in
+TypeScript authenticates members via the list key, exchanges item
+summaries and pushes the same signed events as the relay sync; the
+status circle turns yellow while searching and green with found/total.
+Wire protocol documented in lists/nearby/PROTOCOL.md.
+
+diff --git a/packages/app-mobile/android/app/src/main/AndroidManifest.xml b/packages/app-mobile/android/app/src/main/AndroidManifest.xml
+index c2c9100..e7b186f 100644
+--- a/packages/app-mobile/android/app/src/main/AndroidManifest.xml
++++ b/packages/app-mobile/android/app/src/main/AndroidManifest.xml
+@@ -4,6 +4,14 @@
+ 	<uses-permission android:name="android.permission.INTERNET" />
+ 	<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+ 	<uses-permission android:name="android.permission.CAMERA" />
++
++	<!-- Nearby (Bluetooth LE) shopping-list sync, see packages/app-mobile/lists/nearby/PROTOCOL.md -->
++	<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
++	<uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
++	<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
++	<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
++	<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
++	<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+ 	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+ 	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+ 	<uses-permission android:name="android.permission.USE_BIOMETRIC" />
+diff --git a/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/MainApplication.kt b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/MainApplication.kt
+index 7139be1..8f88685 100644
+--- a/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/MainApplication.kt
++++ b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/MainApplication.kt
+@@ -14,6 +14,7 @@ import com.facebook.react.common.ReleaseLevel
+ import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
+ import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
+ import com.facebook.react.defaults.DefaultReactNativeHost
++import net.cozic.joplin.nearby.NearbyPackage
+ import net.cozic.joplin.systeminfo.SystemInformationPackage
+ import net.cozic.joplin.share.SharePackage
+ import net.cozic.joplin.ssl.SslPackage
+@@ -28,6 +29,7 @@ class MainApplication : Application(), ReactApplication {
+                     add(SharePackage())
+                     add(SslPackage())
+                     add(SystemInformationPackage())
++                    add(NearbyPackage())
+                 }
+ 
+             override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"
+diff --git a/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt
+new file mode 100644
+index 0000000..8dcd665
+--- /dev/null
++++ b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt
+@@ -0,0 +1,698 @@
++package net.cozic.joplin.nearby
++
++import android.Manifest
++import android.annotation.SuppressLint
++import android.bluetooth.BluetoothAdapter
++import android.bluetooth.BluetoothDevice
++import android.bluetooth.BluetoothGatt
++import android.bluetooth.BluetoothGattCallback
++import android.bluetooth.BluetoothGattCharacteristic
++import android.bluetooth.BluetoothGattDescriptor
++import android.bluetooth.BluetoothGattServer
++import android.bluetooth.BluetoothGattServerCallback
++import android.bluetooth.BluetoothGattService
++import android.bluetooth.BluetoothManager
++import android.bluetooth.BluetoothProfile
++import android.bluetooth.le.AdvertiseCallback
++import android.bluetooth.le.AdvertiseData
++import android.bluetooth.le.AdvertiseSettings
++import android.bluetooth.le.AdvertisingSet
++import android.bluetooth.le.AdvertisingSetCallback
++import android.bluetooth.le.AdvertisingSetParameters
++import android.bluetooth.le.BluetoothLeAdvertiser
++import android.bluetooth.le.BluetoothLeScanner
++import android.bluetooth.le.ScanCallback
++import android.bluetooth.le.ScanFilter
++import android.bluetooth.le.ScanResult
++import android.bluetooth.le.ScanSettings
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++import android.content.IntentFilter
++import android.content.pm.PackageManager
++import android.os.Build
++import android.os.ParcelUuid
++import android.util.Base64
++import androidx.core.content.ContextCompat
++import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.Promise
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.bridge.ReactContextBaseJavaModule
++import com.facebook.react.bridge.ReactMethod
++import com.facebook.react.bridge.WritableMap
++import com.facebook.react.modules.core.DeviceEventManagerModule
++import java.util.UUID
++import java.util.concurrent.ConcurrentHashMap
++
++// Deliberately "dumb": every protocol/session decision (framing, handshake,
++// who talks to whom) lives in TS (see lists/nearby/*.ts and PROTOCOL.md).
++// This module only exposes raw BLE primitives -- advertise/scan/connect/send
++// -- as a promise-based bridge plus a handful of events, mirrored on the TS
++// side by lists/nearby/nativeBle.ts.
++//
++// Threading: every GATT/advertise/scan callback below runs on a Binder
++// thread, not the JS thread -- state is kept in ConcurrentHashMaps and events
++// are always emitted through reactApplicationContext's JS module, which is
++// itself thread-safe to call from any thread.
++class NearbyModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
++
++	companion object {
++		private val RX_CHARACTERISTIC_UUID: UUID = UUID.fromString("d7a1e2b1-5f3c-4a9e-8b1d-6c2f9e4a7b3d")
++		private val TX_CHARACTERISTIC_UUID: UUID = UUID.fromString("d7a1e2b2-5f3c-4a9e-8b1d-6c2f9e4a7b3d")
++		private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
++		// Throttles scan-result events per address, see PROTOCOL.md.
++		private const val SCAN_RESULT_THROTTLE_MS = 1000L
++	}
++
++	override fun getName(): String = "TilesNearby"
++
++	private val bluetoothManager: BluetoothManager?
++		get() = reactApplicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
++
++	private val adapter: BluetoothAdapter?
++		get() = bluetoothManager?.adapter
++
++	private var serviceUuid: UUID? = null
++	private var advertiser: BluetoothLeAdvertiser? = null
++	private var legacyAdvertiseCallback: AdvertiseCallback? = null
++	private var extendedAdvertiseCallback: AdvertisingSetCallback? = null
++	private var advertisingSet: AdvertisingSet? = null
++
++	private var gattServer: BluetoothGattServer? = null
++	private var gattServerCallback: BluetoothGattServerCallback? = null
++	private var rxCharacteristic: BluetoothGattCharacteristic? = null
++	private var txCharacteristic: BluetoothGattCharacteristic? = null
++
++	private var scanner: BluetoothLeScanner? = null
++	private var scanCallback: ScanCallback? = null
++
++	// address -> ...
++	private val clientGatts = ConcurrentHashMap<String, BluetoothGatt>()
++	private val clientMtus = ConcurrentHashMap<String, Int>()
++	private val serverDevices = ConcurrentHashMap<String, BluetoothDevice>()
++	private val serverMtus = ConcurrentHashMap<String, Int>()
++	private val pendingSendPromises = ConcurrentHashMap<String, Promise>()
++	private val lastScanEmitMs = ConcurrentHashMap<String, Long>()
++
++	private var adapterStateReceiver: BroadcastReceiver? = null
++
++	init {
++		registerAdapterStateReceiver()
++	}
++
++	// --- capabilities / state ---------------------------------------------
++
++	@ReactMethod
++	fun isSupported(promise: Promise) {
++		val result: WritableMap = Arguments.createMap()
++		val a = adapter
++		result.putBoolean("ble", reactApplicationContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE))
++		result.putBoolean("peripheral", a?.isMultipleAdvertisementSupported == true)
++		result.putBoolean("codedPhy", Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && a?.isLeCodedPhySupported == true)
++		promise.resolve(result)
++	}
++
++	@ReactMethod
++	fun state(promise: Promise) {
++		val a = adapter
++		when {
++			a == null || !reactApplicationContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) -> promise.resolve("unsupported")
++			!hasRequiredPermissions() -> promise.resolve("unauthorized")
++			a.isEnabled -> promise.resolve("on")
++			else -> promise.resolve("off")
++		}
++	}
++
++	private fun hasPermission(permission: String): Boolean =
++		ContextCompat.checkSelfPermission(reactApplicationContext, permission) == PackageManager.PERMISSION_GRANTED
++
++	// Android 12 (API 31) replaced the old BLUETOOTH/BLUETOOTH_ADMIN pair with
++	// BLUETOOTH_SCAN/BLUETOOTH_ADVERTISE/BLUETOOTH_CONNECT; below that,
++	// scanning for BLE devices requires location permission instead. The TS
++	// side (NearbyStatusCircle) requests the matching set before calling
++	// start(), this just double-checks before touching the adapter.
++	private fun hasRequiredPermissions(): Boolean {
++		return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
++			hasPermission(Manifest.permission.BLUETOOTH_SCAN) &&
++				hasPermission(Manifest.permission.BLUETOOTH_ADVERTISE) &&
++				hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
++		} else {
++			hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
++		}
++	}
++
++	// --- advertising + GATT server -----------------------------------------
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun startAdvertising(serviceUuidString: String, tokenHex: String, useCodedPhy: Boolean, promise: Promise) {
++		try {
++			val uuid = UUID.fromString(serviceUuidString)
++			serviceUuid = uuid
++			val a = adapter ?: throw IllegalStateException("No Bluetooth adapter")
++			advertiser = a.bluetoothLeAdvertiser ?: throw IllegalStateException("No BLE advertiser")
++			openGattServerIfNeeded(uuid)
++			startLegacyAdvertising(uuid, tokenHex)
++			if (useCodedPhy && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && a.isLeCodedPhySupported) {
++				startExtendedAdvertising(uuid, tokenHex)
++			}
++			promise.resolve(null)
++		} catch (e: SecurityException) {
++			promise.reject("E_PERMISSION", e.message, e)
++		} catch (e: Exception) {
++			promise.reject("E_ADVERTISE", e.message, e)
++		}
++	}
++
++	@SuppressLint("MissingPermission")
++	private fun openGattServerIfNeeded(uuid: UUID) {
++		if (gattServer != null) return
++		val callback = buildGattServerCallback()
++		gattServerCallback = callback
++		gattServer = bluetoothManager?.openGattServer(reactApplicationContext, callback)
++		val service = BluetoothGattService(uuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
++		val rx = BluetoothGattCharacteristic(
++			RX_CHARACTERISTIC_UUID,
++			BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
++			BluetoothGattCharacteristic.PERMISSION_WRITE,
++		)
++		val tx = BluetoothGattCharacteristic(
++			TX_CHARACTERISTIC_UUID,
++			BluetoothGattCharacteristic.PROPERTY_NOTIFY,
++			BluetoothGattCharacteristic.PERMISSION_READ,
++		)
++		val cccd = BluetoothGattDescriptor(
++			CCCD_UUID,
++			BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE,
++		)
++		tx.addDescriptor(cccd)
++		service.addCharacteristic(rx)
++		service.addCharacteristic(tx)
++		gattServer?.addService(service)
++		rxCharacteristic = rx
++		txCharacteristic = tx
++	}
++
++	@SuppressLint("MissingPermission")
++	private fun buildGattServerCallback(): BluetoothGattServerCallback = object : BluetoothGattServerCallback() {
++		override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
++			if (newState == BluetoothProfile.STATE_CONNECTED) {
++				serverDevices[device.address] = device
++				serverMtus[device.address] = 23
++				// The central side hasn't written anything yet, but the link is up;
++				// see PROTOCOL.md for why 'peripheral' is reported at connection
++				// time rather than waiting for the first write.
++				emitConnected(device.address, 23, "peripheral")
++			} else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
++				serverDevices.remove(device.address)
++				serverMtus.remove(device.address)
++				emitDisconnected(device.address, "server status=$status")
++			}
++		}
++
++		override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
++			serverMtus[device.address] = mtu
++			emitConnected(device.address, mtu, "peripheral")
++		}
++
++		override fun onCharacteristicWriteRequest(
++			device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
++			preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
++		) {
++			if (characteristic.uuid == RX_CHARACTERISTIC_UUID) emitFrame(device.address, value)
++			if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
++		}
++
++		override fun onDescriptorWriteRequest(
++			device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
++			preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
++		) {
++			// CCCD subscribe/unsubscribe: nothing to track beyond acking the
++			// write -- send() always targets a specific device and will simply
++			// fail (see resolvePendingSend) if it never subscribed.
++			if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
++		}
++
++		override fun onNotificationSent(device: BluetoothDevice, status: Int) {
++			resolvePendingSend(device.address, status == BluetoothGatt.GATT_SUCCESS)
++		}
++	}
++
++	@SuppressLint("MissingPermission")
++	private fun startLegacyAdvertising(uuid: UUID, tokenHex: String) {
++		val settings = AdvertiseSettings.Builder()
++			.setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
++			.setConnectable(true)
++			.setTimeout(0)
++			.build()
++		val data = AdvertiseData.Builder()
++			.addServiceUuid(ParcelUuid(uuid))
++			.addServiceData(ParcelUuid(uuid), hexToBytes(tokenHex))
++			.setIncludeDeviceName(false)
++			.build()
++		val callback = object : AdvertiseCallback() {
++			override fun onStartFailure(errorCode: Int) {
++				emitError("E_ADVERTISE", "Legacy advertising failed to start: $errorCode")
++			}
++		}
++		legacyAdvertiseCallback = callback
++		advertiser?.startAdvertising(settings, data, callback)
++	}
++
++	// Extended advertising set on the coded PHY (long range), in addition to
++	// the always-on legacy (1M PHY) advertisement above. Requires API 26.
++	@SuppressLint("MissingPermission")
++	private fun startExtendedAdvertising(uuid: UUID, tokenHex: String) {
++		val parameters = AdvertisingSetParameters.Builder()
++			.setLegacyMode(false)
++			.setConnectable(true)
++			.setPrimaryPhy(BluetoothDevice.PHY_LE_1M)
++			.setSecondaryPhy(BluetoothDevice.PHY_LE_CODED)
++			.setInterval(AdvertisingSetParameters.INTERVAL_LOW)
++			.build()
++		val data = AdvertiseData.Builder()
++			.addServiceUuid(ParcelUuid(uuid))
++			.addServiceData(ParcelUuid(uuid), hexToBytes(tokenHex))
++			.setIncludeDeviceName(false)
++			.build()
++		val callback = object : AdvertisingSetCallback() {
++			override fun onAdvertisingSetStarted(advertisingSet: AdvertisingSet?, txPower: Int, status: Int) {
++				this@NearbyModule.advertisingSet = advertisingSet
++				if (status != AdvertisingSetCallback.ADVERTISE_SUCCESS) {
++					emitError("E_ADVERTISE", "Extended advertising failed to start: $status")
++				}
++			}
++
++			override fun onAdvertisingSetStopped(advertisingSet: AdvertisingSet?) {
++				this@NearbyModule.advertisingSet = null
++			}
++		}
++		extendedAdvertiseCallback = callback
++		advertiser?.startAdvertisingSet(parameters, data, null, null, null, callback)
++	}
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun updateToken(tokenHex: String, promise: Promise) {
++		try {
++			val uuid = serviceUuid
++			if (uuid == null) {
++				promise.resolve(null) // not advertising yet; nothing to update
++				return
++			}
++			legacyAdvertiseCallback?.let { advertiser?.stopAdvertising(it) }
++			startLegacyAdvertising(uuid, tokenHex)
++			extendedAdvertiseCallback?.let { callback ->
++				advertiser?.stopAdvertisingSet(callback)
++				startExtendedAdvertising(uuid, tokenHex)
++			}
++			promise.resolve(null)
++		} catch (e: SecurityException) {
++			promise.reject("E_PERMISSION", e.message, e)
++		} catch (e: Exception) {
++			promise.reject("E_ADVERTISE", e.message, e)
++		}
++	}
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun stopAdvertising(promise: Promise) {
++		try {
++			legacyAdvertiseCallback?.let { advertiser?.stopAdvertising(it) }
++			legacyAdvertiseCallback = null
++			extendedAdvertiseCallback?.let { advertiser?.stopAdvertisingSet(it) }
++			extendedAdvertiseCallback = null
++			promise.resolve(null)
++		} catch (e: Exception) {
++			promise.reject("E_ADVERTISE", e.message, e)
++		}
++	}
++
++	// --- scanning -----------------------------------------------------
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun startScan(serviceUuidString: String, useCodedPhy: Boolean, promise: Promise) {
++		try {
++			val uuid = UUID.fromString(serviceUuidString)
++			serviceUuid = uuid
++			val a = adapter ?: throw IllegalStateException("No Bluetooth adapter")
++			scanner = a.bluetoothLeScanner ?: throw IllegalStateException("No BLE scanner")
++			val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(uuid)).build())
++			val settingsBuilder = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
++			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++				settingsBuilder.setPhy(if (useCodedPhy) ScanSettings.PHY_LE_ALL_SUPPORTED else BluetoothDevice.PHY_LE_1M)
++				if (useCodedPhy) settingsBuilder.setLegacy(false)
++			}
++			val callback = object : ScanCallback() {
++				override fun onScanResult(callbackType: Int, result: ScanResult) {
++					handleScanResult(uuid, result)
++				}
++
++				override fun onScanFailed(errorCode: Int) {
++					emitError("E_SCAN", "Scan failed to start: $errorCode")
++				}
++			}
++			scanCallback = callback
++			scanner?.startScan(filters, settingsBuilder.build(), callback)
++			promise.resolve(null)
++		} catch (e: SecurityException) {
++			promise.reject("E_PERMISSION", e.message, e)
++		} catch (e: Exception) {
++			promise.reject("E_SCAN", e.message, e)
++		}
++	}
++
++	private fun handleScanResult(uuid: UUID, result: ScanResult) {
++		val serviceData = result.scanRecord?.getServiceData(ParcelUuid(uuid)) ?: return
++		val address = result.device.address
++		val now = System.currentTimeMillis()
++		val last = lastScanEmitMs[address] ?: 0L
++		if (now - last < SCAN_RESULT_THROTTLE_MS) return
++		lastScanEmitMs[address] = now
++		emitScanResult(address, result.rssi, bytesToHex(serviceData))
++	}
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun stopScan(promise: Promise) {
++		try {
++			scanCallback?.let { scanner?.stopScan(it) }
++			scanCallback = null
++			promise.resolve(null)
++		} catch (e: Exception) {
++			promise.reject("E_SCAN", e.message, e)
++		}
++	}
++
++	// --- client (central) connection ---------------------------------------
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun connect(address: String, promise: Promise) {
++		try {
++			val a = adapter ?: throw IllegalStateException("No Bluetooth adapter")
++			val device = a.getRemoteDevice(address)
++			val callback = buildGattCallback(address)
++			val gatt = device.connectGatt(reactApplicationContext, false, callback, BluetoothDevice.TRANSPORT_LE)
++			clientGatts[address] = gatt
++			promise.resolve(null)
++		} catch (e: SecurityException) {
++			promise.reject("E_PERMISSION", e.message, e)
++		} catch (e: Exception) {
++			promise.reject("E_CONNECT", e.message, e)
++		}
++	}
++
++	@SuppressLint("MissingPermission")
++	private fun buildGattCallback(address: String): BluetoothGattCallback = object : BluetoothGattCallback() {
++		override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
++			when (newState) {
++				BluetoothProfile.STATE_CONNECTED -> gatt.requestMtu(517)
++				BluetoothProfile.STATE_DISCONNECTED -> {
++					clientGatts.remove(address)
++					clientMtus.remove(address)
++					emitDisconnected(address, "client status=$status")
++					gatt.close()
++				}
++			}
++		}
++
++		override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
++			clientMtus[address] = mtu
++			gatt.discoverServices()
++		}
++
++		override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
++			if (status != BluetoothGatt.GATT_SUCCESS) {
++				emitError("E_GATT", "Service discovery failed: $status")
++				return
++			}
++			val uuid = serviceUuid
++			val service = if (uuid != null) gatt.getService(uuid) else null
++			val tx = service?.getCharacteristic(TX_CHARACTERISTIC_UUID)
++			if (service == null || tx == null || service.getCharacteristic(RX_CHARACTERISTIC_UUID) == null) {
++				emitError("E_GATT", "Nearby service/characteristics not found on peer")
++				gatt.disconnect()
++				return
++			}
++			gatt.setCharacteristicNotification(tx, true)
++			val cccd = tx.getDescriptor(CCCD_UUID) ?: return
++			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++				gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
++			} else {
++				@Suppress("DEPRECATION")
++				cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
++				@Suppress("DEPRECATION")
++				gatt.writeDescriptor(cccd)
++			}
++		}
++
++		override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
++			if (descriptor.uuid != CCCD_UUID) return
++			if (status != BluetoothGatt.GATT_SUCCESS) {
++				emitError("E_GATT", "Failed to enable notifications: $status")
++				return
++			}
++			emitConnected(address, clientMtus[address] ?: 23, "central")
++		}
++
++		// Pre-API-33 path.
++		@Suppress("DEPRECATION")
++		override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
++			if (characteristic.uuid == TX_CHARACTERISTIC_UUID) emitFrame(address, characteristic.value ?: ByteArray(0))
++		}
++
++		// API 33+ overload; compiled against compileSdk 36 so this always
++		// resolves, but the framework only calls it on API 33+ devices -- the
++		// two-arg override above still fires on older ones.
++		override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
++			if (characteristic.uuid == TX_CHARACTERISTIC_UUID) emitFrame(address, value)
++		}
++
++		override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
++			if (characteristic.uuid == RX_CHARACTERISTIC_UUID) resolvePendingSend(address, status == BluetoothGatt.GATT_SUCCESS)
++		}
++	}
++
++	// --- send / disconnect -------------------------------------------------
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun send(address: String, base64: String, promise: Promise) {
++		try {
++			val bytes = Base64.decode(base64, Base64.NO_WRAP)
++			val centralGatt = clientGatts[address]
++			val peripheralDevice = serverDevices[address]
++			when {
++				centralGatt != null -> sendAsCentral(centralGatt, address, bytes, promise)
++				peripheralDevice != null -> sendAsPeripheral(peripheralDevice, address, bytes, promise)
++				else -> promise.reject("E_NOT_CONNECTED", "No connection to $address")
++			}
++		} catch (e: SecurityException) {
++			promise.reject("E_PERMISSION", e.message, e)
++		} catch (e: Exception) {
++			promise.reject("E_SEND", e.message, e)
++		}
++	}
++
++	@SuppressLint("MissingPermission")
++	private fun sendAsCentral(gatt: BluetoothGatt, address: String, bytes: ByteArray, promise: Promise) {
++		val uuid = serviceUuid
++		val rx = (if (uuid != null) gatt.getService(uuid) else null)?.getCharacteristic(RX_CHARACTERISTIC_UUID)
++		if (rx == null) {
++			promise.reject("E_NOT_CONNECTED", "rx characteristic not available for $address")
++			return
++		}
++		pendingSendPromises[address] = promise
++		val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++			gatt.writeCharacteristic(rx, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothGatt.GATT_SUCCESS
++		} else {
++			@Suppress("DEPRECATION")
++			rx.value = bytes
++			@Suppress("DEPRECATION")
++			rx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
++			@Suppress("DEPRECATION")
++			gatt.writeCharacteristic(rx)
++		}
++		if (!started) {
++			pendingSendPromises.remove(address)
++			promise.reject("E_SEND", "writeCharacteristic failed to start for $address")
++		}
++	}
++
++	@SuppressLint("MissingPermission")
++	private fun sendAsPeripheral(device: BluetoothDevice, address: String, bytes: ByteArray, promise: Promise) {
++		val server = gattServer
++		val tx = txCharacteristic
++		if (server == null || tx == null) {
++			promise.reject("E_NOT_CONNECTED", "GATT server not open")
++			return
++		}
++		pendingSendPromises[address] = promise
++		val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++			server.notifyCharacteristicChanged(device, tx, false, bytes) == BluetoothGatt.GATT_SUCCESS
++		} else {
++			@Suppress("DEPRECATION")
++			tx.value = bytes
++			@Suppress("DEPRECATION")
++			server.notifyCharacteristicChanged(device, tx, false)
++		}
++		if (!started) {
++			pendingSendPromises.remove(address)
++			promise.reject("E_SEND", "notifyCharacteristicChanged failed to start for $address")
++		}
++	}
++
++	private fun resolvePendingSend(address: String, success: Boolean) {
++		val promise = pendingSendPromises.remove(address) ?: return
++		if (success) promise.resolve(null) else promise.reject("E_SEND", "Write/notify was not acknowledged for $address")
++	}
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun disconnect(address: String, promise: Promise) {
++		try {
++			clientGatts.remove(address)?.let { it.disconnect(); it.close() }
++			serverDevices.remove(address)?.let { gattServer?.cancelConnection(it) }
++			serverMtus.remove(address)
++			pendingSendPromises.remove(address)?.reject("E_SEND", "Disconnected before write completed")
++			promise.resolve(null)
++		} catch (e: Exception) {
++			promise.reject("E_DISCONNECT", e.message, e)
++		}
++	}
++
++	@SuppressLint("MissingPermission")
++	@ReactMethod
++	fun stopAll(promise: Promise) {
++		try {
++			scanCallback?.let { scanner?.stopScan(it) }
++			scanCallback = null
++			legacyAdvertiseCallback?.let { advertiser?.stopAdvertising(it) }
++			legacyAdvertiseCallback = null
++			extendedAdvertiseCallback?.let { advertiser?.stopAdvertisingSet(it) }
++			extendedAdvertiseCallback = null
++			for (gatt in clientGatts.values) { gatt.disconnect(); gatt.close() }
++			clientGatts.clear()
++			for (device in serverDevices.values) gattServer?.cancelConnection(device)
++			serverDevices.clear()
++			serverMtus.clear()
++			for (pending in pendingSendPromises.values) pending.reject("E_SEND", "stopAll() called")
++			pendingSendPromises.clear()
++			gattServer?.close()
++			gattServer = null
++			serviceUuid = null
++			promise.resolve(null)
++		} catch (e: Exception) {
++			promise.reject("E_STOP", e.message, e)
++		}
++	}
++
++	// --- adapter state events -----------------------------------------
++
++	private fun registerAdapterStateReceiver() {
++		val receiver = object : BroadcastReceiver() {
++			override fun onReceive(context: Context, intent: Intent) {
++				val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
++				val mapped = when (state) {
++					BluetoothAdapter.STATE_ON -> "on"
++					BluetoothAdapter.STATE_OFF -> "off"
++					else -> return // ignore the turning-on/turning-off transitions
++				}
++				emitAdapterState(mapped)
++			}
++		}
++		adapterStateReceiver = receiver
++		val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
++		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++			reactApplicationContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
++		} else {
++			reactApplicationContext.registerReceiver(receiver, filter)
++		}
++	}
++
++	// --- NativeEventEmitter plumbing -----------------------------------
++
++	@ReactMethod
++	fun addListener(eventName: String) {
++		// Required stub: NativeEventEmitter calls this to let native modules
++		// start any listening they only need while JS listeners exist. This
++		// module always listens (adapter receiver, GATT callbacks once
++		// started), so there's nothing to do here.
++	}
++
++	@ReactMethod
++	fun removeListeners(count: Int) {
++		// See addListener().
++	}
++
++	// --- event emission -------------------------------------------------
++
++	private fun emit(eventName: String, params: WritableMap) {
++		reactApplicationContext
++			.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
++			.emit(eventName, params)
++	}
++
++	private fun emitScanResult(address: String, rssi: Int, tokenHex: String) {
++		val map = Arguments.createMap()
++		map.putString("address", address)
++		map.putInt("rssi", rssi)
++		map.putString("tokenHex", tokenHex)
++		emit("nearbyScanResult", map)
++	}
++
++	private fun emitConnected(address: String, mtu: Int, role: String) {
++		val map = Arguments.createMap()
++		map.putString("address", address)
++		map.putInt("mtu", mtu)
++		map.putString("role", role)
++		emit("nearbyConnected", map)
++	}
++
++	private fun emitDisconnected(address: String, reason: String) {
++		val map = Arguments.createMap()
++		map.putString("address", address)
++		map.putString("reason", reason)
++		emit("nearbyDisconnected", map)
++	}
++
++	private fun emitFrame(address: String, bytes: ByteArray) {
++		val map = Arguments.createMap()
++		map.putString("address", address)
++		map.putString("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
++		emit("nearbyFrame", map)
++	}
++
++	private fun emitError(code: String, message: String) {
++		val map = Arguments.createMap()
++		map.putString("code", code)
++		map.putString("message", message)
++		emit("nearbyError", map)
++	}
++
++	private fun emitAdapterState(state: String) {
++		val map = Arguments.createMap()
++		map.putString("state", state)
++		emit("nearbyAdapterState", map)
++	}
++
++	// --- hex helpers ---------------------------------------------------
++
++	private fun hexToBytes(hex: String): ByteArray {
++		val out = ByteArray(hex.length / 2)
++		for (i in out.indices) {
++			val high = Character.digit(hex[i * 2], 16)
++			val low = Character.digit(hex[i * 2 + 1], 16)
++			out[i] = ((high shl 4) + low).toByte()
++		}
++		return out
++	}
++
++	private fun bytesToHex(bytes: ByteArray): String {
++		val sb = StringBuilder(bytes.size * 2)
++		for (b in bytes) sb.append(String.format("%02x", b))
++		return sb.toString()
++	}
++}
+diff --git a/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyPackage.kt b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyPackage.kt
+new file mode 100644
+index 0000000..c8cc291
+--- /dev/null
++++ b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyPackage.kt
+@@ -0,0 +1,15 @@
++package net.cozic.joplin.nearby
++
++import com.facebook.react.ReactPackage
++import com.facebook.react.bridge.NativeModule
++import com.facebook.react.bridge.ReactApplicationContext
++import com.facebook.react.uimanager.ViewManager
++
++// Registers NearbyModule (JS name "TilesNearby") -- see MainApplication.kt.
++class NearbyPackage : ReactPackage {
++	override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
++		listOf(NearbyModule(reactContext))
++
++	override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =
++		emptyList()
++}
+diff --git a/packages/app-mobile/lists/core/db.ts b/packages/app-mobile/lists/core/db.ts
+index ba41498..77ca844 100644
+--- a/packages/app-mobile/lists/core/db.ts
++++ b/packages/app-mobile/lists/core/db.ts
+@@ -293,6 +293,14 @@ export class ListsDatabase {
+ 		return rows.map(rowToItem);
+ 	}
+ 
++	// Every item for a list, including tombstoned (deleted) ones -- unlike
++	// items(), which is for display. Used by the Bluetooth sync summary (see
++	// lists/nearby/nearbyManager.ts), which needs deletions to propagate too.
++	public async allItemsForSync(listId: string): Promise<ItemRecord[]> {
++		const rows = await this.db.selectAll('SELECT * FROM items WHERE list_id = ?', [listId]);
++		return rows.map(rowToItem);
++	}
++
+ 	public async item(listId: string, dTag: string): Promise<ItemRecord | null> {
+ 		const row = await this.db.selectOne('SELECT * FROM items WHERE list_id = ? AND d_tag = ?', [listId, dTag]);
+ 		return row ? rowToItem(row) : null;
+diff --git a/packages/app-mobile/lists/nearby/PROTOCOL.md b/packages/app-mobile/lists/nearby/PROTOCOL.md
+new file mode 100644
+index 0000000..b20f1d1
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/PROTOCOL.md
+@@ -0,0 +1,251 @@
++# Nearby sync protocol (Bluetooth LE)
++
++This document describes the wire protocol used by transport 2 ("Nearby") from `docs/KONZEPT.md`
++section 3, for shopping-list sync between devices that are physically close, with no relay/internet
++required. It is written to be implementable on any platform; the Android implementation lives in
++`android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt` (native BLE primitives) and
++`lists/nearby/*.ts` (protocol, handshake, sync logic). This is the reference for a future iOS
++implementation (CoreBluetooth) -- iOS is not implemented in this round.
++
++## Service and characteristics
++
++- **Service UUID**: `d7a1e2b0-5f3c-4a9e-8b1d-6c2f9e4a7b3d` (constant, see `protocol.ts`).
++- **`rx` characteristic**: `d7a1e2b1-5f3c-4a9e-8b1d-6c2f9e4a7b3d`. Properties: WRITE, WRITE_NO_RESPONSE.
++  Direction: central -> peripheral. The peripheral's GATT server exposes it; the central writes
++  frames to it.
++- **`tx` characteristic**: `d7a1e2b2-5f3c-4a9e-8b1d-6c2f9e4a7b3d`. Properties: NOTIFY. Direction:
++  peripheral -> central. Has a standard Client Characteristic Configuration Descriptor (CCCD,
++  `00002902-0000-1000-8000-00805f9b34fb`) that the central must write to subscribe.
++- Every device that wants to sync acts as **both** a BLE peripheral (GATT server, connectable
++  advertiser) and a BLE central (scanner, GATT client) at the same time -- see "Roles" below.
++
++## Advertising
++
++Each device advertises the service UUID plus 8 bytes of **service data**: an "advertising token"
++that identifies the list without revealing anything about it to a passive observer.
++
++- **Primary (legacy) advertising**: always on, 1M PHY, connectable. Every BLE 4.0+ central can see
++  and connect to it.
++- **Extended advertising set**: additionally started when the device and the OS support it
++  (`AdvertisingSetParameters` with primary PHY 1M / secondary PHY Coded), for longer range. Purely
++  additive -- the legacy advertisement keeps running regardless.
++- The advertising payload's service data is **not** the list id or any other stable identifier --
++  see "Token derivation" below. Advertising is deliberately not connectable-only-once; the same
++  advertisement is used to let multiple centrals discover and connect concurrently (a device may
++  end up connected to several peers for the same list).
++
++### Token derivation
++
++```
++window   = floor(now_ms / 900000)                     // 15-minute window index
++token    = HMAC-SHA256(contentKey, "adv" || window)[0..8]  // first 8 bytes
++```
++
++`contentKey` is the list's 32-byte symmetric content key (see `lists/core/crypto.ts` and
++`docs/KONZEPT.md` section 2/3) -- the same key used to encrypt item and directory events for
++relay sync. A device re-derives and re-advertises this token every 15 minutes
++(`updateToken()`/`TOKEN_ROTATION_MS`). A scanner checks a received token against the **current and
++previous** window of every locally open list's content key (clock-skew tolerance): if it matches,
++the advertiser is (very likely) a device open on the same list.
++
++This is a broadcast pre-shared-key scheme, not a strong authentication mechanism -- final trust
++is established by the handshake's proof exchange (below) plus the membership check, which the
++token can't forge.
++
++## Framing
++
++Every message (Hello, Proof, Summary, Event, Directory, Heartbeat, Done, Bye) is JSON, UTF-8
++encoded, then split into one or more **frames** that fit in a single GATT write/notification:
++
++```
++byte 0        message type   (1 byte)
++bytes 1-2     message id     (uint16, big-endian) -- identifies this (possibly multi-frame) message
++bytes 3-4     fragment index (uint16, big-endian) -- 0-based
++bytes 5-6     fragment count (uint16, big-endian) -- total fragments for this message
++bytes 7..     payload        (raw bytes of this fragment)
++```
++
++Header length: 7 bytes. Maximum payload per frame: `MTU - 3 (ATT overhead) - 7 (frame header)`.
++A message that fits in one frame still carries `count = 1, index = 0`.
++
++Message types (byte 0):
++
++| Value | Name      | Payload (JSON)                                               |
++|-------|-----------|---------------------------------------------------------------|
++| 1     | Hello     | `{ v, listId, pubkey, nonce, deviceName? }`                    |
++| 2     | Proof     | `{ proof }`                                                    |
++| 3     | Summary   | `{ items: [{ dTag, maxFieldTime }], directoryTime }`           |
++| 4     | Event     | `{ event }` -- a signed Nostr item event, see below            |
++| 5     | Directory | `{ event }` -- a signed Nostr directory event                  |
++| 6     | Heartbeat | `{}`                                                            |
++| 7     | Done      | `{}` -- "I've sent everything from my initial summary diff"    |
++| 8     | Bye       | `{}` -- graceful goodbye before disconnecting                  |
++
++### Reassembly
++
++A receiver keeps one partial-message buffer per `(connection, message id)`. A message is complete
++once all `count` fragments for its id have arrived (order-independent -- fragments may arrive out
++of order, though in practice a single sender's own frames are sent in order, one write at a time).
++A partial message that hasn't completed within **10 seconds** of its first fragment is dropped;
++later fragments for that same id then start a fresh message.
++
++## Roles: central and peripheral, both ways
++
++There's no fixed "server"/"client" designation for a list; every device both advertises
++(peripheral role) and scans (central role) at the same time. This means two devices in range of
++each other typically **both** discover **both** ways, and **both** initiate a `connect()`. On
++Android this can produce two independent links: one where device A is the GATT central (it called
++`connectGatt` on B) and simultaneously one where device A is the GATT peripheral (B connected to
++A's GATT server). The native module surfaces both under B's/A's Bluetooth address, without
++distinguishing which GATT role a given inbound event came from -- see `NearbyModule.kt`'s
++`emitConnected`/`emitFrame`, both keyed only by remote address.
++
++The nearby manager only starts **one** protocol session per remote address: a second `connected`
++event for an address that already has a session is treated as informational only (the link is
++already established from this module's point of view), not as an independent channel.
++
++### Duplicate-connection resolution
++
++If, despite the above, two independent sessions do end up open to the same peer (detected once
++both sides' `Hello` messages have been exchanged and reveal the same peer pubkey on two different
++addresses/connections), the rule is: **the connection whose central side has the numerically
++smaller pubkey (as a hex string) wins**; the other is disconnected. Both sides apply this rule
++independently and reach the same conclusion, since both know their own role (central/peripheral)
++on each connection and both pubkeys.
++
++## Handshake
++
++Both sides run the identical state machine (`session.ts`); there is no "initiator"/"responder"
++distinction beyond who happens to send `Hello` first (both send it unconditionally as soon as the
++connection is up).
++
++1. **A -> B**: `Hello { v: 1, listId, pubkey: pubkeyA, nonce: nonceA, deviceName? }`
++2. **B -> A**: `Hello { v: 1, listId, pubkey: pubkeyB, nonce: nonceB, deviceName? }`
++   (sent as soon as B's own connection is up, independent of whether A's Hello has arrived yet)
++3. Once each side has both nonces, both compute and send a **Proof**:
++   ```
++   proof = HMAC-SHA256(contentKey, "proof" || ownPubkey || nonceOfPeer || nonceOfOwn)
++   ```
++   where, from the signer's point of view, `nonceOfPeer` is the nonce it received from the other
++   side and `nonceOfOwn` is the nonce it generated itself. A verifier recomputes the same value by
++   substituting the signer's pubkey and the two nonces from the signer's perspective; the two
++   computations are always identical by construction, so `deriveProof` in `protocol.ts` is one
++   function used both to produce and to verify.
++4. Each side verifies the peer's proof. A mismatch means the peer doesn't hold the same
++   `contentKey` (wrong/foreign list) -- the connection is closed immediately
++   (`E: Proof verification failed`).
++5. **Membership check**: the peer's pubkey must be an active (non-removed) member of the locally
++   held member directory for this list.
++   - **Open list, peer unknown**: this is the "join without internet" path from
++     `docs/KONZEPT.md` section 3 -- a device that just scanned an invite QR code, with no
++     connectivity yet, still proves it holds the list's content key (step 3 above), which for an
++     **open** list is exactly the same proof an invite grants. The peer is accepted and added to
++     the local member directory on the spot.
++   - **Managed list, peer unknown**: the connection is closed. Joining a managed list without
++     internet access is out of scope for this round (an admin device is needed to accept the join
++     request over a relay) -- logged, not silently ignored.
++6. Both sides are now verified; each sends its **Summary**: every item's `(dTag, maxFieldTime)`
++   (including tombstoned/deleted items, so deletions still propagate) plus the locally held
++   directory event's `created_at` (0 if none). `maxFieldTime` is
++   `max(openT, detailT, categoryT, iconT, deletedT)` in local device-clamped milliseconds (the
++   same clamped timestamps used for last-writer-wins merging, see `lists/core/merge.ts`).
++7. On receiving the peer's Summary (which may arrive before this side has sent its own -- both
++   directions are independent), each side computes its outgoing diff: for every local item whose
++   `maxFieldTime` is strictly newer than what the peer's Summary reports (or that's altogether
++   missing from the peer's Summary), it builds a **fresh signed event from its own current merged
++   state** (see "Events" below) and sends it as an **Event** message. If the local directory's
++   timestamp is newer than the peer's, the locally held signed **Directory** event is forwarded
++   too.
++8. Once a side has sent every event from its diff, it sends **Done**.
++9. Once both sides have sent and received Done, the session is **active**: from here on it behaves
++   like a live connection (see "Live sync" below).
++
++### Handshake timeout
++
++If the handshake (steps 1-5) hasn't completed within **15 seconds** of the connection being
++established, the session is closed.
++
++## Events: why no event store is needed
++
++An item's Event, whether sent during the initial diff or later as a live push, is **not** a
++forwarded copy of some other device's original signed event. Instead, each device builds its own
++event from its own currently merged state, signed with its own device key:
++
++```
++event = buildItemEvent(ownDeviceSecretKey, listPubkey, dTag, contentKey, currentMergedPayload)
++```
++
++This is valid because the merge (`lists/core/merge.ts`) is field-wise last-writer-wins keyed by
++each field's own timestamp and originating device, not by which event carried it -- any member is
++allowed to sign an item event for the list (see `lists/core/events.ts#buildItemEvent`), and the
++receiving side runs it through the exact same signature + membership + merge pipeline it uses for
++relay-sourced events (`lists/sync/listSync.ts`'s `handleItemEvent`, reused via
++`ListsSync#applyIncomingDirectoryEvent` for directories and directly in `nearbyManager.ts` for
++items). So device B can relay device A's changes on to device C without ever having stored A's
++original event -- B just re-signs its own already-merged copy. This also means B->C forwarding
++naturally happens as part of B's own outgoing diff the next time B and C sync, with no separate
++"relay" logic.
++
++The one exception is the **member directory** event, which *is* forwarded as the original signed
++event (not rebuilt), because only the list's own key (open lists) or the admin chain (managed
++lists) may sign it -- see `lists/sync/listSync.ts`'s `directoryRawMetaKey`/`latestDirectoryEvent`,
++which stores the last accepted directory in its original signed form specifically so it can be
++forwarded byte-for-byte over Bluetooth.
++
++## Live sync (after the handshake)
++
++Once a session is `active`:
++
++- **Heartbeat**: every 10 seconds, each side sends a Heartbeat frame (empty payload). Receiving
++  *any* frame (not just Heartbeat) resets the peer's "last seen" timer.
++- **Peer-lost timeout**: if no frame at all has arrived for 30 seconds, the peer is considered
++  lost: the session is closed and the underlying connection is torn down. Scanning (which keeps
++  running the whole time nearby sync is on) will rediscover the device if it's still in range and
++  advertising.
++- **Local push**: when the local store changes (`ListsStore#onChange`), the nearby manager sends
++  the changed item(s) as fresh Event messages (same "rebuild from own merged state" rule as above)
++  to every currently active session for that list, and forwards a new Directory event if the
++  locally held one changed.
++
++## Token rotation, discovery loop, auto-off
++
++- The advertising token rotates every 15 minutes (`TOKEN_ROTATION_MS`); `updateToken()` restarts
++  advertising with the new token (same service UUID, same GATT server, connections are
++  unaffected).
++- Scanning stays on continuously while nearby sync is on for a list (`ScanSettings.SCAN_MODE_LOW_LATENCY`).
++- Nearby sync turns itself off:
++  - after `lists.nearbyAutoOffMinutes` (a setting) minutes with no activity resetting the timer
++    (a peer being found resets it), if that setting is a positive number;
++  - unconditionally after the app has been backgrounded for more than 5 minutes
++    (`BACKGROUND_AUTO_OFF_MS`), regardless of the setting above.
++- Leaving the list's screen does **not** turn nearby sync off by itself (see `docs/KONZEPT.md`
++  section 3: "at the supermarket you might briefly switch apps") -- only the two mechanisms above,
++  or the person tapping the status circle, stop it.
++
++## Errors and permissions
++
++The native module never throws a raw `SecurityException`; a missing permission surfaces as a
++rejected promise with code `E_PERMISSION`. Requesting the right permissions (which differ between
++Android <31 and 31+) is the TS/UI layer's job (`PermissionsAndroid`, see
++`NearbyStatusCircle.tsx`), not the native module's.
++
++## For a future iOS implementation
++
++CoreBluetooth's model maps reasonably closely: `CBPeripheralManager` for advertising + the GATT
++server side, `CBCentralManager`/`CBPeripheral` for scanning + the GATT client side. Two points
++that need extra care compared to Android:
++
++- iOS advertises **only** the service UUID in the background (no arbitrary service-data bytes) --
++  the 8-byte advertising token would need to travel some other way in the background case (e.g. a
++  short exchange right after connecting, before the full handshake), or the feature can be
++  foreground-only on iOS for a first version.
++- CoreBluetooth doesn't expose a MAC address; peers are identified by a `CBPeripheral` identifier
++  that is **not stable** across app launches on iOS the way a BLE MAC is used here as the `address`
++  key throughout this protocol and in `nativeBle.ts`'s `BleDriver` interface. Any iOS
++  `nativeBle.ts`-equivalent needs its own stable-enough key (e.g. the identifier for the lifetime
++  of one nearby-sync session is sufficient, since `address` here is never persisted -- it's purely
++  a transport-session handle).
++
++Everything above the native module boundary -- `protocol.ts`, `session.ts`, `nearbyManager.ts` --
++is platform-independent and would be reused as-is; only a new `nativeBle.ts`-equivalent backed by
++CoreBluetooth (implementing the same `BleDriver` interface) would be needed.
+diff --git a/packages/app-mobile/lists/nearby/nativeBle.ts b/packages/app-mobile/lists/nearby/nativeBle.ts
+new file mode 100644
+index 0000000..98f7e17
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/nativeBle.ts
+@@ -0,0 +1,161 @@
++// Thin wrapper around the native `TilesNearby` module (see
++// android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt) and its
++// NativeEventEmitter events. All BLE logic (protocol, sessions, peer
++// bookkeeping) lives in TS; this file only translates to/from the native
++// bridge, so nearbyManager.ts can be driven either by this or by
++// testing/fakeBle.ts under the same BleDriver interface.
++import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
++
++export interface BleCapabilities {
++	ble: boolean;
++	peripheral: boolean;
++	codedPhy: boolean;
++}
++
++export type BleAdapterState = 'on' | 'off' | 'unauthorized' | 'unsupported';
++export type BleConnectionRole = 'central' | 'peripheral';
++
++export interface BleScanResult {
++	address: string;
++	rssi: number;
++	tokenHex: string;
++}
++
++export interface BleConnectedEvent {
++	address: string;
++	mtu: number;
++	role: BleConnectionRole;
++}
++
++export interface BleDisconnectedEvent {
++	address: string;
++	reason: string;
++}
++
++export interface BleFrameEvent {
++	address: string;
++	base64: string;
++}
++
++export interface BleErrorEvent {
++	code: string;
++	message: string;
++}
++
++// The subset of native calls/events nearbyManager.ts needs. Implemented by
++// both NativeBle (real device) and testing/fakeBle.ts (Jest).
++export interface BleDriver {
++	isSupported(): Promise<BleCapabilities>;
++	state(): Promise<BleAdapterState>;
++	startAdvertising(serviceUuid: string, tokenHex: string, useCodedPhy: boolean): Promise<void>;
++	updateToken(tokenHex: string): Promise<void>;
++	stopAdvertising(): Promise<void>;
++	startScan(serviceUuid: string, useCodedPhy: boolean): Promise<void>;
++	stopScan(): Promise<void>;
++	connect(address: string): Promise<void>;
++	send(address: string, base64: string): Promise<void>;
++	disconnect(address: string): Promise<void>;
++	stopAll(): Promise<void>;
++	onScanResult(listener: (event: BleScanResult)=> void): ()=> void;
++	onConnected(listener: (event: BleConnectedEvent)=> void): ()=> void;
++	onDisconnected(listener: (event: BleDisconnectedEvent)=> void): ()=> void;
++	onFrame(listener: (event: BleFrameEvent)=> void): ()=> void;
++	onError(listener: (event: BleErrorEvent)=> void): ()=> void;
++	onAdapterState(listener: (state: BleAdapterState)=> void): ()=> void;
++}
++
++// True when the native module is linked in this build (Android only -- iOS
++// has no TilesNearby module yet, see PROTOCOL.md).
++export const nativeBleAvailable = (): boolean => Platform.OS === 'android' && !!NativeModules.TilesNearby;
++
++class NativeBle implements BleDriver {
++	private readonly emitter = new NativeEventEmitter(NativeModules.TilesNearby);
++
++	private get native() {
++		return NativeModules.TilesNearby;
++	}
++
++	public isSupported(): Promise<BleCapabilities> {
++		return this.native.isSupported();
++	}
++
++	public state(): Promise<BleAdapterState> {
++		return this.native.state();
++	}
++
++	public startAdvertising(serviceUuid: string, tokenHex: string, useCodedPhy: boolean): Promise<void> {
++		return this.native.startAdvertising(serviceUuid, tokenHex, useCodedPhy);
++	}
++
++	public updateToken(tokenHex: string): Promise<void> {
++		return this.native.updateToken(tokenHex);
++	}
++
++	public stopAdvertising(): Promise<void> {
++		return this.native.stopAdvertising();
++	}
++
++	public startScan(serviceUuid: string, useCodedPhy: boolean): Promise<void> {
++		return this.native.startScan(serviceUuid, useCodedPhy);
++	}
++
++	public stopScan(): Promise<void> {
++		return this.native.stopScan();
++	}
++
++	public connect(address: string): Promise<void> {
++		return this.native.connect(address);
++	}
++
++	public send(address: string, base64: string): Promise<void> {
++		return this.native.send(address, base64);
++	}
++
++	public disconnect(address: string): Promise<void> {
++		return this.native.disconnect(address);
++	}
++
++	public stopAll(): Promise<void> {
++		return this.native.stopAll();
++	}
++
++	public onScanResult(listener: (event: BleScanResult)=> void): ()=> void {
++		const sub = this.emitter.addListener('nearbyScanResult', listener);
++		return () => sub.remove();
++	}
++
++	public onConnected(listener: (event: BleConnectedEvent)=> void): ()=> void {
++		const sub = this.emitter.addListener('nearbyConnected', listener);
++		return () => sub.remove();
++	}
++
++	public onDisconnected(listener: (event: BleDisconnectedEvent)=> void): ()=> void {
++		const sub = this.emitter.addListener('nearbyDisconnected', listener);
++		return () => sub.remove();
++	}
++
++	public onFrame(listener: (event: BleFrameEvent)=> void): ()=> void {
++		const sub = this.emitter.addListener('nearbyFrame', listener);
++		return () => sub.remove();
++	}
++
++	public onError(listener: (event: BleErrorEvent)=> void): ()=> void {
++		const sub = this.emitter.addListener('nearbyError', listener);
++		return () => sub.remove();
++	}
++
++	public onAdapterState(listener: (state: BleAdapterState)=> void): ()=> void {
++		const sub = this.emitter.addListener('nearbyAdapterState', (event: { state: BleAdapterState }) => listener(event.state));
++		return () => sub.remove();
++	}
++}
++
++let cached: BleDriver | null = null;
++
++// Lazily constructed so importing this module never touches NativeModules on
++// platforms/tests where TilesNearby doesn't exist -- callers must check
++// nativeBleAvailable() first.
++export const getNativeBle = (): BleDriver => {
++	if (!cached) cached = new NativeBle();
++	return cached;
++};
+diff --git a/packages/app-mobile/lists/nearby/nearbyManager.test.ts b/packages/app-mobile/lists/nearby/nearbyManager.test.ts
+new file mode 100644
+index 0000000..b5ef4ab
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/nearbyManager.test.ts
+@@ -0,0 +1,178 @@
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import { ListsDatabase } from '../core/db';
++import { ListsStore } from '../core/store';
++import { ListRecord } from '../core/types';
++import { NearbyManager } from './nearbyManager';
++import { FakeBleDevice, FakeBleNetwork, createFakeBle } from './testing/fakeBle';
++
++jest.mock('@joplin/lib/models/Setting', () => ({ __esModule: true, default: { value: jest.fn(() => 0) } }));
++// eslint-disable-next-line @typescript-eslint/no-var-requires -- see jest.mock above
++const mockSetting = require('@joplin/lib/models/Setting').default;
++
++interface Device {
++	db: ListsDatabase;
++	store: ListsStore;
++	manager: NearbyManager;
++	ble: FakeBleDevice;
++	path: string;
++}
++
++const openDevice = async (id: string, network: FakeBleNetwork): Promise<Device> => {
++	const path = join(tmpdir(), `tiles-nearby-test-${uuid.createNano()}.sqlite`);
++	const db = new ListsDatabase(new Database(new DatabaseDriverNode()));
++	await db.openOrCreate(path);
++	const store = new ListsStore(db, path);
++	const ble = createFakeBle(id, network);
++	const manager = new NearbyManager(db, store, { ble });
++	return { db, store, manager, ble, path };
++};
++
++const closeDevice = async (device: Device): Promise<void> => {
++	await device.manager.stop();
++	await device.db.close();
++	await rm(device.path, { force: true });
++};
++
++// Runs pending async work (frame delivery, handshake steps, sqlite I/O
++// callbacks) until it's all settled, without needing real BLE latency.
++// setImmediate alone isn't enough here: the node sqlite driver delivers
++// query results via libuv's thread pool, which needs real event-loop turns
++// (not just drained microtasks/immediates) to catch up -- so this yields
++// with a short real setTimeout instead. See useFakeTimers() below for how
++// this stays compatible with tests that also need fake timers.
++const settle = async (rounds = 40, delayMs = 25): Promise<void> => {
++	for (let i = 0; i < rounds; i++) await new Promise(resolve => setTimeout(resolve, delayMs));
++};
++
++// advanceTimers keeps the fake clock auto-ticking at (roughly) real speed,
++// so code that awaits real sqlite I/O (via settle() above) isn't starved --
++// only jest.advanceTimersByTimeAsync()'s extra jump is "free".
++const useFakeTimers = (): void => {
++	jest.useFakeTimers({ advanceTimers: true, doNotFake: ['setImmediate', 'nextTick'] });
++};
++
++describe('lists/nearby/nearbyManager', () => {
++	let network: FakeBleNetwork;
++	let devices: Device[];
++
++	beforeEach(() => {
++		network = new FakeBleNetwork();
++		devices = [];
++		mockSetting.value.mockReturnValue(0);
++	});
++
++	afterEach(async () => {
++		jest.useRealTimers();
++		for (const device of devices) await closeDevice(device);
++	});
++
++	const addDevice = async (id: string): Promise<Device> => {
++		const device = await openDevice(id, network);
++		devices.push(device);
++		return device;
++	};
++
++	const createSharedOpenList = async (owner: Device, ...joiners: Device[]): Promise<ListRecord> => {
++		const list = await owner.store.createOpenList('Groceries');
++		const invite = await owner.store.inviteFor(list.id);
++		for (const joiner of joiners) await joiner.store.joinFromInvite(invite.link);
++		return list;
++	};
++
++	test('two devices discover each other, hand-shake and sync an existing item', async () => {
++		const a = await addDevice('a');
++		const b = await addDevice('b');
++		const list = await createSharedOpenList(a, b);
++		await a.store.addItem(list.id, 'Milch');
++
++		await a.manager.start(list.id);
++		await b.manager.start(list.id);
++		await settle();
++
++		const bItems = await b.store.items(list.id);
++		expect(bItems.map(i => i.name)).toContain('Milch');
++
++		let aState: { mode: string; found: number } | null = null;
++		a.manager.onState(s => { aState = s; })();
++		expect(aState).not.toBeNull();
++	});
++
++	test('found/total are reported once devices are connected', async () => {
++		const a = await addDevice('a');
++		const b = await addDevice('b');
++		const list = await createSharedOpenList(a, b);
++
++		const states: { mode: string; found: number }[] = [];
++		a.manager.onState(s => states.push(s));
++
++		await a.manager.start(list.id);
++		await b.manager.start(list.id);
++		await settle();
++
++		expect(states.some(s => s.mode === 'found' && s.found >= 1)).toBe(true);
++	});
++
++	test('a change on one device reaches a third device via a second (mesh propagation)', async () => {
++		const a = await addDevice('a');
++		const b = await addDevice('b');
++		const c = await addDevice('c');
++		const list = await createSharedOpenList(a, b, c);
++
++		await a.manager.start(list.id);
++		await b.manager.start(list.id);
++		await c.manager.start(list.id);
++		await settle();
++
++		await a.store.addItem(list.id, 'Kaffee');
++		await settle();
++
++		const cItems = await c.store.items(list.id);
++		expect(cItems.map(i => i.name)).toContain('Kaffee');
++	});
++
++	test('auto-off stops nearby after the configured number of minutes of inactivity', async () => {
++		mockSetting.value.mockReturnValue(5); // lists.nearbyAutoOffMinutes
++
++		const a = await addDevice('a');
++		const list = await a.store.createOpenList('Groceries');
++		const states: { mode: string }[] = [];
++		a.manager.onState(s => states.push(s));
++
++		useFakeTimers();
++		await a.manager.start(list.id);
++		expect(states[states.length - 1].mode).toBe('searching');
++
++		await jest.advanceTimersByTimeAsync(5 * 60 * 1000 + 1000);
++
++		expect(states[states.length - 1].mode).toBe('off');
++	});
++
++	test('a peer that stops responding is counted as lost after 30s and the session closes', async () => {
++		const a = await addDevice('a');
++		const b = await addDevice('b');
++		const list = await createSharedOpenList(a, b);
++
++		useFakeTimers();
++		await a.manager.start(list.id);
++		await b.manager.start(list.id);
++		await settle();
++
++		const states: { mode: string; found: number }[] = [];
++		a.manager.onState(s => states.push(s));
++		expect(states[states.length - 1].found).toBeGreaterThanOrEqual(1);
++
++		// B disappears without a clean disconnect (out of range): frames it
++		// sends are silently dropped rather than delivered, so A has to notice
++		// via the heartbeat timeout instead of a disconnect event.
++		b.ble.setSilent(true);
++
++		await jest.advanceTimersByTimeAsync(31 * 1000);
++
++		expect(states[states.length - 1].found).toBe(0);
++	});
++});
+diff --git a/packages/app-mobile/lists/nearby/nearbyManager.ts b/packages/app-mobile/lists/nearby/nearbyManager.ts
+new file mode 100644
+index 0000000..87e445a
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/nearbyManager.ts
+@@ -0,0 +1,490 @@
++// Implements NearbyTransport (see ../sync/nearby.ts) on top of the BLE
++// protocol/session layer: discovers nearby devices advertising the same
++// list, connects, runs the handshake + sync via Session, keeps pushing local
++// changes to connected peers, and reports found/total for the UI's status
++// circle. See docs/KONZEPT.md section 3 and PROTOCOL.md.
++import { AppState, AppStateStatus, NativeEventSubscription } from 'react-native';
++import { VerifiedEvent } from 'nostr-tools';
++import { ListsDatabase } from '../core/db';
++import { ListsStore, itemRecordToPayload } from '../core/store';
++import { buildItemEvent, parseItemEvent } from '../core/events';
++import { hexToBytes } from '../core/crypto';
++import { ItemRecord, ListRecord } from '../core/types';
++import { NearbyPeerInfo, NearbyState, NearbyStateListener, NearbyTransport } from '../sync/nearby';
++import { ListsSync } from '../sync/listSync';
++import { debugLog } from '../../utils/debugLog';
++import { BleAdapterState, BleConnectedEvent, BleConnectionRole, BleDriver, getNativeBle, nativeBleAvailable } from './nativeBle';
++import { NEARBY_SERVICE_UUID, advertisingTokenMatches, deriveAdvertisingTokenHex } from './protocol';
++import { Session, SessionState } from './session';
++
++const log = debugLog('lists.nearby');
++
++export const TOKEN_ROTATION_MS = 15 * 60 * 1000;
++export const BACKGROUND_AUTO_OFF_MS = 5 * 60 * 1000;
++const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
++
++// React Native's `global.Buffer` isn't guaranteed on-device; base64 encode/
++// decode small byte arrays by hand rather than pull in a dependency.
++const bytesToBase64 = (bytes: Uint8Array): string => {
++	let out = '';
++	for (let i = 0; i < bytes.length; i += 3) {
++		const b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];
++		const triple = (b0 << 16) | ((b1 ?? 0) << 8) | (b2 ?? 0);
++		out += BASE64_CHARS[(triple >> 18) & 63];
++		out += BASE64_CHARS[(triple >> 12) & 63];
++		out += i + 1 < bytes.length ? BASE64_CHARS[(triple >> 6) & 63] : '=';
++		out += i + 2 < bytes.length ? BASE64_CHARS[triple & 63] : '=';
++	}
++	return out;
++};
++
++const base64ToBytes = (base64: string): Uint8Array => {
++	const clean = base64.replace(/=+$/, '');
++	const bytes: number[] = [];
++	let buffer = 0;
++	let bits = 0;
++	for (const char of clean) {
++		const value = BASE64_CHARS.indexOf(char);
++		if (value === -1) continue;
++		buffer = (buffer << 6) | value;
++		bits += 6;
++		if (bits >= 8) {
++			bits -= 8;
++			bytes.push((buffer >> bits) & 0xff);
++		}
++	}
++	return Uint8Array.from(bytes);
++};
++
++const itemEventCreatedAt = (item: ItemRecord): number => {
++	const times = [item.openT, item.detailT, item.categoryT, item.deletedT].filter((t): t is number => t !== null);
++	const maxMs = times.length > 0 ? Math.max(...times) : Date.now();
++	return Math.floor(maxMs / 1000);
++};
++
++const itemMaxFieldTime = (item: ItemRecord): number =>
++	Math.max(item.openT, item.detailT ?? 0, item.categoryT ?? 0, item.iconT ?? 0, item.deletedT ?? 0);
++
++interface Connection {
++	session: Session;
++	role: BleConnectionRole;
++	peerPubkey: string | null;
++	rssi: number | null;
++	connectedAt: number;
++}
++
++// Best-effort reader for the setting owned by another agent's work
++// (builtInMetadata.ts / Setting.ts); Setting may not be initialized in tests
++// or very early app startup, so this never throws.
++const readAutoOffMinutes = (): number => {
++	try {
++		// eslint-disable-next-line @typescript-eslint/no-var-requires -- optional, avoids a hard dependency for lists/nearby's own tests
++		const Setting = require('@joplin/lib/models/Setting').default;
++		const value = Setting.value('lists.nearbyAutoOffMinutes');
++		return typeof value === 'number' && value > 0 ? value : 0;
++	} catch (error) {
++		return 0;
++	}
++};
++
++export interface NearbyManagerOptions {
++	ble?: BleDriver;
++	now?: ()=> number;
++}
++
++// One instance is enough for the whole app (see getNearbyManager() below): it
++// only ever syncs the single list currently open on screen, same as
++// UnavailableNearbyTransport did before it.
++export class NearbyManager implements NearbyTransport {
++	private db: ListsDatabase;
++	private store: ListsStore;
++	private ble: BleDriver;
++	private now: ()=> number;
++
++	private listeners = new Set<NearbyStateListener>();
++	private state: NearbyState = { mode: 'off', found: 0, total: 0 };
++
++	private listId: string | null = null;
++	private list: ListRecord | null = null;
++	private localPubkey: string | null = null;
++	private localDeviceName: string | undefined;
++	private localSecretKey: Uint8Array | null = null;
++	private contentKey: Uint8Array | null = null;
++	private connections = new Map<string, Connection>();
++
++	private tokenTimer: ReturnType<typeof setInterval> | null = null;
++	private autoOffTimer: ReturnType<typeof setTimeout> | null = null;
++	private backgroundTimer: ReturnType<typeof setTimeout> | null = null;
++	private appStateSub: NativeEventSubscription | null = null;
++	private storeChangeUnsub: (()=> void) | null = null;
++	private bleUnsubs: (()=> void)[] = [];
++	private starting = false;
++
++	public constructor(db: ListsDatabase, store: ListsStore, options: NearbyManagerOptions = {}) {
++		this.db = db;
++		this.store = store;
++		this.ble = options.ble ?? (nativeBleAvailable() ? getNativeBle() : (undefined as unknown as BleDriver));
++		this.now = options.now ?? (() => Date.now());
++	}
++
++	public isAvailable(): boolean {
++		return !!this.ble;
++	}
++
++	public onState(listener: NearbyStateListener): ()=> void {
++		this.listeners.add(listener);
++		listener(this.state);
++		return () => this.listeners.delete(listener);
++	}
++
++	private setState(patch: Partial<NearbyState>): void {
++		this.state = { ...this.state, ...patch };
++		for (const listener of this.listeners) listener(this.state);
++	}
++
++	public async start(listId: string): Promise<void> {
++		if (!this.isAvailable()) {
++			this.setState({ mode: 'unavailable', found: 0, total: 0 });
++			return;
++		}
++		if (this.starting || this.listId === listId) return;
++		if (this.listId) await this.stop();
++		this.starting = true;
++		try {
++			await this.doStart(listId);
++		} finally {
++			this.starting = false;
++		}
++	}
++
++	private async doStart(listId: string): Promise<void> {
++		const list = await this.db.list(listId);
++		if (!list || !list.contentKey) {
++			log.warn('Nearby: list has no content key yet, not starting', { listId: listId.slice(0, 8) });
++			return;
++		}
++		const identity = await this.db.deviceIdentity();
++		const adapterState = await this.ble.state();
++		if (adapterState !== 'on') {
++			log.info('Nearby: adapter not on, staying off', { adapterState });
++			this.setState({ mode: 'off', found: 0, total: 0 });
++			return;
++		}
++
++		this.listId = listId;
++		this.list = list;
++		this.localPubkey = identity.publicKey;
++		this.localDeviceName = identity.name;
++		this.localSecretKey = identity.secretKey;
++		this.contentKey = hexToBytes(list.contentKey);
++
++		const capabilities = await this.ble.isSupported();
++		const total = await this.activeMemberCount(listId);
++		this.setState({ mode: 'searching', found: 0, total });
++
++		this.wireBleEvents();
++		const tokenHex = deriveAdvertisingTokenHex(this.contentKey, this.now());
++		log.info('Nearby: starting', { listId: listId.slice(0, 8), codedPhy: capabilities.codedPhy });
++		await this.ble.startAdvertising(NEARBY_SERVICE_UUID, tokenHex, capabilities.codedPhy);
++		await this.ble.startScan(NEARBY_SERVICE_UUID, capabilities.codedPhy);
++
++		this.tokenTimer = setInterval(() => { void this.rotateToken(); }, TOKEN_ROTATION_MS);
++		this.storeChangeUnsub = this.store.onChange(() => { void this.onLocalChange(); });
++		this.appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => this.onAppStateChange(next));
++		this.resetAutoOffTimer();
++	}
++
++	public async stop(): Promise<void> {
++		log.info('Nearby: stopping', { listId: this.listId?.slice(0, 8) });
++		for (const unsub of this.bleUnsubs) unsub();
++		this.bleUnsubs = [];
++		if (this.tokenTimer) { clearInterval(this.tokenTimer); this.tokenTimer = null; }
++		if (this.autoOffTimer) { clearTimeout(this.autoOffTimer); this.autoOffTimer = null; }
++		if (this.backgroundTimer) { clearTimeout(this.backgroundTimer); this.backgroundTimer = null; }
++		if (this.storeChangeUnsub) { this.storeChangeUnsub(); this.storeChangeUnsub = null; }
++		if (this.appStateSub) { this.appStateSub.remove(); this.appStateSub = null; }
++		for (const connection of this.connections.values()) connection.session.close('Nearby stopped');
++		this.connections.clear();
++		if (this.isAvailable()) {
++			try {
++				await this.ble.stopAll();
++			} catch (error) {
++				log.warn('Nearby: stopAll failed', { error: String(error) });
++			}
++		}
++		this.listId = null;
++		this.list = null;
++		this.contentKey = null;
++		this.setState({ mode: this.isAvailable() ? 'off' : 'unavailable', found: 0, total: 0 });
++	}
++
++	private async activeMemberCount(listId: string): Promise<number> {
++		const members = await this.db.members(listId);
++		return members.filter(m => !m.removedAt).length;
++	}
++
++	private async rotateToken(): Promise<void> {
++		if (!this.contentKey) return;
++		const tokenHex = deriveAdvertisingTokenHex(this.contentKey, this.now());
++		log.debug('Nearby: rotating advertising token');
++		try {
++			await this.ble.updateToken(tokenHex);
++		} catch (error) {
++			log.warn('Nearby: token rotation failed', { error: String(error) });
++		}
++	}
++
++	// --- BLE event wiring -------------------------------------------------
++
++	private wireBleEvents(): void {
++		this.bleUnsubs.push(this.ble.onScanResult(event => { void this.onScanResult(event.address, event.rssi, event.tokenHex); }));
++		this.bleUnsubs.push(this.ble.onConnected(event => { void this.onConnected(event); }));
++		this.bleUnsubs.push(this.ble.onDisconnected(event => this.onDisconnected(event.address, event.reason)));
++		this.bleUnsubs.push(this.ble.onFrame(event => { void this.onFrame(event.address, event.base64); }));
++		this.bleUnsubs.push(this.ble.onError(event => log.warn('Nearby native error', event)));
++		this.bleUnsubs.push(this.ble.onAdapterState(state => this.onAdapterState(state)));
++	}
++
++	private onAdapterState(state: BleAdapterState): void {
++		log.info('Nearby: adapter state changed', { state });
++		if (state !== 'on' && this.listId) void this.stop();
++	}
++
++	private async onScanResult(address: string, rssi: number, tokenHex: string): Promise<void> {
++		const existing = this.connections.get(address);
++		if (existing) { existing.rssi = rssi; return; }
++		if (!this.contentKey) return;
++		const matches = advertisingTokenMatches(this.contentKey, tokenHex, this.now());
++		log.debug('Nearby: scan result', { address: address.slice(0, 8), rssi, tokenMatches: matches });
++		if (!matches) return;
++		try {
++			await this.ble.connect(address);
++		} catch (error) {
++			log.warn('Nearby: connect failed', { address: address.slice(0, 8), error: String(error) });
++		}
++	}
++
++	private async onConnected(event: BleConnectedEvent): Promise<void> {
++		if (!this.listId || !this.contentKey || !this.localPubkey || !this.list) return;
++		if (this.connections.has(event.address)) {
++			// The native module reports frames and writes for a given address
++			// under one event stream regardless of which underlying link
++			// (central or peripheral) carries them -- see NearbyModule.kt -- so
++			// a second 'connected' event for an address we already have a
++			// session for (e.g. the peer connecting back to us right after we
++			// connected to it) isn't a new, independent channel from this
++			// module's point of view. Keep the existing session; starting a
++			// second one would desync the two sides' nonces mid-handshake.
++			log.debug('Nearby: extra connected event for an address already connected, ignoring', { address: event.address.slice(0, 8), role: event.role });
++			return;
++		}
++		log.info('Nearby: connected', { address: event.address.slice(0, 8), role: event.role, mtu: event.mtu });
++		const session = new Session(
++			{
++				listId: this.listId, localPubkey: this.localPubkey, localDeviceName: this.localDeviceName,
++				contentKey: this.contentKey, mtu: event.mtu, isOpenList: this.list.kind === 'open',
++			},
++			this.sessionCallbacks(event.address),
++		);
++		this.connections.set(event.address, { session, role: event.role, peerPubkey: null, rssi: null, connectedAt: this.now() });
++		session.start();
++	}
++
++	private onDisconnected(address: string, reason: string): void {
++		const connection = this.connections.get(address);
++		log.info('Nearby: disconnected', { address: address.slice(0, 8), reason });
++		if (connection) {
++			connection.session.close(reason);
++			this.connections.delete(address);
++		}
++		this.recomputeFound();
++	}
++
++	private async onFrame(address: string, base64: string): Promise<void> {
++		const connection = this.connections.get(address);
++		if (!connection) return;
++		await connection.session.onFrameBytes(base64ToBytes(base64));
++	}
++
++	// --- session callbacks --------------------------------------------
++
++	private sessionCallbacks(address: string) {
++		return {
++			sendFrame: async (bytes: Uint8Array) => { await this.ble.send(address, bytesToBase64(bytes)); },
++			isActiveMember: async (pubkey: string) => {
++				const members = await this.db.members(this.listId as string);
++				return members.some(m => m.pubkey === pubkey && !m.removedAt);
++			},
++			localSummary: async () => {
++				const items = await this.db.allItemsForSync(this.listId as string);
++				const directoryEvent = await this.latestDirectoryEvent();
++				return {
++					items: items.map(item => ({ dTag: item.dTag, maxFieldTime: itemMaxFieldTime(item) })),
++					directoryTime: directoryEvent?.created_at ?? 0,
++				};
++			},
++			buildLocalItemEvent: async (dTag: string): Promise<VerifiedEvent | null> => {
++				// eslint-disable-next-line no-console
++				const item = await this.db.item(this.listId as string, dTag);
++				if (!item || !this.contentKey || !this.localSecretKey) return null;
++				return buildItemEvent(this.localSecretKey, this.listId as string, dTag, this.contentKey, itemRecordToPayload(item), itemEventCreatedAt(item));
++			},
++			applyRemoteItemEvent: async (event: VerifiedEvent): Promise<boolean> => {
++				if (!this.contentKey) return false;
++				const members = await this.db.members(this.listId as string);
++				if (!members.some(m => m.pubkey === event.pubkey && !m.removedAt)) return false;
++				const dTagValue = event.tags.find(t => t[0] === 'd')?.[1];
++				if (!dTagValue) return false;
++				try {
++					const payload = parseItemEvent(event, this.contentKey);
++					await this.store.applyRemoteItem(this.listId as string, dTagValue, payload);
++					return true;
++				} catch (error) {
++					return false;
++				}
++			},
++			localDirectoryEvent: async () => this.latestDirectoryEvent(),
++			applyRemoteDirectoryEvent: async (event: VerifiedEvent): Promise<boolean> => {
++				try {
++					return await ListsSync.instance().applyIncomingDirectoryEvent(this.listId as string, event);
++				} catch (error) {
++					log.warn('Nearby: failed to apply incoming directory event', { error: String(error) });
++					return false;
++				}
++			},
++			acceptUnknownOpenListMember: this.list?.kind === 'open' ? async (pubkey: string, deviceName: string | undefined) => {
++				log.info('Nearby: accepting new open-list member seen only over Bluetooth (no internet join)', { pubkey: pubkey.slice(0, 8) });
++				await this.db.upsertMember({ listId: this.listId as string, pubkey, name: deviceName ?? null, role: 'member', since: this.now(), removedAt: null });
++			} : undefined,
++			onPeerIdentified: (peerPubkey: string) => this.onPeerIdentified(address, peerPubkey),
++			onStateChange: (_state: SessionState) => this.recomputeFound(),
++			onSyncComplete: (sent: number, received: number) => {
++				log.info('Nearby: session sync complete', { address: address.slice(0, 8), sent, received });
++				this.recomputeFound();
++			},
++			onClosed: (reason: string) => {
++				log.info('Nearby: session closed', { address: address.slice(0, 8), reason });
++				const connection = this.connections.get(address);
++				if (connection && connection.session.state === 'closed') {
++					this.connections.delete(address);
++					this.recomputeFound();
++				}
++			},
++		};
++	}
++
++	private async latestDirectoryEvent(): Promise<VerifiedEvent | null> {
++		if (!this.listId) return null;
++		try {
++			return await ListsSync.instance().latestDirectoryEvent(this.listId);
++		} catch (error) {
++			return null;
++		}
++	}
++
++	// Two devices that both scan and advertise can end up with two GATT
++	// connections to each other (one where we're central, one where we're
++	// peripheral). Once both hellos have identified the same peer pubkey,
++	// keep only the connection whose central side has the numerically
++	// smaller pubkey; drop the other. See PROTOCOL.md.
++	private onPeerIdentified(address: string, peerPubkey: string): void {
++		const connection = this.connections.get(address);
++		if (!connection || !this.localPubkey) return;
++		connection.peerPubkey = peerPubkey;
++		const duplicate = [...this.connections.entries()].find(([otherAddress, other]) => otherAddress !== address && other.peerPubkey === peerPubkey);
++		if (!duplicate) return;
++		const [otherAddress, otherConnection] = duplicate;
++		const centralPubkey = (c: Connection): string => (c.role === 'central' ? (this.localPubkey as string) : peerPubkey);
++		const dropAddress = centralPubkey(connection) < centralPubkey(otherConnection) ? otherAddress : address;
++		const dropConnection = this.connections.get(dropAddress);
++		if (!dropConnection) return;
++		log.info('Nearby: resolving duplicate connection', { peer: peerPubkey.slice(0, 8), dropping: dropAddress.slice(0, 8) });
++		dropConnection.session.close('Duplicate connection to same peer');
++		this.connections.delete(dropAddress);
++		void this.ble.disconnect(dropAddress);
++	}
++
++	public async peers(): Promise<NearbyPeerInfo[]> {
++		if (!this.listId) return [];
++		const members = await this.db.members(this.listId);
++		const result: NearbyPeerInfo[] = [];
++		for (const connection of this.connections.values()) {
++			if (!connection.peerPubkey) continue;
++			const member = members.find(m => m.pubkey === connection.peerPubkey);
++			result.push({ pubkey: connection.peerPubkey, name: member?.name ?? null, rssi: connection.rssi, connectedAt: connection.connectedAt });
++		}
++		return result;
++	}
++
++	private recomputeFound(): void {
++		let found = 0;
++		for (const connection of this.connections.values()) {
++			if (connection.session.state === 'active' || connection.session.state === 'syncing') found++;
++		}
++		if (found > 0) this.resetAutoOffTimer();
++		this.setState({ mode: found > 0 ? 'found' : 'searching', found });
++	}
++
++	// --- local push -----------------------------------------------------
++
++	private lastPendingSeen = new Set<string>();
++
++	private async onLocalChange(): Promise<void> {
++		if (!this.listId || this.connections.size === 0) return;
++		const pending = await this.store.pendingItems(this.listId);
++		for (const item of pending) {
++			if (this.lastPendingSeen.has(item.dTag) && !this.dirtyMoreRecently(item)) continue;
++			for (const connection of this.connections.values()) void connection.session.pushLocalChange(item.dTag);
++		}
++		this.lastPendingSeen = new Set(pending.map(i => i.dTag));
++		const directoryEvent = await this.latestDirectoryEvent();
++		if (directoryEvent && directoryEvent.created_at !== this.lastPushedDirectoryTime) {
++			this.lastPushedDirectoryTime = directoryEvent.created_at;
++			for (const connection of this.connections.values()) void connection.session.pushLocalDirectoryChange();
++		}
++	}
++
++	private lastPushedDirectoryTime = 0;
++
++	// Conservative: without a per-item last-pushed timestamp, a pending item
++	// already seen last time is pushed again too -- harmless (Session just
++	// sends its current state again) and simpler than tracking one.
++	private dirtyMoreRecently(_item: ItemRecord): boolean {
++		return true;
++	}
++
++	// --- lifecycle: auto-off ---------------------------------------------
++
++	private resetAutoOffTimer(): void {
++		if (this.autoOffTimer) clearTimeout(this.autoOffTimer);
++		const minutes = readAutoOffMinutes();
++		if (!minutes) { this.autoOffTimer = null; return; }
++		this.autoOffTimer = setTimeout(() => {
++			log.info('Nearby: auto-off after inactivity', { minutes });
++			void this.stop();
++		}, minutes * 60 * 1000);
++	}
++
++	private onAppStateChange(next: AppStateStatus): void {
++		if (!this.listId) return;
++		if (next === 'background' || next === 'inactive') {
++			if (this.backgroundTimer) clearTimeout(this.backgroundTimer);
++			this.backgroundTimer = setTimeout(() => {
++				log.info('Nearby: auto-off after being backgrounded');
++				void this.stop();
++			}, BACKGROUND_AUTO_OFF_MS);
++		} else if (next === 'active' && this.backgroundTimer) {
++			clearTimeout(this.backgroundTimer);
++			this.backgroundTimer = null;
++		}
++	}
++}
++
++let singleton: NearbyManager | null = null;
++
++// Lazily built process-wide instance, mirroring ListsSync.instance(). Reused
++// by lists/ui/syncApi.ts.
++export const getNearbyManager = (db: ListsDatabase, store: ListsStore): NearbyManager => {
++	if (!singleton) singleton = new NearbyManager(db, store);
++	return singleton;
++};
+diff --git a/packages/app-mobile/lists/nearby/protocol.test.ts b/packages/app-mobile/lists/nearby/protocol.test.ts
+new file mode 100644
+index 0000000..40fafcc
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/protocol.test.ts
+@@ -0,0 +1,122 @@
++import { randomBytes } from '../core/crypto';
++import {
++	advertisingTokenMatches, advertisingWindowIndex, decodeFrame, deriveAdvertisingToken, deriveAdvertisingTokenHex,
++	deriveProof, encodeFrame, FrameReassembler, FrameType, fragmentMessage, maxFramePayloadLength,
++	ADV_TOKEN_WINDOW_MS, FRAME_HEADER_LENGTH, MessageIdAllocator, REASSEMBLY_TIMEOUT_MS,
++} from './protocol';
++
++describe('lists/nearby/protocol', () => {
++	test('encodeFrame/decodeFrame round-trip', () => {
++		const frame = { type: FrameType.Summary, messageId: 42, index: 1, count: 3, payload: new Uint8Array([1, 2, 3, 255]) };
++		const decoded = decodeFrame(encodeFrame(frame));
++		expect(decoded).toEqual(frame);
++	});
++
++	test('decodeFrame rejects a frame shorter than the header', () => {
++		expect(() => decodeFrame(new Uint8Array(FRAME_HEADER_LENGTH - 1))).toThrow();
++	});
++
++	test('maxFramePayloadLength accounts for ATT overhead and the frame header', () => {
++		expect(maxFramePayloadLength(23)).toBe(23 - 3 - FRAME_HEADER_LENGTH);
++		expect(maxFramePayloadLength(3)).toBe(1); // never goes to zero or below
++	});
++
++	test('fragmentMessage splits a large payload into MTU-sized frames that reassemble to the original value', () => {
++		const value = { items: Array.from({ length: 50 }, (_, i) => ({ dTag: `item-${i}`, maxFieldTime: i })) };
++		const frames = fragmentMessage(FrameType.Summary, 7, value, 40);
++		expect(frames.length).toBeGreaterThan(1);
++		expect(frames.every(f => f.messageId === 7 && f.count === frames.length)).toBe(true);
++
++		const reassembler = new FrameReassembler();
++		let result = null;
++		for (const frame of frames) result = reassembler.addFrame(frame) ?? result;
++		expect(result).toEqual({ type: FrameType.Summary, value });
++	});
++
++	test('fragmentMessage fits a small payload into a single frame', () => {
++		const frames = fragmentMessage(FrameType.Heartbeat, 1, {}, 517);
++		expect(frames).toHaveLength(1);
++		expect(frames[0].index).toBe(0);
++		expect(frames[0].count).toBe(1);
++	});
++
++	test('frameReassembler reassembles out-of-order fragments', () => {
++		const frames = fragmentMessage(FrameType.Directory, 3, { text: 'x'.repeat(200) }, 30);
++		expect(frames.length).toBeGreaterThan(2);
++		const reassembler = new FrameReassembler();
++		const shuffled = [...frames].reverse();
++		let result = null;
++		for (const frame of shuffled) result = reassembler.addFrame(frame) ?? result;
++		expect(result?.value).toEqual({ text: 'x'.repeat(200) });
++	});
++
++	test('frameReassembler drops a partial message after the reassembly timeout', () => {
++		const frames = fragmentMessage(FrameType.Event, 9, { a: 1, b: 2, c: 3, d: 4, e: 5 }, 20);
++		expect(frames.length).toBeGreaterThan(1);
++		const reassembler = new FrameReassembler();
++		let now = 1000;
++		expect(reassembler.addFrame(frames[0], now)).toBeNull();
++		now += REASSEMBLY_TIMEOUT_MS + 1;
++		// The rest of the fragments arrive after the first one's already stale:
++		// they start a fresh (still incomplete) message instead of completing it.
++		for (let i = 1; i < frames.length - 1; i++) expect(reassembler.addFrame(frames[i], now)).toBeNull();
++		expect(reassembler.addFrame(frames[frames.length - 1], now)).toBeNull();
++	});
++
++	test('messageIdAllocator hands out increasing, non-zero ids that wrap around', () => {
++		const allocator = new MessageIdAllocator();
++		const first = allocator.allocate();
++		const second = allocator.allocate();
++		expect(first).toBeGreaterThan(0);
++		expect(second).toBe(first + 1);
++	});
++
++	test('advertisingWindowIndex groups timestamps into 15-minute windows', () => {
++		const t0 = advertisingWindowIndex(0);
++		expect(advertisingWindowIndex(ADV_TOKEN_WINDOW_MS - 1)).toBe(t0);
++		expect(advertisingWindowIndex(ADV_TOKEN_WINDOW_MS)).toBe(t0 + 1);
++	});
++
++	test('advertisingTokenMatches accepts the current and previous window, rejects others', () => {
++		const contentKey = randomBytes(32);
++		const now = 10 * ADV_TOKEN_WINDOW_MS + 1000;
++		const currentToken = deriveAdvertisingTokenHex(contentKey, now);
++		const previousToken = deriveAdvertisingTokenHex(contentKey, now - ADV_TOKEN_WINDOW_MS);
++		const futureToken = deriveAdvertisingTokenHex(contentKey, now + 2 * ADV_TOKEN_WINDOW_MS);
++
++		expect(advertisingTokenMatches(contentKey, currentToken, now)).toBe(true);
++		expect(advertisingTokenMatches(contentKey, previousToken, now)).toBe(true);
++		expect(advertisingTokenMatches(contentKey, futureToken, now)).toBe(false);
++	});
++
++	test('advertisingTokenMatches rejects a token derived from a different content key', () => {
++		const now = Date.now();
++		const token = deriveAdvertisingTokenHex(randomBytes(32), now);
++		expect(advertisingTokenMatches(randomBytes(32), token, now)).toBe(false);
++	});
++
++	test('deriveAdvertisingToken is deterministic for the same window', () => {
++		const contentKey = randomBytes(32);
++		const window = advertisingWindowIndex(Date.now());
++		expect(deriveAdvertisingToken(contentKey, window)).toEqual(deriveAdvertisingToken(contentKey, window));
++	});
++
++	test('deriveProof: the verifier recomputes the same value the signer sent', () => {
++		const contentKey = randomBytes(32);
++		const pubkeyA = 'aa'.repeat(32);
++		const nonceA = 'nonce-a';
++		const nonceB = 'nonce-b';
++		// A signs from its own point of view: peer's nonce (B's), then its own.
++		const proofFromA = deriveProof(contentKey, pubkeyA, nonceB, nonceA);
++		// B verifies by recomputing with A's identity and A's view of the nonces.
++		const recomputedByB = deriveProof(contentKey, pubkeyA, nonceB, nonceA);
++		expect(recomputedByB).toBe(proofFromA);
++	});
++
++	test('deriveProof differs for a different content key or swapped nonces', () => {
++		const contentKey = randomBytes(32);
++		const base = deriveProof(contentKey, 'aa'.repeat(32), 'n1', 'n2');
++		expect(deriveProof(randomBytes(32), 'aa'.repeat(32), 'n1', 'n2')).not.toBe(base);
++		expect(deriveProof(contentKey, 'aa'.repeat(32), 'n2', 'n1')).not.toBe(base);
++	});
++});
+diff --git a/packages/app-mobile/lists/nearby/protocol.ts b/packages/app-mobile/lists/nearby/protocol.ts
+new file mode 100644
+index 0000000..40490d3
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/protocol.ts
+@@ -0,0 +1,233 @@
++// Nearby (Bluetooth LE) sync protocol: message framing, fragmentation,
++// reassembly and handshake cryptography. Pure and unit-testable -- no BLE or
++// other I/O here. See PROTOCOL.md for the full wire-format writeup and
++// docs/KONZEPT.md section 3 for the feature this implements.
++
++import { bytesToHex, hmacSha256 } from '../core/crypto';
++
++// Newly generated for this feature; never reused elsewhere. 128-bit UUID used
++// both as the GATT service UUID and as the BLE advertisement's service UUID.
++export const NEARBY_SERVICE_UUID = 'd7a1e2b0-5f3c-4a9e-8b1d-6c2f9e4a7b3d';
++
++// Characteristic UUIDs under NEARBY_SERVICE_UUID. `rx`: central -> peripheral
++// (write). `tx`: peripheral -> central (notify).
++export const NEARBY_RX_CHARACTERISTIC_UUID = 'd7a1e2b1-5f3c-4a9e-8b1d-6c2f9e4a7b3d';
++export const NEARBY_TX_CHARACTERISTIC_UUID = 'd7a1e2b2-5f3c-4a9e-8b1d-6c2f9e4a7b3d';
++export const NEARBY_CCCD_UUID = '00002902-0000-1000-8000-00805f9b34fb';
++
++// --- advertising token -------------------------------------------------
++
++export const ADV_TOKEN_WINDOW_MS = 15 * 60 * 1000;
++export const ADV_TOKEN_LENGTH = 8;
++
++export const advertisingWindowIndex = (nowMs: number): number => Math.floor(nowMs / ADV_TOKEN_WINDOW_MS);
++
++// First 8 bytes of HMAC-SHA256(contentKey, 'adv' || windowIndex). Rotates
++// every 15 minutes so a passive observer can't track a list across scans.
++export const deriveAdvertisingToken = (contentKey: Uint8Array, windowIndex: number): Uint8Array =>
++	hmacSha256(contentKey, `adv${windowIndex}`).slice(0, ADV_TOKEN_LENGTH);
++
++export const deriveAdvertisingTokenHex = (contentKey: Uint8Array, nowMs: number = Date.now()): string =>
++	bytesToHex(deriveAdvertisingToken(contentKey, advertisingWindowIndex(nowMs)));
++
++// Whether a scanned token could plausibly be this list's, tolerating the
++// current window and the previous one (clock skew / a scan landing just
++// after a rotation on the advertiser's side but before ours).
++export const advertisingTokenMatches = (contentKey: Uint8Array, tokenHex: string, nowMs: number = Date.now()): boolean => {
++	const normalized = tokenHex.toLowerCase();
++	const currentWindow = advertisingWindowIndex(nowMs);
++	for (const window of [currentWindow, currentWindow - 1]) {
++		if (bytesToHex(deriveAdvertisingToken(contentKey, window)) === normalized) return true;
++	}
++	return false;
++};
++
++// --- handshake proof -----------------------------------------------------
++
++// HMAC(contentKey, 'proof' || signerPubkey || nonceOfPeer || nonceOfSigner),
++// always computed from the signer's point of view: `nonceOfPeer` is the
++// nonce the signer received from the other side, `nonceOfSigner` is the
++// nonce the signer generated itself. Verifying a received proof means
++// recomputing this same value with the signer's identity substituted in --
++// see session.ts.
++export const deriveProof = (contentKey: Uint8Array, signerPubkey: string, nonceOfPeer: string, nonceOfSigner: string): string =>
++	bytesToHex(hmacSha256(contentKey, `proof${signerPubkey}${nonceOfPeer}${nonceOfSigner}`));
++
++// --- frames ----------------------------------------------------------
++
++export enum FrameType {
++	Hello = 1,
++	Proof = 2,
++	Summary = 3,
++	Event = 4,
++	Directory = 5,
++	Heartbeat = 6,
++	Done = 7,
++	Bye = 8,
++}
++
++export interface Frame {
++	type: FrameType;
++	// Identifies one logical (possibly fragmented) message; wraps around.
++	messageId: number;
++	// 0-based fragment index within the message.
++	index: number;
++	// Total number of fragments in the message.
++	count: number;
++	payload: Uint8Array;
++}
++
++// 1 byte type | 2 byte message id | 2 byte index | 2 byte count.
++export const FRAME_HEADER_LENGTH = 7;
++// GATT ATT overhead subtracted from the negotiated MTU to get the usable
++// payload size for a single write/notify.
++export const ATT_OVERHEAD = 3;
++
++export const maxFramePayloadLength = (mtu: number): number => Math.max(1, mtu - ATT_OVERHEAD - FRAME_HEADER_LENGTH);
++
++export const encodeFrame = (frame: Frame): Uint8Array => {
++	if (frame.type < 0 || frame.type > 0xff) throw new Error(`Invalid frame type: ${frame.type}`);
++	const out = new Uint8Array(FRAME_HEADER_LENGTH + frame.payload.length);
++	const view = new DataView(out.buffer);
++	view.setUint8(0, frame.type);
++	view.setUint16(1, frame.messageId, false);
++	view.setUint16(3, frame.index, false);
++	view.setUint16(5, frame.count, false);
++	out.set(frame.payload, FRAME_HEADER_LENGTH);
++	return out;
++};
++
++export const decodeFrame = (bytes: Uint8Array): Frame => {
++	if (bytes.length < FRAME_HEADER_LENGTH) throw new Error('Frame is shorter than the header');
++	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
++	return {
++		type: view.getUint8(0),
++		messageId: view.getUint16(1, false),
++		index: view.getUint16(3, false),
++		count: view.getUint16(5, false),
++		payload: bytes.slice(FRAME_HEADER_LENGTH),
++	};
++};
++
++// Message ids only need to be unique among a session's currently in-flight
++// (unacknowledged/unreassembled) messages, not globally -- a small rolling
++// counter per session is enough. 0 is avoided so it's never mistaken for an
++// unset field.
++export class MessageIdAllocator {
++	private next = 1;
++
++	public allocate(): number {
++		const id = this.next;
++		this.next = this.next >= 0xffff ? 1 : this.next + 1;
++		return id;
++	}
++}
++
++// Splits a JSON-serializable value into one or more frames of the given
++// type/message id, sized to fit the given MTU.
++export const fragmentMessage = (type: FrameType, messageId: number, value: unknown, mtu: number): Frame[] => {
++	const bytes = new TextEncoder().encode(JSON.stringify(value));
++	const chunkSize = maxFramePayloadLength(mtu);
++	const count = Math.max(1, Math.ceil(bytes.length / chunkSize));
++	const frames: Frame[] = [];
++	for (let i = 0; i < count; i++) {
++		frames.push({ type, messageId, index: i, count, payload: bytes.slice(i * chunkSize, (i + 1) * chunkSize) });
++	}
++	return frames;
++};
++
++// --- reassembly --------------------------------------------------------
++
++export const REASSEMBLY_TIMEOUT_MS = 10 * 1000;
++
++interface PendingMessage {
++	type: FrameType;
++	count: number;
++	chunks: (Uint8Array | undefined)[];
++	received: number;
++	firstSeenAtMs: number;
++}
++
++export interface ReassembledMessage {
++	type: FrameType;
++	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- caller knows the shape for each FrameType
++	value: any;
++}
++
++// Reassembles fragmented messages for one connection. Partial messages that
++// haven't completed within REASSEMBLY_TIMEOUT_MS are dropped (their frames,
++// if they ever arrive, start a fresh message under the same id).
++export class FrameReassembler {
++	private pending = new Map<number, PendingMessage>();
++
++	public addFrame(frame: Frame, nowMs: number = Date.now()): ReassembledMessage | null {
++		this.expireStale(nowMs);
++
++		let pending = this.pending.get(frame.messageId);
++		if (!pending || pending.type !== frame.type) {
++			pending = { type: frame.type, count: frame.count, chunks: new Array(frame.count), received: 0, firstSeenAtMs: nowMs };
++			this.pending.set(frame.messageId, pending);
++		}
++		if (frame.index >= pending.chunks.length) return null; // malformed; ignore
++		if (pending.chunks[frame.index] === undefined) {
++			pending.chunks[frame.index] = frame.payload;
++			pending.received++;
++		}
++		if (pending.received < pending.count) return null;
++
++		this.pending.delete(frame.messageId);
++		let total = 0;
++		for (const chunk of pending.chunks) total += chunk?.length ?? 0;
++		const combined = new Uint8Array(total);
++		let offset = 0;
++		for (const chunk of pending.chunks) {
++			if (!chunk) continue;
++			combined.set(chunk, offset);
++			offset += chunk.length;
++		}
++		const text = new TextDecoder().decode(combined);
++		return { type: pending.type, value: JSON.parse(text) };
++	}
++
++	private expireStale(nowMs: number): void {
++		for (const [id, message] of this.pending) {
++			if (nowMs - message.firstSeenAtMs > REASSEMBLY_TIMEOUT_MS) this.pending.delete(id);
++		}
++	}
++
++	public reset(): void {
++		this.pending.clear();
++	}
++}
++
++// --- message payload shapes ---------------------------------------------
++
++export const PROTOCOL_VERSION = 1;
++
++export interface HelloMessage {
++	v: number;
++	listId: string;
++	pubkey: string;
++	nonce: string;
++	// Present only when the sender doesn't yet have a directory entry for
++	// itself (fresh QR-code join to an open list, no internet yet) -- lets
++	// the responder decide whether the "join without internet" path applies.
++	// See docs/KONZEPT.md section 3 and PROTOCOL.md.
++	deviceName?: string;
++}
++
++export interface ProofMessage {
++	proof: string;
++}
++
++export interface SummaryItemEntry {
++	dTag: string;
++	maxFieldTime: number;
++}
++
++export interface SummaryMessage {
++	items: SummaryItemEntry[];
++	// Directory event timestamp (created_at, seconds) this device currently
++	// has, or 0 if none.
++	directoryTime: number;
++}
+diff --git a/packages/app-mobile/lists/nearby/session.test.ts b/packages/app-mobile/lists/nearby/session.test.ts
+new file mode 100644
+index 0000000..132da04
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/session.test.ts
+@@ -0,0 +1,163 @@
++import { VerifiedEvent } from 'nostr-tools';
++import { randomBytes } from '../core/crypto';
++import { Session, SessionCallbacks, SessionOptions, SessionState } from './session';
++
++interface FakeMember {
++	pubkey: string;
++	active: boolean;
++}
++
++interface Harness {
++	session: Session;
++	events: VerifiedEvent[];
++	receivedEvents: VerifiedEvent[];
++	closedReason: string | null;
++	syncResult: { sent: number; received: number } | null;
++	states: SessionState[];
++}
++
++const makeItemEvent = (dTag: string, pubkey: string, createdAt: number): VerifiedEvent => ({
++	kind: 30078, tags: [['d', dTag]], content: '', created_at: createdAt, pubkey, id: `${dTag}-${pubkey}-${createdAt}`, sig: 'sig',
++} as VerifiedEvent);
++
++const makeHarness = (
++	options: SessionOptions,
++	members: FakeMember[],
++	localItems: { dTag: string; maxFieldTime: number }[],
++	sendTo: (bytes: Uint8Array)=> Promise<void>,
++): Harness => {
++	const harness: Harness = { session: null as unknown as Session, events: [], receivedEvents: [], closedReason: null, syncResult: null, states: [] };
++	const callbacks: SessionCallbacks = {
++		sendFrame: sendTo,
++		isActiveMember: async pubkey => members.some(m => m.pubkey === pubkey && m.active),
++		localSummary: async () => ({ items: localItems, directoryTime: 0 }),
++		buildLocalItemEvent: async dTag => {
++			const item = localItems.find(i => i.dTag === dTag);
++			if (!item) return null;
++			const event = makeItemEvent(dTag, options.localPubkey, item.maxFieldTime);
++			harness.events.push(event);
++			return event;
++		},
++		applyRemoteItemEvent: async event => { harness.receivedEvents.push(event); return true; },
++		localDirectoryEvent: async () => null,
++		applyRemoteDirectoryEvent: async () => false,
++		onStateChange: state => harness.states.push(state),
++		onSyncComplete: (sent, received) => { harness.syncResult = { sent, received }; },
++		onClosed: reason => { harness.closedReason = reason; },
++	};
++	harness.session = new Session(options, callbacks);
++	return harness;
++};
++
++const CONTENT_KEY = randomBytes(32);
++const PUBKEY_A = 'a'.repeat(64);
++const PUBKEY_B = 'b'.repeat(64);
++
++const baseOptions = (localPubkey: string): SessionOptions => ({
++	listId: 'list-1', localPubkey, contentKey: CONTENT_KEY, mtu: 40, isOpenList: false,
++});
++
++describe('lists/nearby/session', () => {
++	test('handshake succeeds and both sides exchange their newer items', async () => {
++		const queueAtoB: Uint8Array[] = [];
++		const queueBtoA: Uint8Array[] = [];
++
++		const a = makeHarness(baseOptions(PUBKEY_A), [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			[{ dTag: 'milk', maxFieldTime: 100 }], async bytes => { queueAtoB.push(bytes); });
++		const b = makeHarness(baseOptions(PUBKEY_B), [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			[{ dTag: 'bread', maxFieldTime: 50 }], async bytes => { queueBtoA.push(bytes); });
++
++		a.session.start();
++		b.session.start();
++
++		for (let i = 0; i < 20 && (queueAtoB.length || queueBtoA.length); i++) {
++			while (queueAtoB.length) await b.session.onFrameBytes(queueAtoB.shift() as Uint8Array);
++			while (queueBtoA.length) await a.session.onFrameBytes(queueBtoA.shift() as Uint8Array);
++		}
++
++		expect(a.session.state).toBe('active');
++		expect(b.session.state).toBe('active');
++		expect(a.session.peerPubkey).toBe(PUBKEY_B);
++		expect(b.session.peerPubkey).toBe(PUBKEY_A);
++		// A has 'milk' which B doesn't have: A sends it, B receives it.
++		expect(b.receivedEvents.map(e => e.tags[0][1])).toContain('milk');
++		// B has 'bread' which A doesn't have: B sends it, A receives it.
++		expect(a.receivedEvents.map(e => e.tags[0][1])).toContain('bread');
++		expect(a.syncResult).not.toBeNull();
++		expect(b.syncResult).not.toBeNull();
++		a.session.close('test done');
++		b.session.close('test done');
++	});
++
++	test('a wrong content key fails the proof check and the session is closed', async () => {
++		const queueAtoB: Uint8Array[] = [];
++		const queueBtoA: Uint8Array[] = [];
++		const a = makeHarness(baseOptions(PUBKEY_A), [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			[], async bytes => { queueAtoB.push(bytes); });
++		const wrongKeyOptions = { ...baseOptions(PUBKEY_B), contentKey: randomBytes(32) };
++		const b = makeHarness(wrongKeyOptions, [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			[], async bytes => { queueBtoA.push(bytes); });
++
++		a.session.start();
++		b.session.start();
++		for (let i = 0; i < 10 && (queueAtoB.length || queueBtoA.length); i++) {
++			while (queueAtoB.length) await b.session.onFrameBytes(queueAtoB.shift() as Uint8Array);
++			while (queueBtoA.length) await a.session.onFrameBytes(queueBtoA.shift() as Uint8Array);
++		}
++
++		expect(a.session.state).toBe('closed');
++		expect(b.session.state).toBe('closed');
++	});
++
++	test('a peer that is not a directory member is rejected after a correct proof', async () => {
++		const queueAtoB: Uint8Array[] = [];
++		const queueBtoA: Uint8Array[] = [];
++		const a = makeHarness(baseOptions(PUBKEY_A), [{ pubkey: PUBKEY_A, active: true }], // B is not a member here
++			[], async bytes => { queueAtoB.push(bytes); });
++		const b = makeHarness(baseOptions(PUBKEY_B), [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			[], async bytes => { queueBtoA.push(bytes); });
++
++		a.session.start();
++		b.session.start();
++		for (let i = 0; i < 10 && (queueAtoB.length || queueBtoA.length); i++) {
++			while (queueAtoB.length) await b.session.onFrameBytes(queueAtoB.shift() as Uint8Array);
++			while (queueBtoA.length) await a.session.onFrameBytes(queueBtoA.shift() as Uint8Array);
++		}
++
++		expect(a.session.state).toBe('closed');
++	});
++
++	test('after the initial sync, pushLocalChange sends a single item immediately', async () => {
++		const queueAtoB: Uint8Array[] = [];
++		const queueBtoA: Uint8Array[] = [];
++		const a = makeHarness(baseOptions(PUBKEY_A), [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			[], async bytes => { queueAtoB.push(bytes); });
++		const bItems: { dTag: string; maxFieldTime: number }[] = [];
++		const b = makeHarness(baseOptions(PUBKEY_B), [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			bItems, async bytes => { queueBtoA.push(bytes); });
++
++		a.session.start();
++		b.session.start();
++		for (let i = 0; i < 10 && (queueAtoB.length || queueBtoA.length); i++) {
++			while (queueAtoB.length) await b.session.onFrameBytes(queueAtoB.shift() as Uint8Array);
++			while (queueBtoA.length) await a.session.onFrameBytes(queueBtoA.shift() as Uint8Array);
++		}
++		expect(a.session.state).toBe('active');
++
++		bItems.push({ dTag: 'eggs', maxFieldTime: 999 });
++		await b.session.pushLocalChange('eggs');
++		while (queueBtoA.length) await a.session.onFrameBytes(queueBtoA.shift() as Uint8Array);
++
++		expect(a.receivedEvents.map(e => e.tags[0][1])).toContain('eggs');
++		a.session.close('test done');
++		b.session.close('test done');
++	});
++
++	test('close() is idempotent and reports the given reason once', () => {
++		const a = makeHarness(baseOptions(PUBKEY_A), [], [], async () => {});
++		a.session.close('first');
++		a.session.close('second');
++		expect(a.closedReason).toBe('first');
++		expect(a.session.state).toBe('closed');
++	});
++});
+diff --git a/packages/app-mobile/lists/nearby/session.ts b/packages/app-mobile/lists/nearby/session.ts
+new file mode 100644
+index 0000000..b33fa75
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/session.ts
+@@ -0,0 +1,360 @@
++// State machine for one Bluetooth LE connection (one peer device), see
++// PROTOCOL.md and docs/KONZEPT.md section 3. Knows nothing about BLE itself
++// -- it's fed raw frame bytes and calls back to send raw frame bytes, so it
++// can be driven identically by the real transport (nearbyManager.ts) and by
++// tests.
++import { VerifiedEvent } from 'nostr-tools';
++import { randomBytes, bytesToHex } from '../core/crypto';
++import { debugLog } from '../../utils/debugLog';
++import {
++	decodeFrame, deriveProof, encodeFrame, Frame, FrameReassembler, FrameType, fragmentMessage,
++	HelloMessage, MessageIdAllocator, ProofMessage, SummaryItemEntry, SummaryMessage, PROTOCOL_VERSION,
++} from './protocol';
++
++const log = debugLog('lists.nearby');
++
++export const HEARTBEAT_INTERVAL_MS = 10 * 1000;
++export const PEER_LOST_TIMEOUT_MS = 30 * 1000;
++export const HANDSHAKE_TIMEOUT_MS = 15 * 1000;
++
++export type SessionState = 'handshaking' | 'syncing' | 'active' | 'closed';
++
++export interface SessionSummary {
++	items: SummaryItemEntry[];
++	directoryTime: number;
++}
++
++export interface SessionCallbacks {
++	// Writes one already-framed chunk to the peer. Resolves once the native
++	// layer has confirmed the write (or notification) -- the session sends
++	// its next frame only after this resolves, matching the native queue.
++	sendFrame: (bytes: Uint8Array)=> Promise<void>;
++	// Whether `pubkey` is an active member of this list, per the locally held
++	// directory.
++	isActiveMember: (pubkey: string)=> Promise<boolean>;
++	localSummary: ()=> Promise<SessionSummary>;
++	// Builds a fresh, signed item event from this device's own merged state
++	// for `dTag`, or null if this device has no such item.
++	buildLocalItemEvent: (dTag: string)=> Promise<VerifiedEvent | null>;
++	// Verifies signature + membership, decrypts and merges; returns whether
++	// it was accepted.
++	applyRemoteItemEvent: (event: VerifiedEvent)=> Promise<boolean>;
++	localDirectoryEvent: ()=> Promise<VerifiedEvent | null>;
++	applyRemoteDirectoryEvent: (event: VerifiedEvent)=> Promise<boolean>;
++	// Open lists only: accepts a peer that proved knowledge of the list's
++	// content key but isn't in the directory yet (QR-code join without
++	// internet, see docs/KONZEPT.md section 3). Absent/no-op for managed
++	// lists and once relay sync exists.
++	acceptUnknownOpenListMember?: (pubkey: string, deviceName: string | undefined)=> Promise<void>;
++	// Called as soon as the peer's hello arrives (before the handshake is
++	// verified), so the caller can resolve a duplicate connection to the
++	// same peer -- see nearbyManager.ts.
++	onPeerIdentified?: (peerPubkey: string)=> void;
++	onStateChange?: (state: SessionState)=> void;
++	onSyncComplete?: (sent: number, received: number)=> void;
++	onClosed?: (reason: string)=> void;
++	now?: ()=> number;
++	setTimer?: (fn: ()=> void, ms: number)=> ReturnType<typeof setTimeout>;
++	clearTimer?: (handle: ReturnType<typeof setTimeout>)=> void;
++}
++
++export interface SessionOptions {
++	listId: string;
++	localPubkey: string;
++	localDeviceName?: string;
++	contentKey: Uint8Array;
++	mtu: number;
++	isOpenList: boolean;
++}
++
++// One BLE connection's handshake + sync + live-push state machine. Both
++// sides of a connection run an identical Session -- there's no separate
++// "initiator"/"responder" code path; whichever side happens to have
++// established the underlying GATT connection (central vs. peripheral) only
++// matters to the transport, not here.
++export class Session {
++	public state: SessionState = 'handshaking';
++	public peerPubkey: string | null = null;
++
++	private readonly options: SessionOptions;
++	private readonly callbacks: SessionCallbacks;
++	private readonly localNonce = bytesToHex(randomBytes(16));
++	private peerNonce: string | null = null;
++	private readonly reassembler = new FrameReassembler();
++	private readonly messageIds = new MessageIdAllocator();
++	private readonly now: ()=> number;
++	private readonly setTimer: (fn: ()=> void, ms: number)=> ReturnType<typeof setTimeout>;
++	private readonly clearTimer: (handle: ReturnType<typeof setTimeout>)=> void;
++
++	private helloSent = false;
++	private proofSent = false;
++	private proofVerified = false;
++	private localSummary: SessionSummary | null = null;
++	private peerSummary: SessionSummary | null = null;
++	private sentEventCount = 0;
++	private receivedEventCount = 0;
++	private closed = false;
++
++	private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
++	private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
++	private peerLostTimer: ReturnType<typeof setTimeout> | null = null;
++
++	public constructor(options: SessionOptions, callbacks: SessionCallbacks) {
++		this.options = options;
++		this.callbacks = callbacks;
++		this.now = callbacks.now ?? (() => Date.now());
++		this.setTimer = callbacks.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
++		this.clearTimer = callbacks.clearTimer ?? (handle => clearTimeout(handle));
++	}
++
++	// Begins the handshake by sending our hello. Call once, right after the
++	// underlying connection is established.
++	public start(): void {
++		this.handshakeTimer = this.setTimer(() => this.fail('Handshake timed out'), HANDSHAKE_TIMEOUT_MS);
++		void this.sendHello();
++	}
++
++	private setState(state: SessionState): void {
++		if (this.state === state) return;
++		this.state = state;
++		this.callbacks.onStateChange?.(state);
++	}
++
++	private async sendHello(): Promise<void> {
++		const message: HelloMessage = {
++			v: PROTOCOL_VERSION, listId: this.options.listId, pubkey: this.options.localPubkey, nonce: this.localNonce,
++			deviceName: this.options.localDeviceName,
++		};
++		this.helloSent = true;
++		await this.sendMessage(FrameType.Hello, message);
++	}
++
++	// Feeds one raw frame received from the transport. Call for every
++	// `nearbyFrame` event on this connection.
++	public async onFrameBytes(bytes: Uint8Array): Promise<void> {
++		if (this.closed) return;
++		this.resetPeerLostTimer();
++		let frame: Frame;
++		try {
++			frame = decodeFrame(bytes);
++		} catch (error) {
++			log.warn('Dropped malformed nearby frame', { error: String(error) });
++			return;
++		}
++		const message = this.reassembler.addFrame(frame, this.now());
++		if (!message) return; // still reassembling
++		try {
++			await this.onMessage(message.type, message.value);
++		} catch (error) {
++			log.warn('Nearby session: error handling incoming message', { type: message.type, error: String(error) });
++			this.fail('Error while handling an incoming message');
++		}
++	}
++
++	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see FrameReassembler#addFrame
++	private async onMessage(type: FrameType, value: any): Promise<void> {
++		switch (type) {
++		case FrameType.Hello: return this.onHello(value as HelloMessage);
++		case FrameType.Proof: return this.onProof(value as ProofMessage);
++		case FrameType.Summary: return this.onSummary(value as SummaryMessage);
++		case FrameType.Event: return this.onEventMessage(value as { event: VerifiedEvent });
++		case FrameType.Directory: return this.onDirectoryMessage(value as { event: VerifiedEvent });
++		case FrameType.Heartbeat: return; // resetPeerLostTimer() above already handled it
++		case FrameType.Done: return this.onPeerDone();
++		case FrameType.Bye: return this.close('Peer said goodbye');
++		default: log.warn('Ignoring unknown nearby frame type', { type });
++		}
++	}
++
++	private async onHello(hello: HelloMessage): Promise<void> {
++		if (hello.v !== PROTOCOL_VERSION || hello.listId !== this.options.listId) {
++			this.fail('Peer hello is for a different list or protocol version');
++			return;
++		}
++		this.peerPubkey = hello.pubkey;
++		this.peerNonce = hello.nonce;
++		this.callbacks.onPeerIdentified?.(hello.pubkey);
++		this.pendingDeviceName = hello.deviceName;
++		if (!this.helloSent) await this.sendHello();
++		await this.sendProof();
++	}
++
++	private pendingDeviceName: string | undefined;
++
++	private async sendProof(): Promise<void> {
++		if (this.proofSent || !this.peerNonce) return;
++		this.proofSent = true;
++		const proof = deriveProof(this.options.contentKey, this.options.localPubkey, this.peerNonce, this.localNonce);
++		await this.sendMessage(FrameType.Proof, { proof } as ProofMessage);
++	}
++
++	private async onProof(message: ProofMessage): Promise<void> {
++		if (!this.peerPubkey || !this.peerNonce) {
++			this.fail('Received proof before hello');
++			return;
++		}
++		const expected = deriveProof(this.options.contentKey, this.peerPubkey, this.localNonce, this.peerNonce);
++		if (expected !== message.proof) {
++			log.warn('Nearby handshake proof mismatch', { peer: this.peerPubkey.slice(0, 8) });
++			this.fail('Proof verification failed (wrong list key)');
++			return;
++		}
++		const isMember = await this.callbacks.isActiveMember(this.peerPubkey);
++		if (!isMember) {
++			if (this.options.isOpenList && this.callbacks.acceptUnknownOpenListMember) {
++				// Correct proof against our content key is, for an open list,
++				// exactly the knowledge an invite grants -- accept and register
++				// them (join without internet), see docs/KONZEPT.md section 3.
++				await this.callbacks.acceptUnknownOpenListMember(this.peerPubkey, this.pendingDeviceName);
++			} else {
++				log.info('Nearby peer proof ok but not a directory member; closing', { peer: this.peerPubkey.slice(0, 8) });
++				this.fail('Peer is not a member of this list');
++				return;
++			}
++		}
++		this.proofVerified = true;
++		if (this.handshakeTimer) {
++			this.clearTimer(this.handshakeTimer);
++			this.handshakeTimer = null;
++		}
++		log.info('Nearby handshake verified', { peer: this.peerPubkey.slice(0, 8) });
++		this.setState('syncing');
++		await this.sendSummary();
++	}
++
++	// Memoized: onProof() and (if the peer's summary arrives first, which can
++	// happen -- there's no guaranteed ordering between "we decided to send
++	// our summary" and "the peer's summary arrived") onSummary() both need
++	// our own summary computed and sent exactly once, and onSummary() must
++	// never run pushOutgoingDiff() against a summary that hasn't actually
++	// been sent yet. Sharing the one in-flight promise guarantees both.
++	private summaryPromise: Promise<void> | null = null;
++
++	private sendSummary(): Promise<void> {
++		if (!this.summaryPromise) {
++			this.summaryPromise = (async () => {
++				this.localSummary = await this.callbacks.localSummary();
++				await this.sendMessage(FrameType.Summary, this.localSummary as SummaryMessage);
++			})();
++		}
++		return this.summaryPromise;
++	}
++
++	private async onSummary(message: SummaryMessage): Promise<void> {
++		if (!this.proofVerified) {
++			this.fail('Received summary before the handshake was verified');
++			return;
++		}
++		await this.sendSummary(); // ensure ours has been computed + sent too, see sendSummary()
++		this.peerSummary = message;
++		await this.pushOutgoingDiff();
++		await this.sendMessage(FrameType.Done, {});
++	}
++
++	// Sends every item and (if newer) the directory this device has that the
++	// peer's summary shows as missing or older.
++	private async pushOutgoingDiff(): Promise<void> {
++		if (!this.localSummary || !this.peerSummary) return;
++		const peerTimes = new Map(this.peerSummary.items.map(i => [i.dTag, i.maxFieldTime]));
++		for (const item of this.localSummary.items) {
++			const peerTime = peerTimes.get(item.dTag);
++			if (peerTime !== undefined && peerTime >= item.maxFieldTime) continue;
++			const event = await this.callbacks.buildLocalItemEvent(item.dTag);
++			if (event) await this.sendEvent(event);
++		}
++		if (this.localSummary.directoryTime > this.peerSummary.directoryTime) {
++			const event = await this.callbacks.localDirectoryEvent();
++			if (event) await this.sendDirectoryEvent(event);
++		}
++	}
++
++	private peerDone = false;
++
++	private async onPeerDone(): Promise<void> {
++		this.peerDone = true;
++		this.maybeFinishInitialSync();
++	}
++
++	private maybeFinishInitialSync(): void {
++		if (this.state !== 'syncing') return;
++		if (!this.peerDone) return;
++		this.setState('active');
++		this.callbacks.onSyncComplete?.(this.sentEventCount, this.receivedEventCount);
++		log.info('Nearby sync complete', { peer: this.peerPubkey?.slice(0, 8), sent: this.sentEventCount, received: this.receivedEventCount });
++		this.startHeartbeat();
++	}
++
++	private async onEventMessage(message: { event: VerifiedEvent }): Promise<void> {
++		const accepted = await this.callbacks.applyRemoteItemEvent(message.event);
++		if (accepted) this.receivedEventCount++;
++	}
++
++	private async onDirectoryMessage(message: { event: VerifiedEvent }): Promise<void> {
++		await this.callbacks.applyRemoteDirectoryEvent(message.event);
++	}
++
++	private async sendEvent(event: VerifiedEvent): Promise<void> {
++		await this.sendMessage(FrameType.Event, { event });
++		this.sentEventCount++;
++	}
++
++	private async sendDirectoryEvent(event: VerifiedEvent): Promise<void> {
++		await this.sendMessage(FrameType.Directory, { event });
++	}
++
++	// Pushes a single locally-changed item to an already-active peer (called
++	// by nearbyManager on store.onChange once the initial sync is done).
++	public async pushLocalChange(dTag: string): Promise<void> {
++		if (this.state !== 'active' && this.state !== 'syncing') return;
++		const event = await this.callbacks.buildLocalItemEvent(dTag);
++		if (event) await this.sendEvent(event);
++	}
++
++	public async pushLocalDirectoryChange(): Promise<void> {
++		if (this.state !== 'active' && this.state !== 'syncing') return;
++		const event = await this.callbacks.localDirectoryEvent();
++		if (event) await this.sendDirectoryEvent(event);
++	}
++
++	private async sendMessage(type: FrameType, value: unknown): Promise<void> {
++		const messageId = this.messageIds.allocate();
++		const frames = fragmentMessage(type, messageId, value, this.options.mtu);
++		for (const frame of frames) {
++			if (this.closed) return;
++			// eslint-disable-next-line no-await-in-loop -- frames of the same message must be sent in order, one write at a time (see PROTOCOL.md)
++			await this.callbacks.sendFrame(encodeFrame(frame));
++		}
++		if (type === FrameType.Done) this.maybeFinishInitialSync();
++	}
++
++	private startHeartbeat(): void {
++		const tick = (): void => {
++			if (this.closed) return;
++			void this.sendMessage(FrameType.Heartbeat, {});
++			this.heartbeatTimer = this.setTimer(tick, HEARTBEAT_INTERVAL_MS);
++		};
++		this.heartbeatTimer = this.setTimer(tick, HEARTBEAT_INTERVAL_MS);
++		this.resetPeerLostTimer();
++	}
++
++	private resetPeerLostTimer(): void {
++		if (this.state !== 'active' && this.state !== 'syncing') return;
++		if (this.peerLostTimer) this.clearTimer(this.peerLostTimer);
++		this.peerLostTimer = this.setTimer(() => this.fail('No frame from peer for 30s'), PEER_LOST_TIMEOUT_MS);
++	}
++
++	private fail(reason: string): void {
++		log.info('Nearby session closing', { peer: this.peerPubkey?.slice(0, 8), reason });
++		this.close(reason);
++	}
++
++	public close(reason: string): void {
++		if (this.closed) return;
++		this.closed = true;
++		if (this.handshakeTimer) this.clearTimer(this.handshakeTimer);
++		if (this.heartbeatTimer) this.clearTimer(this.heartbeatTimer);
++		if (this.peerLostTimer) this.clearTimer(this.peerLostTimer);
++		this.setState('closed');
++		this.callbacks.onClosed?.(reason);
++	}
++}
+diff --git a/packages/app-mobile/lists/nearby/testing/fakeBle.ts b/packages/app-mobile/lists/nearby/testing/fakeBle.ts
+new file mode 100644
+index 0000000..e8ab31b
+--- /dev/null
++++ b/packages/app-mobile/lists/nearby/testing/fakeBle.ts
+@@ -0,0 +1,204 @@
++// A fake BleDriver (see ../nativeBle.ts) simulating two or more devices
++// "in range" of each other over an in-memory channel, for nearbyManager.test.ts
++// (and any other test that needs a fake transport without a real Android
++// device). Not meant to model real BLE timing precisely -- just discovery
++// (advertise/scan), connect and frame delivery, closely enough that
++// nearbyManager's own logic (token checks, handshake, duplicate-connection
++// resolution, heartbeat/timeout) can be exercised end-to-end.
++import {
++	BleAdapterState, BleCapabilities, BleConnectedEvent, BleDisconnectedEvent,
++	BleDriver, BleErrorEvent, BleFrameEvent, BleScanResult,
++} from '../nativeBle';
++
++type Listener<T> = (event: T)=> void;
++
++class Listeners<T> {
++	private set = new Set<Listener<T>>();
++
++	public add(listener: Listener<T>): ()=> void {
++		this.set.add(listener);
++		return () => this.set.delete(listener);
++	}
++
++	public emit(event: T): void {
++		for (const listener of [...this.set]) listener(event);
++	}
++}
++
++// Shared "air": every FakeBleDevice created with the same network can see
++// each other. One network per test.
++export class FakeBleNetwork {
++	private devices = new Map<string, FakeBleDevice>();
++
++	public register(device: FakeBleDevice): void {
++		this.devices.set(device.id, device);
++	}
++
++	public get(id: string): FakeBleDevice | undefined {
++		return this.devices.get(id);
++	}
++
++	public others(exceptId: string): FakeBleDevice[] {
++		return [...this.devices.values()].filter(d => d.id !== exceptId);
++	}
++
++	// Called by a device when it starts (or updates) advertising: pushes an
++	// immediate scan result to every other device currently scanning for the
++	// same service.
++	public announceAdvertising(from: FakeBleDevice, serviceUuid: string, tokenHex: string): void {
++		for (const device of this.others(from.id)) device.onPeerAdvertising(from.id, serviceUuid, tokenHex);
++	}
++}
++
++const FAKE_MTU = 517;
++const FAKE_RSSI = -55;
++
++export class FakeBleDevice implements BleDriver {
++	public readonly id: string;
++	private network: FakeBleNetwork;
++	private advertising: { serviceUuid: string; tokenHex: string } | null = null;
++	private scanningServiceUuid: string | null = null;
++	private connections = new Set<string>();
++	// Test-only: makes send() a black hole (frames are accepted but never
++	// delivered, and no disconnect event fires) -- simulates a peer that goes
++	// out of range without a clean disconnect, for tests of the 30s
++	// peer-lost heartbeat timeout. See setSilent().
++	private silent = false;
++	private supported: BleCapabilities;
++	private adapterState: BleAdapterState = 'on';
++
++	private scanResultListeners = new Listeners<BleScanResult>();
++	private connectedListeners = new Listeners<BleConnectedEvent>();
++	private disconnectedListeners = new Listeners<BleDisconnectedEvent>();
++	private frameListeners = new Listeners<BleFrameEvent>();
++	private errorListeners = new Listeners<BleErrorEvent>();
++	private adapterStateListeners = new Listeners<BleAdapterState>();
++
++	public constructor(id: string, network: FakeBleNetwork, supported: Partial<BleCapabilities> = {}) {
++		this.id = id;
++		this.network = network;
++		this.supported = { ble: true, peripheral: true, codedPhy: true, ...supported };
++		network.register(this);
++	}
++
++	// --- test helpers, not part of BleDriver --------------------------
++
++	public onPeerAdvertising(peerId: string, serviceUuid: string, tokenHex: string): void {
++		if (this.scanningServiceUuid !== serviceUuid) return;
++		this.scanResultListeners.emit({ address: peerId, rssi: FAKE_RSSI, tokenHex });
++	}
++
++	public setAdapterState(state: BleAdapterState): void {
++		this.adapterState = state;
++		this.adapterStateListeners.emit(state);
++	}
++
++	public setSilent(value: boolean): void {
++		this.silent = value;
++	}
++
++	// --- BleDriver -------------------------------------------------------
++
++	public async isSupported(): Promise<BleCapabilities> {
++		return this.supported;
++	}
++
++	public async state(): Promise<BleAdapterState> {
++		return this.adapterState;
++	}
++
++	public async startAdvertising(serviceUuid: string, tokenHex: string, _useCodedPhy: boolean): Promise<void> {
++		this.advertising = { serviceUuid, tokenHex };
++		this.network.announceAdvertising(this, serviceUuid, tokenHex);
++	}
++
++	public async updateToken(tokenHex: string): Promise<void> {
++		if (!this.advertising) return;
++		this.advertising = { ...this.advertising, tokenHex };
++		this.network.announceAdvertising(this, this.advertising.serviceUuid, tokenHex);
++	}
++
++	public async stopAdvertising(): Promise<void> {
++		this.advertising = null;
++	}
++
++	public async startScan(serviceUuid: string, _useCodedPhy: boolean): Promise<void> {
++		this.scanningServiceUuid = serviceUuid;
++		for (const peer of this.network.others(this.id)) {
++			if (peer.advertising?.serviceUuid === serviceUuid) {
++				this.scanResultListeners.emit({ address: peer.id, rssi: FAKE_RSSI, tokenHex: peer.advertising.tokenHex });
++			}
++		}
++	}
++
++	public async stopScan(): Promise<void> {
++		this.scanningServiceUuid = null;
++	}
++
++	public async connect(address: string): Promise<void> {
++		const peer = this.network.get(address);
++		if (!peer) throw new Error(`fakeBle: no such device ${address}`);
++		this.connections.add(address);
++		peer.connections.add(this.id);
++		await new Promise(resolve => setImmediate(resolve));
++		this.emitConnected({ address, mtu: FAKE_MTU, role: 'central' });
++		peer.emitConnected({ address: this.id, mtu: FAKE_MTU, role: 'peripheral' });
++	}
++
++	private emitConnected(event: BleConnectedEvent): void {
++		this.connectedListeners.emit(event);
++	}
++
++	public async send(address: string, base64: string): Promise<void> {
++		const peer = this.network.get(address);
++		if (!peer || !this.connections.has(address)) throw new Error(`fakeBle: not connected to ${address}`);
++		await new Promise(resolve => setImmediate(resolve));
++		if (this.silent) return; // dropped, see setSilent()
++		peer.frameListeners.emit({ address: this.id, base64 });
++	}
++
++	public async disconnect(address: string): Promise<void> {
++		this.disconnectInternal(address, 'Local disconnect');
++	}
++
++	private disconnectInternal(address: string, reason: string): void {
++		if (!this.connections.has(address)) return;
++		this.connections.delete(address);
++		this.disconnectedListeners.emit({ address, reason });
++		const peer = this.network.get(address);
++		if (peer && peer.connections.has(this.id)) peer.disconnectInternal(this.id, reason);
++	}
++
++	public async stopAll(): Promise<void> {
++		this.advertising = null;
++		this.scanningServiceUuid = null;
++		for (const address of [...this.connections]) this.disconnectInternal(address, 'stopAll');
++	}
++
++	public onScanResult(listener: Listener<BleScanResult>): ()=> void {
++		return this.scanResultListeners.add(listener);
++	}
++
++	public onConnected(listener: Listener<BleConnectedEvent>): ()=> void {
++		return this.connectedListeners.add(listener);
++	}
++
++	public onDisconnected(listener: Listener<BleDisconnectedEvent>): ()=> void {
++		return this.disconnectedListeners.add(listener);
++	}
++
++	public onFrame(listener: Listener<BleFrameEvent>): ()=> void {
++		return this.frameListeners.add(listener);
++	}
++
++	public onError(listener: Listener<BleErrorEvent>): ()=> void {
++		return this.errorListeners.add(listener);
++	}
++
++	public onAdapterState(listener: Listener<BleAdapterState>): ()=> void {
++		return this.adapterStateListeners.add(listener);
++	}
++}
++
++export const createFakeBle = (id: string, network: FakeBleNetwork, supported?: Partial<BleCapabilities>): FakeBleDevice =>
++	new FakeBleDevice(id, network, supported);
+diff --git a/packages/app-mobile/lists/sync/listSync.ts b/packages/app-mobile/lists/sync/listSync.ts
+index e964533..c27e25c 100644
+--- a/packages/app-mobile/lists/sync/listSync.ts
++++ b/packages/app-mobile/lists/sync/listSync.ts
+@@ -122,9 +122,36 @@ export class ListsSync {
+ 	private lastSyncKey = (listId: string): string => `lastSync:${listId}`;
+ 	private lastRepublishKey = (listId: string): string => `lastRepublish:${listId}`;
+ 	private directoryMetaKey = (listId: string): string => `directory:${listId}`;
++	// The raw, still-signed directory event behind directoryMetaKey()'s parsed
++	// payload -- kept so it can be forwarded as-is over Bluetooth (see
++	// lists/nearby/nearbyManager.ts), where the receiving side needs to run it
++	// through the same signature/admin-chain check as a relay-sourced one.
++	private directoryRawMetaKey = (listId: string): string => `directoryRaw:${listId}`;
+ 	private usedInviteKey = (listId: string, tokenId: string): string => `usedInvite:${listId}:${tokenId}`;
+ 	private handledJoinKey = (listId: string, eventId: string): string => `handledJoin:${listId}:${eventId}`;
+ 
++	// The most recently accepted directory event for a list, in its original
++	// signed form, or null if none has been accepted yet. See
++	// directoryRawMetaKey() above.
++	public async latestDirectoryEvent(listId: string): Promise<VerifiedEvent | null> {
++		const json = await this.db.getMeta(this.directoryRawMetaKey(listId));
++		return json ? (JSON.parse(json) as VerifiedEvent) : null;
++	}
++
++	// Runs an event received out-of-band (currently: over Bluetooth, see
++	// lists/nearby/nearbyManager.ts) through the same acceptance path a
++	// relay-sourced directory event goes through. Returns whether it was
++	// accepted (a newer, already-known directory is a no-op, not a failure).
++	public async applyIncomingDirectoryEvent(listId: string, event: VerifiedEvent): Promise<boolean> {
++		const list = await this.db.list(listId);
++		if (!list) return false;
++		const beforeJson = await this.db.getMeta(this.directoryMetaKey(listId));
++		const identity = await this.db.deviceIdentity();
++		await this.handleDirectoryEvent(list, identity, event);
++		const afterJson = await this.db.getMeta(this.directoryMetaKey(listId));
++		return afterJson !== null && afterJson !== beforeJson;
++	}
++
+ 	// --- one full sync pass for a single list -----------------------------
+ 
+ 	public async syncList(listId: string): Promise<void> {
+@@ -220,6 +247,7 @@ export class ListsSync {
+ 
+ 		await this.applyDirectory(list.id, payload);
+ 		await this.db.setMeta(this.directoryMetaKey(list.id), JSON.stringify(payload));
++		await this.db.setMeta(this.directoryRawMetaKey(list.id), JSON.stringify(event));
+ 	}
+ 
+ 	// Recovers the content key either from what we already have (fast path,
+diff --git a/packages/app-mobile/lists/sync/nearby.ts b/packages/app-mobile/lists/sync/nearby.ts
+index b9833b8..d31b912 100644
+--- a/packages/app-mobile/lists/sync/nearby.ts
++++ b/packages/app-mobile/lists/sync/nearby.ts
+@@ -1,6 +1,8 @@
+-// Transport 2 from docs/KONZEPT.md section 3 (Bluetooth Low Energy) comes
+-// later. This is only the interface the UI can already build the "circle"
+-// control against, plus a stub that reports itself unavailable.
++// Transport 2 from docs/KONZEPT.md section 3 (Bluetooth Low Energy). The
++// actual protocol/session/native-module code lives in lists/nearby/ (see
++// lists/nearby/PROTOCOL.md); this file only defines the interface the UI
++// builds the "circle" control against (see lists/ui/syncApi.ts), the
++// UnavailableNearbyTransport fallback, and a factory that picks between them.
+ 
+ export type NearbyMode = 'off' | 'searching' | 'found' | 'unavailable';
+ 
+@@ -14,11 +16,23 @@ export interface NearbyState {
+ 
+ export type NearbyStateListener = (state: NearbyState)=> void;
+ 
++// One connected/connecting peer, for the "long press -> peer list" modal
++// (see lists/ui/components/NearbyPeersModal.tsx).
++export interface NearbyPeerInfo {
++	pubkey: string;
++	name: string | null;
++	rssi: number | null;
++	// Milliseconds since epoch.
++	connectedAt: number;
++}
++
+ export interface NearbyTransport {
+ 	isAvailable(): boolean;
+ 	start(listId: string): Promise<void>;
+ 	stop(): Promise<void>;
+ 	onState(listener: NearbyStateListener): ()=> void;
++	// Not offered by UnavailableNearbyTransport (nothing to list).
++	peers?(): Promise<NearbyPeerInfo[]>;
+ }
+ 
+ const UNAVAILABLE_STATE: NearbyState = { mode: 'unavailable', found: 0, total: 0 };
+@@ -46,3 +60,22 @@ export class UnavailableNearbyTransport implements NearbyTransport {
+ 		return () => this.listeners.delete(listener);
+ 	}
+ }
++
++// Picks the real Bluetooth transport when the native module is linked and
++// the platform is Android (see lists/nearby/nativeBle.ts#nativeBleAvailable),
++// otherwise the unavailable stub above. `getStore`/`getDb` are called lazily
++// (only when the real transport can actually be built) so this never forces
++// opening the lists database just to construct a transport nobody uses yet.
++// eslint-disable-next-line @typescript-eslint/no-explicit-any -- ListsStore/ListsDatabase, typed loosely to avoid a static import of lists/core just for this factory's signature
++export const createNearbyTransport = (getStore: ()=> any, getDb: ()=> any): NearbyTransport => {
++	try {
++		// eslint-disable-next-line @typescript-eslint/no-var-requires -- lazy: keeps this working even if lists/nearby's native-module dependency can't resolve on a given platform/test runner
++		const nativeBle = require('../nearby/nativeBle');
++		if (!nativeBle.nativeBleAvailable()) return new UnavailableNearbyTransport();
++		// eslint-disable-next-line @typescript-eslint/no-var-requires
++		const { getNearbyManager } = require('../nearby/nearbyManager');
++		return getNearbyManager(getDb(), getStore());
++	} catch (error) {
++		return new UnavailableNearbyTransport();
++	}
++};
+diff --git a/packages/app-mobile/lists/ui/components/NearbyPeersModal.tsx b/packages/app-mobile/lists/ui/components/NearbyPeersModal.tsx
+new file mode 100644
+index 0000000..6e8fcf6
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/components/NearbyPeersModal.tsx
+@@ -0,0 +1,116 @@
++import * as React from 'react';
++import { useEffect, useState } from 'react';
++import { FlatList, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { _ } from '@joplin/lib/locale';
++import { NearbyPeer, NearbyTransport } from '../syncApi';
++
++interface Props {
++	visible: boolean;
++	transport: NearbyTransport;
++	onClose: ()=> void;
++}
++
++const styles = StyleSheet.create({
++	backdrop: {
++		flex: 1,
++		backgroundColor: 'rgba(0,0,0,0.4)',
++		justifyContent: 'center',
++		padding: 24,
++	},
++	card: {
++		backgroundColor: '#ffffff',
++		borderRadius: 8,
++		padding: 16,
++		maxHeight: '70%',
++	},
++	title: {
++		fontSize: 16,
++		fontWeight: 'bold',
++		marginBottom: 12,
++	},
++	row: {
++		paddingVertical: 8,
++		borderBottomWidth: StyleSheet.hairlineWidth,
++		borderBottomColor: '#cccccc',
++	},
++	name: {
++		fontSize: 14,
++		fontWeight: '600',
++	},
++	detail: {
++		fontSize: 12,
++		color: '#666666',
++	},
++	empty: {
++		fontSize: 13,
++		color: '#666666',
++		paddingVertical: 12,
++	},
++	closeButton: {
++		marginTop: 12,
++		alignSelf: 'flex-end',
++		padding: 8,
++	},
++	closeButtonText: {
++		fontSize: 14,
++		fontWeight: '600',
++	},
++});
++
++const formatSince = (connectedAtMs: number): string => {
++	const seconds = Math.max(0, Math.round((Date.now() - connectedAtMs) / 1000));
++	if (seconds < 60) return _('%d s', seconds);
++	return _('%d min', Math.round(seconds / 60));
++};
++
++// Shown on a long press on NearbyStatusCircle: the devices currently
++// connected over Bluetooth for this list, per docs/KONZEPT.md section 3.
++const NearbyPeersModal: React.FC<Props> = ({ visible, transport, onClose }) => {
++	const [peers, setPeers] = useState<NearbyPeer[]>([]);
++
++	useEffect(() => {
++		if (!visible || !transport.peers) return undefined;
++		let cancelled = false;
++		const load = async () => {
++			const result = await transport.peers();
++			if (!cancelled) setPeers(result);
++		};
++		void load();
++		const interval = setInterval(() => { void load(); }, 2000);
++		return () => {
++			cancelled = true;
++			clearInterval(interval);
++		};
++	}, [visible, transport]);
++
++	return (
++		<Modal visible={visible} transparent animationType='fade' onRequestClose={onClose}>
++			<TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose}>
++				<View style={styles.card}>
++					<Text style={styles.title}>{_('Nearby devices')}</Text>
++					{peers.length === 0 ? (
++						<Text style={styles.empty}>{_('No devices connected yet.')}</Text>
++					) : (
++						<FlatList
++							data={peers}
++							keyExtractor={item => item.pubkey}
++							renderItem={({ item }) => (
++								<View style={styles.row}>
++									<Text style={styles.name}>{item.name || item.pubkey.slice(0, 8)}</Text>
++									<Text style={styles.detail}>
++										{item.rssi !== null ? _('RSSI: %d dBm · connected for %s', item.rssi, formatSince(item.connectedAt)) : _('Connected for %s', formatSince(item.connectedAt))}
++									</Text>
++								</View>
++							)}
++						/>
++					)}
++					<TouchableOpacity style={styles.closeButton} onPress={onClose}>
++						<Text style={styles.closeButtonText}>{_('Close')}</Text>
++					</TouchableOpacity>
++				</View>
++			</TouchableOpacity>
++		</Modal>
++	);
++};
++
++export default NearbyPeersModal;
+diff --git a/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx b/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx
+index 74439ec..688462e 100644
+--- a/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx
++++ b/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx
+@@ -1,8 +1,9 @@
+ import * as React from 'react';
+ import { useEffect, useRef, useState } from 'react';
+-import { Alert, Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { Alert, Animated, Easing, PermissionsAndroid, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+ import { _ } from '@joplin/lib/locale';
+ import { getNearbyTransport, NearbyStatus } from '../syncApi';
++import NearbyPeersModal from './NearbyPeersModal';
+ 
+ interface Props {
+ 	listId: string;
+@@ -43,6 +44,25 @@ const styles = StyleSheet.create({
+ 	},
+ });
+ 
++// Bluetooth permissions this feature needs, split by API level: 31+ (Android
++// 12) replaced the old broad Bluetooth permissions with scan/advertise/
++// connect; below that, scanning for BLE devices also requires location
++// permission. See PROTOCOL.md and the Android docs for
++// BLUETOOTH_SCAN/BLUETOOTH_ADVERTISE/BLUETOOTH_CONNECT.
++const requestNearbyPermissions = async (): Promise<boolean> => {
++	if (Platform.OS !== 'android') return true;
++	const apiLevel = typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10);
++	const permissions = apiLevel >= 31
++		? [
++			PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
++			PermissionsAndroid.PERMISSIONS.BLUETOOTH_ADVERTISE,
++			PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
++		]
++		: [PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION];
++	const results = await PermissionsAndroid.requestMultiple(permissions);
++	return Object.values(results).every(result => result === PermissionsAndroid.RESULTS.GRANTED);
++};
++
+ // The "circle in the top right" from docs/KONZEPT.md section 3: shows and
+ // toggles the nearby (Bluetooth) sync state for the currently open list. With
+ // no real transport wired up yet, it stays grey ("unavailable") and tapping
+@@ -75,19 +95,29 @@ const NearbyStatusCircle: React.FC<Props> = ({ listId }) => {
+ 	}, [status.state, spin]);
+ 
+ 	const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
++	const [peersModalVisible, setPeersModalVisible] = useState(false);
+ 
+-	const onPress = () => {
++	const onPress = async () => {
+ 		if (!available) {
+ 			Alert.alert(_('Nearby sync'), _('Bluetooth sync will come in a later version.'));
+ 			return;
+ 		}
+ 		if (status.state === 'off') {
++			const granted = await requestNearbyPermissions();
++			if (!granted) {
++				Alert.alert(_('Nearby sync'), _('Bluetooth and location permissions are needed to find nearby devices.'));
++				return;
++			}
+ 			transport.start(listId);
+ 		} else {
+ 			transport.stop();
+ 		}
+ 	};
+ 
++	const onLongPress = () => {
++		if (status.state === 'found' || status.state === 'searching') setPeersModalVisible(true);
++	};
++
+ 	const description =
+ 		status.state === 'off' ? _('Nearby sync is off. Tap to search for nearby devices.')
+ 			: status.state === 'searching' ? _('Searching for nearby devices…')
+@@ -95,13 +125,16 @@ const NearbyStatusCircle: React.FC<Props> = ({ listId }) => {
+ 					: _('Nearby sync is not available on this device.');
+ 
+ 	return (
+-		<TouchableOpacity style={styles.touchable} onPress={onPress}
+-			accessibilityRole='button' accessibilityLabel={description}>
+-			<View style={[styles.circle, { backgroundColor: COLORS[status.state] }]}>
+-				{status.state === 'searching' && <Animated.View style={[styles.ring, { transform: [{ rotate }] }]} />}
+-				{status.state === 'found' && <Text style={styles.countText}>{status.foundCount}/{status.memberCount}</Text>}
+-			</View>
+-		</TouchableOpacity>
++		<>
++			<TouchableOpacity style={styles.touchable} onPress={() => { void onPress(); }} onLongPress={onLongPress}
++				accessibilityRole='button' accessibilityLabel={description}>
++				<View style={[styles.circle, { backgroundColor: COLORS[status.state] }]}>
++					{status.state === 'searching' && <Animated.View style={[styles.ring, { transform: [{ rotate }] }]} />}
++					{status.state === 'found' && <Text style={styles.countText}>{status.foundCount}/{status.memberCount}</Text>}
++				</View>
++			</TouchableOpacity>
++			<NearbyPeersModal visible={peersModalVisible} transport={transport} onClose={() => setPeersModalVisible(false)} />
++		</>
+ 	);
+ };
+ 
+diff --git a/packages/app-mobile/lists/ui/syncApi.ts b/packages/app-mobile/lists/ui/syncApi.ts
+index a250afd..49c1e95 100644
+--- a/packages/app-mobile/lists/ui/syncApi.ts
++++ b/packages/app-mobile/lists/ui/syncApi.ts
+@@ -21,11 +21,21 @@ export interface NearbyStatus {
+ 	memberCount: number;
+ }
+ 
++export interface NearbyPeer {
++	pubkey: string;
++	name: string | null;
++	rssi: number | null;
++	// Milliseconds since epoch.
++	connectedAt: number;
++}
++
+ export interface NearbyTransport {
+ 	isAvailable(): boolean;
+ 	start(listId: string): void;
+ 	stop(): void;
+ 	onStateChange(listener: (status: NearbyStatus)=> void): ()=> void;
++	// Not offered by the unavailable stub (nothing to list).
++	peers?(): Promise<NearbyPeer[]>;
+ }
+ 
+ export interface SyncStatus {
+@@ -135,11 +145,19 @@ interface RealNearbyState {
+ 	total: number;
+ }
+ 
++interface RealNearbyPeer {
++	pubkey: string;
++	name: string | null;
++	rssi: number | null;
++	connectedAt: number;
++}
++
+ interface RealNearbyTransport {
+ 	isAvailable(): boolean;
+ 	start(listId: string): Promise<void>;
+ 	stop(): Promise<void>;
+ 	onState(listener: (state: RealNearbyState)=> void): ()=> void;
++	peers?(): Promise<RealNearbyPeer[]>;
+ }
+ 
+ interface SyncModule {
+@@ -148,6 +166,8 @@ interface SyncModule {
+ 
+ interface NearbyModule {
+ 	UnavailableNearbyTransport?: new ()=> RealNearbyTransport;
++	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- ListsStore/ListsDatabase, typed loosely to avoid a static import of lists/core just for this
++	createNearbyTransport?: (getStore: ()=> any, getDb: ()=> any)=> RealNearbyTransport;
+ }
+ 
+ const adaptSyncStatus = (status: RealSyncStatus): SyncStatus => ({
+@@ -174,6 +194,7 @@ const adaptNearbyTransport = (real: RealNearbyTransport): NearbyTransport => ({
+ 		foundCount: state.found,
+ 		memberCount: state.total,
+ 	})),
++	peers: real.peers ? () => real.peers() : undefined,
+ });
+ 
+ // Metro (unlike plain Node/jest) statically resolves every `require()` call
+@@ -226,9 +247,18 @@ export const getListsSync = (): ListsSyncApi => {
+ export const getNearbyTransport = (): NearbyTransport => {
+ 	if (!cachedNearby) {
+ 		const nearbyModule = tryRequireNearbyModule();
+-		cachedNearby = nearbyModule?.UnavailableNearbyTransport
+-			? adaptNearbyTransport(new nearbyModule.UnavailableNearbyTransport())
+-			: new UnavailableNearbyTransportFallback();
++		if (nearbyModule?.createNearbyTransport) {
++			// Real transport (Android + native module linked) or the
++			// UnavailableNearbyTransport stub, picked by createNearbyTransport()
++			// itself -- see lists/sync/nearby.ts. The store/db getters are only
++			// invoked if the real transport is actually built.
++			const real = nearbyModule.createNearbyTransport(getListsStore, getListsDatabaseInstance);
++			cachedNearby = adaptNearbyTransport(real);
++		} else if (nearbyModule?.UnavailableNearbyTransport) {
++			cachedNearby = adaptNearbyTransport(new nearbyModule.UnavailableNearbyTransport());
++		} else {
++			cachedNearby = new UnavailableNearbyTransportFallback();
++		}
+ 	}
+ 	return cachedNearby;
+ };

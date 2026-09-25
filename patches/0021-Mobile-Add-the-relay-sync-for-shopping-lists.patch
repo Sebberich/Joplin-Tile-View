@@ -1,0 +1,1768 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 17:13:33 +0000
+Subject: [PATCH 21/29] Mobile: Add the relay sync for shopping lists
+
+Nostr relay transport (NIP-01 client over WebSocket, relay pool with
+reconnect): per-list member directory, item events, join requests for
+managed lists, publishing of pending changes, weekly re-publish of the
+whole list so relays only need to act as a mailbox, and a live
+subscription while a list is open. Nearby (Bluetooth) transport is an
+interface with an "unavailable" stub for now.
+
+diff --git a/.gitignore b/.gitignore
+index daa11c6..e7b360e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1028,6 +1028,31 @@ packages/app-mobile/lists/core/normalize.js
+ packages/app-mobile/lists/core/store.test.js
+ packages/app-mobile/lists/core/store.js
+ packages/app-mobile/lists/core/types.js
++packages/app-mobile/lists/sync/defaultRelays.js
++packages/app-mobile/lists/sync/index.js
++packages/app-mobile/lists/sync/listSync.test.js
++packages/app-mobile/lists/sync/listSync.js
++packages/app-mobile/lists/sync/nearby.js
++packages/app-mobile/lists/sync/relayPool.test.js
++packages/app-mobile/lists/sync/relayPool.js
++packages/app-mobile/lists/sync/testing/fakeRelay.js
++packages/app-mobile/lists/ui/JoinScreen.js
++packages/app-mobile/lists/ui/ListScreen.test.js
++packages/app-mobile/lists/ui/ListScreen.js
++packages/app-mobile/lists/ui/ListsOverviewScreen.js
++packages/app-mobile/lists/ui/MembersScreen.js
++packages/app-mobile/lists/ui/ShareScreen.js
++packages/app-mobile/lists/ui/components/CreateListModal.js
++packages/app-mobile/lists/ui/components/ItemEditModal.js
++packages/app-mobile/lists/ui/components/NearbyStatusCircle.js
++packages/app-mobile/lists/ui/components/PromptModal.js
++packages/app-mobile/lists/ui/components/QrCode.js
++packages/app-mobile/lists/ui/groupItems.test.js
++packages/app-mobile/lists/ui/groupItems.js
++packages/app-mobile/lists/ui/listsRuntime.js
++packages/app-mobile/lists/ui/parseItemInput.test.js
++packages/app-mobile/lists/ui/parseItemInput.js
++packages/app-mobile/lists/ui/syncApi.js
+ packages/app-mobile/root.js
+ packages/app-mobile/services/AlarmServiceDriver.android.js
+ packages/app-mobile/services/AlarmServiceDriver.ios.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index 4103115..c5f363b 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -1054,6 +1054,31 @@ packages/app-mobile/lists/core/normalize.js
+ packages/app-mobile/lists/core/store.test.js
+ packages/app-mobile/lists/core/store.js
+ packages/app-mobile/lists/core/types.js
++packages/app-mobile/lists/sync/defaultRelays.js
++packages/app-mobile/lists/sync/index.js
++packages/app-mobile/lists/sync/listSync.test.js
++packages/app-mobile/lists/sync/listSync.js
++packages/app-mobile/lists/sync/nearby.js
++packages/app-mobile/lists/sync/relayPool.test.js
++packages/app-mobile/lists/sync/relayPool.js
++packages/app-mobile/lists/sync/testing/fakeRelay.js
++packages/app-mobile/lists/ui/JoinScreen.js
++packages/app-mobile/lists/ui/ListScreen.test.js
++packages/app-mobile/lists/ui/ListScreen.js
++packages/app-mobile/lists/ui/ListsOverviewScreen.js
++packages/app-mobile/lists/ui/MembersScreen.js
++packages/app-mobile/lists/ui/ShareScreen.js
++packages/app-mobile/lists/ui/components/CreateListModal.js
++packages/app-mobile/lists/ui/components/ItemEditModal.js
++packages/app-mobile/lists/ui/components/NearbyStatusCircle.js
++packages/app-mobile/lists/ui/components/PromptModal.js
++packages/app-mobile/lists/ui/components/QrCode.js
++packages/app-mobile/lists/ui/groupItems.test.js
++packages/app-mobile/lists/ui/groupItems.js
++packages/app-mobile/lists/ui/listsRuntime.js
++packages/app-mobile/lists/ui/parseItemInput.test.js
++packages/app-mobile/lists/ui/parseItemInput.js
++packages/app-mobile/lists/ui/syncApi.js
+ packages/app-mobile/root.js
+ packages/app-mobile/services/AlarmServiceDriver.android.js
+ packages/app-mobile/services/AlarmServiceDriver.ios.js
+diff --git a/packages/app-mobile/lists/core/events.ts b/packages/app-mobile/lists/core/events.ts
+index 1dea620..6f052c2 100644
+--- a/packages/app-mobile/lists/core/events.ts
++++ b/packages/app-mobile/lists/core/events.ts
+@@ -35,7 +35,10 @@ export const parseItemEvent = (event: VerifiedEvent, contentKey: Uint8Array): It
+ 
+ // --- Member directory --------------------------------------------------
+ 
+-const DIRECTORY_D_TAG = 'members';
++// Exported so the sync layer can recognise a directory event among the other
++// kind-30078 events it fetches for a list (items, join requests) without
++// duplicating the literal.
++export const DIRECTORY_D_TAG = 'members';
+ 
+ export interface DirectoryPayload {
+ 	members: MemberRecord[];
+@@ -44,11 +47,17 @@ export interface DirectoryPayload {
+ 
+ // Open lists: every member can derive the content key from the shared list
+ // key, so the directory is encrypted with it directly and signed by the
+-// list's own key (which every member also holds).
+-export const buildOpenDirectoryEvent = (listSecretKey: Uint8Array, contentKey: Uint8Array, payload: DirectoryPayload, createdAt: number = nowSeconds()): VerifiedEvent => {
++// list's own key (which every member also holds). `listPubkey`, when given,
++// is added as an 'L' tag so the sync layer can query it the same way it
++// queries items -- for an open list this is redundant with the event's own
++// author (always the list key), but keeping the tag consistent across event
++// types keeps the relay-query code simple.
++export const buildOpenDirectoryEvent = (listSecretKey: Uint8Array, contentKey: Uint8Array, payload: DirectoryPayload, createdAt: number = nowSeconds(), listPubkey?: string): VerifiedEvent => {
++	const tags = [['d', DIRECTORY_D_TAG]];
++	if (listPubkey) tags.push(['L', listPubkey]);
+ 	const template: EventTemplate = {
+ 		kind: LIST_EVENT_KIND,
+-		tags: [['d', DIRECTORY_D_TAG]],
++		tags,
+ 		content: nip44.encrypt(JSON.stringify(payload), contentKey),
+ 		created_at: createdAt,
+ 	};
+@@ -71,8 +80,11 @@ export interface ManagedDirectoryContent {
+ }
+ 
+ // Managed lists: signed by an admin device key. See isDirectoryAcceptable()
+-// for how a reader decides whether to trust that signer.
+-export const buildManagedDirectoryEvent = (adminSecretKey: Uint8Array, contentKey: Uint8Array, payload: DirectoryPayload, createdAt: number = nowSeconds()): VerifiedEvent => {
++// for how a reader decides whether to trust that signer. Unlike the open
++// directory, the signer here changes over time (any current admin), so
++// `listPubkey`, when given, is the only stable way to query this list's
++// directory on relays; see buildOpenDirectoryEvent() for the same tag.
++export const buildManagedDirectoryEvent = (adminSecretKey: Uint8Array, contentKey: Uint8Array, payload: DirectoryPayload, createdAt: number = nowSeconds(), listPubkey?: string): VerifiedEvent => {
+ 	const wrapped: Record<string, string> = {};
+ 	for (const member of payload.members) {
+ 		if (member.removedAt) continue;
+@@ -83,9 +95,11 @@ export const buildManagedDirectoryEvent = (adminSecretKey: Uint8Array, contentKe
+ 		wrapped,
+ 		body: nip44.encrypt(JSON.stringify(payload), contentKey),
+ 	};
++	const tags = [['d', DIRECTORY_D_TAG]];
++	if (listPubkey) tags.push(['L', listPubkey]);
+ 	const template: EventTemplate = {
+ 		kind: LIST_EVENT_KIND,
+-		tags: [['d', DIRECTORY_D_TAG]],
++		tags,
+ 		content: JSON.stringify(content),
+ 		created_at: createdAt,
+ 	};
+diff --git a/packages/app-mobile/lists/sync/defaultRelays.ts b/packages/app-mobile/lists/sync/defaultRelays.ts
+new file mode 100644
+index 0000000..af48ff6
+--- /dev/null
++++ b/packages/app-mobile/lists/sync/defaultRelays.ts
+@@ -0,0 +1,34 @@
++import Setting from '@joplin/lib/models/Setting';
++
++// Public, free relays with no signup, picked for general reachability. See
++// docs/KONZEPT.md section 3: several relays in parallel, changeable in
++// settings, self-hosting possible.
++export const defaultRelays: string[] = [
++	'wss://relay.damus.io',
++	'wss://nos.lol',
++	'wss://relay.primal.net',
++	'wss://nostr.mom',
++	'wss://relay.nostr.band',
++];
++
++// Parses the 'lists.relays' setting's raw string value (comma or newline
++// separated relay URLs) into a list, falling back to the defaults when the
++// value is empty or has no valid entry.
++export const relaysFromSetting = (value: string): string[] => {
++	const urls = (value ?? '')
++		.split(/[,\n]/)
++		.map(entry => entry.trim())
++		.filter(entry => entry.startsWith('wss://'));
++	return urls.length > 0 ? urls : defaultRelays;
++};
++
++// Reads the relay list to use right now. The 'lists.relays' setting is
++// registered by the UI (builtInMetadata.ts); if it isn't registered yet,
++// Setting.value() throws and this falls back to the defaults.
++export const currentRelays = (): string[] => {
++	try {
++		return relaysFromSetting(Setting.value('lists.relays'));
++	} catch (error) {
++		return defaultRelays;
++	}
++};
+diff --git a/packages/app-mobile/lists/sync/index.ts b/packages/app-mobile/lists/sync/index.ts
+new file mode 100644
+index 0000000..b61cbec
+--- /dev/null
++++ b/packages/app-mobile/lists/sync/index.ts
+@@ -0,0 +1,7 @@
++export { defaultRelays, relaysFromSetting, currentRelays } from './defaultRelays';
++export { Relay, RelayPool, defaultRelayPoolFactory, publishSucceeded } from './relayPool';
++export type { PublishResult, RelayPublishResult, RelayPoolFactory } from './relayPool';
++export { ListsSync, startListsSyncLifecycle } from './listSync';
++export type { SyncState, SyncStatus, StatusListener } from './listSync';
++export { UnavailableNearbyTransport } from './nearby';
++export type { NearbyMode, NearbyState, NearbyStateListener, NearbyTransport } from './nearby';
+diff --git a/packages/app-mobile/lists/sync/listSync.test.ts b/packages/app-mobile/lists/sync/listSync.test.ts
+new file mode 100644
+index 0000000..0ba5939
+--- /dev/null
++++ b/packages/app-mobile/lists/sync/listSync.test.ts
+@@ -0,0 +1,260 @@
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import { ListsDatabase } from '../core/db';
++import { ListsStore } from '../core/store';
++import { ItemRecord } from '../core/types';
++import { hexToBytes } from '../core/crypto';
++import { ListsSync } from './listSync';
++import { FakeRelayNetwork, fakeRelayPoolFactory } from './testing/fakeRelay';
++import { defaultRelays } from './defaultRelays';
++import { buildManagedDirectoryEvent, LIST_EVENT_KIND } from '../core/events';
++
++interface Device {
++	store: ListsStore;
++	db: ListsDatabase;
++	sync: ListsSync;
++	path: string;
++}
++
++const openDevice = async (network: FakeRelayNetwork): Promise<Device> => {
++	const path = join(tmpdir(), `tiles-sync-test-${uuid.createNano()}.sqlite`);
++	const db = new ListsDatabase(new Database(new DatabaseDriverNode()));
++	await db.openOrCreate(path);
++	const store = new ListsStore(db, path);
++	const sync = new ListsSync(store, db, fakeRelayPoolFactory(network));
++	return { store, db, sync, path };
++};
++
++const closeDevice = async (device: Device): Promise<void> => {
++	device.sync.closeAll();
++	await device.db.close();
++	await rm(device.path, { force: true });
++};
++
++const findItem = (items: ItemRecord[], name: string): ItemRecord | undefined => items.find(i => i.name === name);
++
++describe('lists/sync/listSync', () => {
++	let network: FakeRelayNetwork;
++	let devices: Device[];
++
++	beforeEach(() => {
++		network = new FakeRelayNetwork();
++		devices = [];
++	});
++
++	afterEach(async () => {
++		for (const device of devices) await closeDevice(device);
++	});
++
++	const addDevice = async (): Promise<Device> => {
++		const device = await openDevice(network);
++		devices.push(device);
++		return device;
++	};
++
++	test('open list: an item added on one device reaches another after both sync', async () => {
++		const a = await addDevice();
++		const b = await addDevice();
++
++		const list = await a.store.createOpenList('Groceries');
++		await a.sync.syncList(list.id);
++
++		await b.store.joinFromInvite((await a.store.inviteFor(list.id)).link);
++		await b.sync.syncList(list.id); // learns about A, announces itself
++		await a.sync.syncList(list.id); // learns about B
++
++		await a.store.addItem(list.id, 'Milch');
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++
++		const bItems = await b.store.items(list.id);
++		expect(findItem(bItems, 'Milch')).toMatchObject({ open: true, pending: false });
++	});
++
++	test('open list: concurrent changes on two devices converge field-wise', async () => {
++		const a = await addDevice();
++		const b = await addDevice();
++		const list = await a.store.createOpenList('Groceries');
++		await a.sync.syncList(list.id);
++		await b.store.joinFromInvite((await a.store.inviteFor(list.id)).link);
++		await b.sync.syncList(list.id);
++		await a.sync.syncList(list.id);
++
++		await a.store.addItem(list.id, 'Milch');
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++
++		// B ticks the item off, A concurrently sets its detail -- neither has
++		// seen the other's change yet.
++		const bItem = findItem(await b.store.items(list.id), 'Milch')!;
++		await b.store.toggleOpen(list.id, bItem.dTag);
++		const aItem = findItem(await a.store.items(list.id), 'Milch')!;
++		await a.store.setDetail(list.id, aItem.dTag, '2 l');
++
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++		await a.sync.syncList(list.id); // picks up B's publish too
++
++		for (const device of [a, b]) {
++			const item = findItem(await device.store.items(list.id), 'Milch')!;
++			expect(item).toMatchObject({ open: false, detail: '2 l' });
++		}
++	});
++
++	test('open list: a tombstone propagates to another device', async () => {
++		const a = await addDevice();
++		const b = await addDevice();
++		const list = await a.store.createOpenList('Groceries');
++		await a.sync.syncList(list.id);
++		await b.store.joinFromInvite((await a.store.inviteFor(list.id)).link);
++		await b.sync.syncList(list.id);
++		await a.sync.syncList(list.id);
++
++		await a.store.addItem(list.id, 'Milch');
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++
++		const aItem = findItem(await a.store.items(list.id), 'Milch')!;
++		await a.store.removeItem(list.id, aItem.dTag);
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++
++		expect(await b.store.items(list.id)).toEqual([]);
++	});
++
++	test('republishAll restores an item to a relay that lost it', async () => {
++		const a = await addDevice();
++		const b = await addDevice();
++		const list = await a.store.createOpenList('Groceries');
++		await a.sync.syncList(list.id);
++		await b.store.joinFromInvite((await a.store.inviteFor(list.id)).link);
++		await b.sync.syncList(list.id);
++		await a.sync.syncList(list.id);
++
++		const item = await a.store.addItem(list.id, 'Milch');
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++		expect(findItem(await b.store.items(list.id), 'Milch')).toBeDefined();
++
++		const identity = await a.db.deviceIdentity();
++		for (const url of defaultRelays) network.drop(url, identity.publicKey, LIST_EVENT_KIND, item.dTag);
++
++		// A fresh device joining now would get nothing for this item until A
++		// republishes its full state.
++		const c = await addDevice();
++		await c.store.joinFromInvite((await a.store.inviteFor(list.id)).link);
++		await c.sync.syncList(list.id);
++		expect(findItem(await c.store.items(list.id), 'Milch')).toBeUndefined();
++
++		await a.sync.republishAll(list.id);
++		await c.sync.syncList(list.id);
++		expect(findItem(await c.store.items(list.id), 'Milch')).toBeDefined();
++	});
++
++	test('a relay rejecting a publish as too old is retried with created_at = now', async () => {
++		const a = await addDevice();
++		const list = await a.store.createOpenList('Groceries');
++		await a.sync.syncList(list.id);
++		for (const url of defaultRelays) network.setRejectTooOld(url, true);
++
++		await a.store.addItem(list.id, 'Milch');
++		await a.sync.syncList(list.id);
++
++		// The retry with created_at = now() is no longer "too old" and succeeds.
++		expect(await a.store.pendingItems(list.id)).toEqual([]);
++	});
++
++	test('managed list: a device joins via invite, the admin accepts it, and both end up with the same items', async () => {
++		const admin = await addDevice();
++		const joiner = await addDevice();
++
++		const list = await admin.store.createManagedList('Household');
++		await admin.sync.syncList(list.id);
++
++		const invite = await admin.store.inviteFor(list.id);
++		const joinResult = await joiner.store.joinFromInvite(invite.link);
++		if (joinResult.type !== 'managed') throw new Error('expected a managed join');
++		await joiner.sync.publishJoinRequest(list.id, joinResult.joinRequest);
++
++		await admin.sync.syncList(list.id); // accepts the join request, publishes directory + content key
++		await joiner.sync.syncList(list.id); // recovers the content key from the directory
++
++		const joinerList = await joiner.db.list(list.id);
++		expect(joinerList?.contentKey).not.toBeNull();
++
++		await admin.store.addItem(list.id, 'Brot');
++		await admin.sync.syncList(list.id);
++		await joiner.sync.syncList(list.id);
++
++		expect(findItem(await joiner.store.items(list.id), 'Brot')).toMatchObject({ open: true });
++	});
++
++	test('managed list: a removed member\'s later events are ignored', async () => {
++		const admin = await addDevice();
++		const member = await addDevice();
++
++		const list = await admin.store.createManagedList('Household');
++		await admin.sync.syncList(list.id);
++		const invite = await admin.store.inviteFor(list.id);
++		const joinResult = await member.store.joinFromInvite(invite.link);
++		if (joinResult.type !== 'managed') throw new Error('expected a managed join');
++		await member.sync.publishJoinRequest(list.id, joinResult.joinRequest);
++		await admin.sync.syncList(list.id);
++		await member.sync.syncList(list.id);
++
++		// The member adds an item before being removed; it should still sync.
++		await member.store.addItem(list.id, 'Kaffee');
++		await member.sync.syncList(list.id);
++		await admin.sync.syncList(list.id);
++		expect(findItem(await admin.store.items(list.id), 'Kaffee')).toBeDefined();
++
++		// The admin removes the member and publishes an updated directory (a
++		// full removal would also rotate the content key -- not needed to
++		// prove events from a removed member are ignored).
++		const memberIdentity = await member.db.deviceIdentity();
++		const adminMembers = await admin.db.members(list.id);
++		const updatedMembers = adminMembers.map(m => (m.pubkey === memberIdentity.publicKey ? { ...m, removedAt: Date.now() } : m));
++		for (const m of updatedMembers) await admin.db.upsertMember(m);
++		const adminList = await admin.db.list(list.id);
++		const directoryPayload = { members: updatedMembers, settings: adminList!.settings };
++		const directoryEvent = buildManagedDirectoryEvent(hexToBytes(adminList!.listKey!), hexToBytes(adminList!.contentKey!), directoryPayload, undefined, list.id);
++		for (const url of defaultRelays) network.relay(url).publish(directoryEvent);
++		await admin.db.setMeta(`directory:${list.id}`, JSON.stringify(directoryPayload));
++
++		// The removed member, still on the old content key, tries to add
++		// another item; the admin's author filter no longer includes them.
++		await member.store.addItem(list.id, 'Tee');
++		await member.sync.syncList(list.id);
++		await admin.sync.syncList(list.id);
++
++		expect(findItem(await admin.store.items(list.id), 'Tee')).toBeUndefined();
++	});
++
++	test('a directory signed by a non-admin device is rejected', async () => {
++		const admin = await addDevice();
++		const outsider = await addDevice();
++
++		const list = await admin.store.createManagedList('Household');
++		await admin.sync.syncList(list.id);
++
++		// The outsider is not a member at all, let alone an admin; forging a
++		// directory event under this list's id must not be accepted.
++		const outsiderIdentity = await outsider.db.deviceIdentity();
++		const forged = buildManagedDirectoryEvent(
++			outsiderIdentity.secretKey,
++			new Uint8Array(32),
++			{ members: [{ listId: list.id, pubkey: outsiderIdentity.publicKey, name: 'Intruder', role: 'admin', since: Date.now(), removedAt: null }], settings: null },
++			undefined,
++			list.id,
++		);
++		for (const url of defaultRelays) network.relay(url).publish(forged);
++
++		await admin.sync.syncList(list.id);
++		const members = await admin.db.members(list.id);
++		expect(members.some(m => m.pubkey === outsiderIdentity.publicKey)).toBe(false);
++	});
++});
+diff --git a/packages/app-mobile/lists/sync/listSync.ts b/packages/app-mobile/lists/sync/listSync.ts
+new file mode 100644
+index 0000000..e964533
+--- /dev/null
++++ b/packages/app-mobile/lists/sync/listSync.ts
+@@ -0,0 +1,532 @@
++// Transport 1 from docs/KONZEPT.md section 3: syncing a shopping list over
++// Nostr relays. Builds on lists/core (events, merge, invite) plus the
++// RelayPool from ./relayPool for the actual network traffic.
++import { AppState, AppStateStatus, NativeEventSubscription } from 'react-native';
++import { Filter, VerifiedEvent } from 'nostr-tools';
++import { ListsDatabase, DeviceIdentity } from '../core/db';
++import { ListsStore, itemRecordToPayload } from '../core/store';
++import {
++	buildItemEvent,
++	buildManagedDirectoryEvent,
++	buildOpenDirectoryEvent,
++	DIRECTORY_D_TAG,
++	DirectoryPayload,
++	isDirectoryAcceptable,
++	LIST_EVENT_KIND,
++	parseItemEvent,
++	parseJoinRequestEvent,
++	parseManagedDirectoryEvent,
++	parseOpenDirectoryEvent,
++	unwrapManagedContentKey,
++} from '../core/events';
++import { deriveOpenListKeys, hexToBytes } from '../core/crypto';
++import { isInviteExpired, ListInvite, parseInvite, verifyManagedInviteToken } from '../core/invite';
++import { ItemPayload, ItemRecord, ListRecord, MemberRecord } from '../core/types';
++import { defaultRelayPoolFactory, publishSucceeded, RelayPoolFactory, RelayPoolLike, RelayPublishResult } from './relayPool';
++import { currentRelays } from './defaultRelays';
++
++const REPUBLISH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
++const ITEM_SYNC_LOOKBACK_MS = 24 * 60 * 60 * 1000;
++const LIFECYCLE_THROTTLE_MS = 30 * 1000;
++
++// A relay's OK message rejecting an event as too old for it to keep; the
++// device was offline long enough that its clamped local timestamp now lags
++// behind what the relay considers recent. See docs/KONZEPT.md section 3.
++const TOO_OLD_MESSAGE = /too old|invalid:\s*created_at/i;
++
++export type SyncState = 'idle' | 'syncing' | 'offline' | 'error';
++
++export interface SyncStatus {
++	listId: string;
++	state: SyncState;
++	lastSync?: number;
++	message?: string;
++}
++
++export type StatusListener = (status: SyncStatus)=> void;
++
++const itemEventCreatedAt = (item: ItemRecord): number => {
++	const times = [item.openT, item.detailT, item.categoryT, item.deletedT].filter((t): t is number => t !== null);
++	const maxMs = times.length > 0 ? Math.max(...times) : Date.now();
++	return Math.floor(maxMs / 1000);
++};
++
++const eventDTag = (event: VerifiedEvent): string | undefined => event.tags.find(tag => tag[0] === 'd')?.[1];
++
++// Syncs shopping lists over Nostr relays: fetches and applies the member
++// directory and item events for a list, publishes local pending changes, and
++// (for managed lists) lets an admin device accept join requests. No UI or
++// Bluetooth code -- this is transport 1 only, see ./nearby.ts for transport 2.
++export class ListsSync {
++	private static singleton: ListsSync | null = null;
++
++	private db: ListsDatabase;
++	private store: ListsStore;
++	private poolFactory: RelayPoolFactory;
++	private pools = new Map<string, RelayPoolLike>();
++	private subscriptions: Map<string, ()=> void> = new Map();
++	private statusListeners = new Set<StatusListener>();
++	private statuses = new Map<string, SyncStatus>();
++
++	public constructor(store: ListsStore, db: ListsDatabase, poolFactory: RelayPoolFactory = defaultRelayPoolFactory) {
++		this.store = store;
++		this.db = db;
++		this.poolFactory = poolFactory;
++	}
++
++	// Creates (or replaces) the process-wide singleton. Call once at startup,
++	// after the lists ListsStore/ListsDatabase have been constructed.
++	public static init(store: ListsStore, db: ListsDatabase, poolFactory?: RelayPoolFactory): ListsSync {
++		ListsSync.singleton = new ListsSync(store, db, poolFactory);
++		return ListsSync.singleton;
++	}
++
++	public static instance(): ListsSync {
++		if (!ListsSync.singleton) throw new Error('ListsSync.init() has not been called yet');
++		return ListsSync.singleton;
++	}
++
++	public onStatus(listener: StatusListener): ()=> void {
++		this.statusListeners.add(listener);
++		return () => this.statusListeners.delete(listener);
++	}
++
++	public status(listId: string): SyncStatus | undefined {
++		return this.statuses.get(listId);
++	}
++
++	private setStatus(status: SyncStatus): void {
++		this.statuses.set(status.listId, status);
++		for (const listener of this.statusListeners) listener(status);
++	}
++
++	private poolFor(listId: string, list?: ListRecord | null): RelayPoolLike {
++		let pool = this.pools.get(listId);
++		if (!pool) {
++			const urls = list?.relays && list.relays.length > 0 ? list.relays : currentRelays();
++			pool = this.poolFactory(urls);
++			this.pools.set(listId, pool);
++		}
++		return pool;
++	}
++
++	// Closes every relay connection and cancels every live subscription. Tests
++	// call this in afterEach(); the app doesn't normally need to.
++	public closeAll(): void {
++		for (const unsubscribe of this.subscriptions.values()) unsubscribe();
++		this.subscriptions.clear();
++		for (const pool of this.pools.values()) pool.close();
++		this.pools.clear();
++	}
++
++	private lastSyncKey = (listId: string): string => `lastSync:${listId}`;
++	private lastRepublishKey = (listId: string): string => `lastRepublish:${listId}`;
++	private directoryMetaKey = (listId: string): string => `directory:${listId}`;
++	private usedInviteKey = (listId: string, tokenId: string): string => `usedInvite:${listId}:${tokenId}`;
++	private handledJoinKey = (listId: string, eventId: string): string => `handledJoin:${listId}:${eventId}`;
++
++	// --- one full sync pass for a single list -----------------------------
++
++	public async syncList(listId: string): Promise<void> {
++		const initialList = await this.db.list(listId);
++		if (!initialList) return;
++		const identity = await this.db.deviceIdentity();
++		const pool = this.poolFor(listId, initialList);
++		this.setStatus({ listId, state: 'syncing' });
++
++		try {
++			await this.syncDirectory(initialList, identity, pool);
++			const list = (await this.db.list(listId)) ?? initialList;
++
++			if (list.kind === 'managed' && await this.isLocalAdmin(listId, identity.publicKey)) {
++				await this.acceptJoinRequests(list, identity, pool);
++			}
++
++			await this.syncItems(list, pool);
++			await this.publishPending(list, identity, pool);
++			await this.ensureSelfInDirectory(list, identity, pool);
++			await this.maybeRepublish(list, identity, pool);
++
++			const now = Date.now();
++			await this.db.setMeta(this.lastSyncKey(listId), String(now));
++
++			if (!pool.anyConnected()) this.setStatus({ listId, state: 'offline' });
++			else this.setStatus({ listId, state: 'idle', lastSync: now });
++		} catch (error) {
++			if (!pool.anyConnected()) this.setStatus({ listId, state: 'offline' });
++			else this.setStatus({ listId, state: 'error', message: error instanceof Error ? error.message : String(error) });
++		}
++	}
++
++	public async refreshAll(): Promise<void> {
++		const lists = await this.db.lists();
++		for (const list of lists) await this.syncList(list.id);
++	}
++
++	private async isLocalAdmin(listId: string, publicKey: string): Promise<boolean> {
++		const members = await this.db.members(listId);
++		return members.some(m => m.pubkey === publicKey && m.role === 'admin' && !m.removedAt);
++	}
++
++	// --- directory ----------------------------------------------------------
++
++	private async syncDirectory(list: ListRecord, identity: DeviceIdentity, pool: RelayPoolLike): Promise<void> {
++		const filter: Filter = { kinds: [LIST_EVENT_KIND], '#d': [DIRECTORY_D_TAG], '#L': [list.id] };
++		const events = await pool.queryAll(filter);
++		// Oldest first: replays the admin trust chain forward from whatever was
++		// last accepted, so a later event can only be trusted via an earlier
++		// one in this same batch (or the one already on disk).
++		const ordered = [...events].sort((a, b) => a.created_at - b.created_at);
++		for (const event of ordered) {
++			const current = (await this.db.list(list.id)) ?? list;
++			await this.handleDirectoryEvent(current, identity, event);
++		}
++	}
++
++	private async handleDirectoryEvent(list: ListRecord, identity: DeviceIdentity, event: VerifiedEvent): Promise<void> {
++		if (list.kind === 'open') {
++			// Every open-list directory, forever, is signed by the same list key
++			// (every member derives it, see crypto.ts#deriveOpenListKeys) -- so
++			// isDirectoryAcceptable()'s admin-chain (built for managed lists,
++			// where the signer changes over time) never re-matches after the
++			// first directory. Checking the signer against the list id directly
++			// is exactly as strong here: it's the same cryptographic proof the
++			// chain's bootstrap case already relies on.
++			if (event.pubkey !== list.id) return;
++		} else if (event.pubkey !== list.id) {
++			// Not signed by the list's own root key (see signManagedDirectory()):
++			// only acceptable via the admin chain, same as isDirectoryAcceptable()
++			// intends for its "previously accepted" case. A root-key-signed event
++			// is always acceptable, matching its "first ever" case generalised to
++			// "any time it's used" -- the creating admin keeps using it for
++			// exactly this reason, see signManagedDirectory().
++			const previousJson = await this.db.getMeta(this.directoryMetaKey(list.id));
++			const previouslyAccepted: DirectoryPayload | null = previousJson ? JSON.parse(previousJson) : null;
++			if (!isDirectoryAcceptable(previouslyAccepted, list.id, event.pubkey)) return;
++		}
++
++		let payload: DirectoryPayload | null;
++		try {
++			if (list.kind === 'open') {
++				if (!list.contentKey) return;
++				payload = parseOpenDirectoryEvent(event, hexToBytes(list.contentKey));
++			} else {
++				payload = await this.acceptManagedDirectory(list, identity, event);
++			}
++		} catch (error) {
++			return; // undecryptable or tampered: ignore, as if we never saw it
++		}
++		if (!payload) return;
++
++		await this.applyDirectory(list.id, payload);
++		await this.db.setMeta(this.directoryMetaKey(list.id), JSON.stringify(payload));
++	}
++
++	// Recovers the content key either from what we already have (fast path,
++	// also covers the admin's own device) or by unwrapping it from this
++	// event's entry for us -- which only works once we've actually been added.
++	private async acceptManagedDirectory(list: ListRecord, identity: DeviceIdentity, event: VerifiedEvent): Promise<DirectoryPayload | null> {
++		if (list.contentKey) {
++			try {
++				return parseManagedDirectoryEvent(event, hexToBytes(list.contentKey));
++			} catch (error) {
++				// Falls through to try unwrapping a fresh key below, e.g. after
++				// the admin rotated it and we haven't caught up yet.
++			}
++		}
++		let contentKey: Uint8Array;
++		try {
++			contentKey = unwrapManagedContentKey(event, identity.secretKey);
++		} catch (error) {
++			return null; // we're not a wrapped member of this directory (yet)
++		}
++		const payload = parseManagedDirectoryEvent(event, contentKey);
++		await this.db.setContentKey(list.id, contentKey);
++		return payload;
++	}
++
++	private async applyDirectory(listId: string, payload: DirectoryPayload): Promise<void> {
++		for (const member of payload.members) await this.db.upsertMember(member);
++		await this.db.setListSettings(listId, payload.settings ?? null);
++	}
++
++	// Signs a managed directory update. The creating admin keeps its copy of
++	// the list's own key (see db.ts) and always signs with it rather than its
++	// device key: isDirectoryAcceptable() only lets a brand-new joiner bootstrap
++	// trust via a listPubkey-signed event, so every directory update needs to
++	// keep coming from that same signer for later joiners to ever get in, not
++	// just the very first one. An admin device that only ever joined (no local
++	// list key) has no choice but to sign with its own device key -- members
++	// that already have a previously-accepted directory naming it as admin
++	// will follow it via isDirectoryAcceptable()'s chain, but a first-time
++	// joiner can only bootstrap once the creator republishes again.
++	private async signManagedDirectory(list: ListRecord, identity: DeviceIdentity, contentKey: Uint8Array, payload: DirectoryPayload): Promise<VerifiedEvent> {
++		const signerKey = list.listKey ? hexToBytes(list.listKey) : identity.secretKey;
++		return buildManagedDirectoryEvent(signerKey, contentKey, payload, undefined, list.id);
++	}
++
++	// Publishes an up-to-date directory for this device's own list membership.
++	// Open lists: any member may sign (everyone holds the list key), so this
++	// always republishes to keep the directory's member list current. Managed
++	// lists: only an admin may sign, and only for the very first publish --
++	// acceptJoinRequests() republishes on every later membership change.
++	private async ensureSelfInDirectory(list: ListRecord, identity: DeviceIdentity, pool: RelayPoolLike): Promise<void> {
++		if (!list.contentKey) return;
++		const members = await this.db.members(list.id);
++
++		if (list.kind === 'open') {
++			if (!list.listKey || !members.some(m => m.pubkey === identity.publicKey)) return;
++			const payload: DirectoryPayload = { members, settings: list.settings };
++			// list.listKey is the raw shared secret carried by an open-list invite
++			// (the HKDF input), not a usable Nostr key by itself -- derive the
++			// actual list key pair from it first, see crypto.ts#deriveOpenListKeys.
++			const listSecretKey = deriveOpenListKeys(hexToBytes(list.listKey)).listSecretKey;
++			const event = buildOpenDirectoryEvent(listSecretKey, hexToBytes(list.contentKey), payload, undefined, list.id);
++			await pool.publishAll(event);
++			await this.db.setMeta(this.directoryMetaKey(list.id), JSON.stringify(payload));
++			return;
++		}
++
++		if (!await this.isLocalAdmin(list.id, identity.publicKey)) return;
++		const previousJson = await this.db.getMeta(this.directoryMetaKey(list.id));
++		if (previousJson) return;
++		const payload: DirectoryPayload = { members, settings: list.settings };
++		const event = await this.signManagedDirectory(list, identity, hexToBytes(list.contentKey), payload);
++		await pool.publishAll(event);
++		await this.db.setMeta(this.directoryMetaKey(list.id), JSON.stringify(payload));
++	}
++
++	// --- join requests (managed lists, admin only) --------------------------
++
++	private async acceptJoinRequests(list: ListRecord, identity: DeviceIdentity, pool: RelayPoolLike): Promise<void> {
++		if (!list.contentKey) return;
++		// Join requests are tagged ['p', adminPubkey] (see events.ts), not with
++		// a predictable 'd' tag -- the device pubkey it's keyed on isn't known
++		// in advance -- so this is the only filter that finds them all.
++		const filter: Filter = { kinds: [LIST_EVENT_KIND], '#p': [identity.publicKey] };
++		const events = await pool.queryAll(filter);
++		if (events.length === 0) return;
++
++		let members = await this.db.members(list.id);
++		let changed = false;
++
++		for (const event of events) {
++			// A join request is addressable per device (not per invite), so the
++			// same event keeps sitting on the relay long after it was accepted;
++			// without this, accepting it again after the member is later removed
++			// would silently re-add them. A genuinely new request (e.g. after a
++			// fresh invite) is a different event id and isn't skipped by this.
++			if (await this.db.getMeta(this.handledJoinKey(list.id, event.id))) continue;
++
++			let parsed;
++			try {
++				parsed = parseJoinRequestEvent(event, identity.secretKey);
++			} catch (error) {
++				continue;
++			}
++			if (members.some(m => m.pubkey === parsed.devicePubkey && !m.removedAt)) continue;
++
++			let invite: ListInvite;
++			try {
++				invite = parseInvite(parsed.inviteToken);
++			} catch (error) {
++				continue;
++			}
++			if (invite.kind !== 'managed' || invite.listPubkey !== list.id || invite.adminPubkey !== identity.publicKey) continue;
++			if (!verifyManagedInviteToken(invite.token, invite.adminPubkey) || isInviteExpired(invite.token)) continue;
++			if (invite.token.once && await this.db.getMeta(this.usedInviteKey(list.id, invite.token.id))) continue;
++
++			const newMember: MemberRecord = { listId: list.id, pubkey: parsed.devicePubkey, name: parsed.deviceName, role: invite.token.role, since: Date.now(), removedAt: null };
++			await this.db.upsertMember(newMember);
++			members = [...members, newMember];
++			if (invite.token.once) await this.db.setMeta(this.usedInviteKey(list.id, invite.token.id), '1');
++			await this.db.setMeta(this.handledJoinKey(list.id, event.id), '1');
++			changed = true;
++		}
++
++		if (!changed) return;
++		const payload: DirectoryPayload = { members, settings: list.settings };
++		const directoryEvent = await this.signManagedDirectory(list, identity, hexToBytes(list.contentKey), payload);
++		await pool.publishAll(directoryEvent);
++		await this.db.setMeta(this.directoryMetaKey(list.id), JSON.stringify(payload));
++	}
++
++	// A managed join request is built by ListsStore.joinFromInvite(); sending
++	// it to the admin is the sync layer's job (over relays here, or directly
++	// over Bluetooth later -- same signed event either way).
++	public async publishJoinRequest(listId: string, joinRequestEvent: VerifiedEvent): Promise<RelayPublishResult[]> {
++		const list = await this.db.list(listId);
++		return this.poolFor(listId, list).publishAll(joinRequestEvent);
++	}
++
++	// --- items ----------------------------------------------------------
++
++	private async itemsSince(listId: string): Promise<number | undefined> {
++		const lastSyncJson = await this.db.getMeta(this.lastSyncKey(listId));
++		if (!lastSyncJson) return undefined; // first sync: fetch everything
++		return Math.max(0, Math.floor((Number(lastSyncJson) - ITEM_SYNC_LOOKBACK_MS) / 1000));
++	}
++
++	private async syncItems(list: ListRecord, pool: RelayPoolLike): Promise<void> {
++		if (!list.contentKey) return;
++		const members = await this.db.members(list.id);
++		const memberPubkeys = members.filter(m => !m.removedAt).map(m => m.pubkey);
++		if (memberPubkeys.length === 0) return;
++
++		const filter: Filter = { kinds: [LIST_EVENT_KIND], authors: memberPubkeys, '#L': [list.id] };
++		const since = await this.itemsSince(list.id);
++		if (since !== undefined) filter.since = since;
++
++		const events = await pool.queryAll(filter);
++		for (const event of events) {
++			const dTagValue = eventDTag(event);
++			// The author filter above also matches this member's own directory
++			// or join-request events (same kind, same 'L' tag); skip them here.
++			if (!dTagValue || dTagValue === DIRECTORY_D_TAG || dTagValue.startsWith('join:')) continue;
++			await this.handleItemEvent(list, event);
++		}
++	}
++
++	private async handleItemEvent(list: ListRecord, event: VerifiedEvent): Promise<void> {
++		if (!list.contentKey) return;
++		const members = await this.db.members(list.id);
++		if (!members.some(m => m.pubkey === event.pubkey && !m.removedAt)) return;
++		const dTagValue = eventDTag(event);
++		if (!dTagValue) return;
++		let payload: ItemPayload;
++		try {
++			payload = parseItemEvent(event, hexToBytes(list.contentKey));
++		} catch (error) {
++			return; // wrong/rotated content key, or a tampered event
++		}
++		await this.store.applyRemoteItem(list.id, dTagValue, payload);
++	}
++
++	private async publishPending(list: ListRecord, identity: DeviceIdentity, pool: RelayPoolLike): Promise<void> {
++		if (!list.contentKey) return;
++		const contentKey = hexToBytes(list.contentKey);
++		const pending = await this.store.pendingItems(list.id);
++
++		for (const item of pending) {
++			const payload = itemRecordToPayload(item);
++			const event = buildItemEvent(identity.secretKey, list.id, item.dTag, contentKey, payload, itemEventCreatedAt(item));
++			let results = await pool.publishAll(event);
++
++			if (!publishSucceeded(results) && results.some(r => TOO_OLD_MESSAGE.test(r.message))) {
++				const retryEvent = buildItemEvent(identity.secretKey, list.id, item.dTag, contentKey, payload, Math.floor(Date.now() / 1000));
++				results = await pool.publishAll(retryEvent);
++			}
++
++			if (publishSucceeded(results)) await this.store.markPublished(list.id, item.dTag);
++		}
++	}
++
++	// --- "relays are a mailbox": periodic full republish -------------------
++
++	private async maybeRepublish(list: ListRecord, identity: DeviceIdentity, pool: RelayPoolLike): Promise<void> {
++		const key = this.lastRepublishKey(list.id);
++		const lastJson = await this.db.getMeta(key);
++		const last = lastJson ? Number(lastJson) : 0;
++		if (Date.now() - last < REPUBLISH_INTERVAL_MS) return;
++		await this.republishAllFor(list, identity, pool);
++		await this.db.setMeta(key, String(Date.now()));
++	}
++
++	public async republishAll(listId: string): Promise<void> {
++		const list = await this.db.list(listId);
++		if (!list) return;
++		const identity = await this.db.deviceIdentity();
++		const pool = this.poolFor(listId, list);
++		await this.republishAllFor(list, identity, pool);
++		await this.db.setMeta(this.lastRepublishKey(listId), String(Date.now()));
++	}
++
++	private async republishAllFor(list: ListRecord, identity: DeviceIdentity, pool: RelayPoolLike): Promise<void> {
++		if (list.contentKey) {
++			const contentKey = hexToBytes(list.contentKey);
++			const items = await this.db.items(list.id); // excludes tombstoned items
++			for (const item of items) {
++				const event = buildItemEvent(identity.secretKey, list.id, item.dTag, contentKey, itemRecordToPayload(item), itemEventCreatedAt(item));
++				await pool.publishAll(event);
++			}
++		}
++		await this.ensureSelfInDirectory(list, identity, pool);
++	}
++
++	// --- live subscription (list screen open) --------------------------
++
++	public async subscribe(listId: string): Promise<void> {
++		if (this.subscriptions.has(listId)) return;
++		const list = await this.db.list(listId);
++		if (!list) return;
++		const identity = await this.db.deviceIdentity();
++		const pool = this.poolFor(listId, list);
++
++		const unsubscribeContent = pool.subscribeAll(
++			{ kinds: [LIST_EVENT_KIND], '#L': [listId] },
++			event => { void this.handleLiveEvent(listId, event); },
++		);
++		const unsubscribeJoins = list.kind === 'managed'
++			? pool.subscribeAll(
++				{ kinds: [LIST_EVENT_KIND], '#p': [identity.publicKey] },
++				event => { void this.handleLiveJoinRequest(listId, event); },
++			)
++			: (): void => { /* open lists don't take join requests */ };
++
++		this.subscriptions.set(listId, () => {
++			unsubscribeContent();
++			unsubscribeJoins();
++		});
++	}
++
++	public unsubscribe(listId: string): void {
++		this.subscriptions.get(listId)?.();
++		this.subscriptions.delete(listId);
++	}
++
++	private async handleLiveEvent(listId: string, event: VerifiedEvent): Promise<void> {
++		const dTagValue = eventDTag(event);
++		if (!dTagValue || dTagValue.startsWith('join:')) return; // join requests: see handleLiveJoinRequest
++		const list = await this.db.list(listId);
++		if (!list) return;
++		if (dTagValue === DIRECTORY_D_TAG) {
++			const identity = await this.db.deviceIdentity();
++			await this.handleDirectoryEvent(list, identity, event);
++			return;
++		}
++		await this.handleItemEvent(list, event);
++	}
++
++	private async handleLiveJoinRequest(listId: string, event: VerifiedEvent): Promise<void> {
++		const list = await this.db.list(listId);
++		if (!list) return;
++		const identity = await this.db.deviceIdentity();
++		if (!await this.isLocalAdmin(listId, identity.publicKey)) return;
++		const pool = this.poolFor(listId, list);
++		// Reuses the same acceptance logic as a normal sync, scoped to just
++		// this one event by querying nothing else -- acceptJoinRequests()
++		// itself re-fetches all pending join requests, which is fine since
++		// already-accepted ones are skipped via the membership check.
++		void event;
++		await this.acceptJoinRequests(list, identity, pool);
++	}
++}
++
++// --- foreground lifecycle ---------------------------------------------
++
++// Wires ListsSync.instance().refreshAll() to the app coming to the
++// foreground, throttled so rapid foreground/background cycles don't cause a
++// sync storm. The UI calls this once from root.tsx; call the returned
++// function to tear it down (e.g. in tests).
++export const startListsSyncLifecycle = (): (()=> void) => {
++	let lastRefresh = 0;
++	const onChange = (nextState: AppStateStatus): void => {
++		if (nextState !== 'active') return;
++		const now = Date.now();
++		if (now - lastRefresh < LIFECYCLE_THROTTLE_MS) return;
++		lastRefresh = now;
++		void ListsSync.instance().refreshAll();
++	};
++	const subscription: NativeEventSubscription = AppState.addEventListener('change', onChange);
++	return () => subscription.remove();
++};
+diff --git a/packages/app-mobile/lists/sync/nearby.ts b/packages/app-mobile/lists/sync/nearby.ts
+new file mode 100644
+index 0000000..b9833b8
+--- /dev/null
++++ b/packages/app-mobile/lists/sync/nearby.ts
+@@ -0,0 +1,48 @@
++// Transport 2 from docs/KONZEPT.md section 3 (Bluetooth Low Energy) comes
++// later. This is only the interface the UI can already build the "circle"
++// control against, plus a stub that reports itself unavailable.
++
++export type NearbyMode = 'off' | 'searching' | 'found' | 'unavailable';
++
++export interface NearbyState {
++	mode: NearbyMode;
++	// Members of the open list currently in range, out of the list's total
++	// member count.
++	found: number;
++	total: number;
++}
++
++export type NearbyStateListener = (state: NearbyState)=> void;
++
++export interface NearbyTransport {
++	isAvailable(): boolean;
++	start(listId: string): Promise<void>;
++	stop(): Promise<void>;
++	onState(listener: NearbyStateListener): ()=> void;
++}
++
++const UNAVAILABLE_STATE: NearbyState = { mode: 'unavailable', found: 0, total: 0 };
++
++// Placeholder implementation used until Bluetooth is built: always reports
++// 'unavailable' and never actually starts anything.
++export class UnavailableNearbyTransport implements NearbyTransport {
++	private listeners = new Set<NearbyStateListener>();
++
++	public isAvailable(): boolean {
++		return false;
++	}
++
++	public async start(_listId: string): Promise<void> {
++		for (const listener of this.listeners) listener(UNAVAILABLE_STATE);
++	}
++
++	public async stop(): Promise<void> {
++		// Nothing was started.
++	}
++
++	public onState(listener: NearbyStateListener): ()=> void {
++		this.listeners.add(listener);
++		listener(UNAVAILABLE_STATE);
++		return () => this.listeners.delete(listener);
++	}
++}
+diff --git a/packages/app-mobile/lists/sync/relayPool.test.ts b/packages/app-mobile/lists/sync/relayPool.test.ts
+new file mode 100644
+index 0000000..fd15965
+--- /dev/null
++++ b/packages/app-mobile/lists/sync/relayPool.test.ts
+@@ -0,0 +1,176 @@
++import WebSocket from 'ws';
++import { finalizeEvent } from 'nostr-tools';
++import { generateKeyPair } from '../core/crypto';
++import { Relay, RelayPool } from './relayPool';
++
++const WebSocketServer = WebSocket.Server;
++type TestWebSocketServer = InstanceType<typeof WebSocket.Server>;
++
++// A tiny real WebSocket server speaking just enough NIP-01 to exercise the
++// Relay/RelayPool client against actual sockets (the sync-layer scenario
++// tests use the faster in-memory FakeRelayNetwork instead, see
++// testing/fakeRelay.ts and listSync.test.ts).
++const startTestRelay = (): Promise<{ url: string; server: TestWebSocketServer; close: ()=> Promise<void> }> => {
++	return new Promise(resolve => {
++		const server = new WebSocketServer({ port: 0 }, () => {
++			const address = server.address();
++			const port = typeof address === 'string' ? 0 : address.port;
++			resolve({
++				url: `ws://127.0.0.1:${port}`,
++				server,
++				close: () => new Promise<void>(closeResolve => server.close(() => closeResolve())),
++			});
++		});
++	});
++};
++
++describe('lists/sync/relayPool', () => {
++	let testRelay: { url: string; server: TestWebSocketServer; close: ()=> Promise<void> };
++
++	afterEach(async () => {
++		if (testRelay) await testRelay.close();
++	});
++
++	test('publish() resolves ok once the relay sends OK', async () => {
++		testRelay = await startTestRelay();
++		testRelay.server.on('connection', socket => {
++			socket.on('message', raw => {
++				const [type, event] = JSON.parse(raw.toString());
++				if (type === 'EVENT') socket.send(JSON.stringify(['OK', event.id, true, '']));
++			});
++		});
++
++		const relay = new Relay(testRelay.url);
++		const device = generateKeyPair();
++		const event = finalizeEvent({ kind: 30078, tags: [], content: 'hi', created_at: Math.floor(Date.now() / 1000) }, device.secretKey);
++
++		const result = await relay.publish(event);
++		expect(result).toEqual({ ok: true, message: '' });
++		relay.close();
++	});
++
++	test('publish() resolves not-ok with the relay message on rejection', async () => {
++		testRelay = await startTestRelay();
++		testRelay.server.on('connection', socket => {
++			socket.on('message', raw => {
++				const [type, event] = JSON.parse(raw.toString());
++				if (type === 'EVENT') socket.send(JSON.stringify(['OK', event.id, false, 'invalid: created_at is too old']));
++			});
++		});
++
++		const relay = new Relay(testRelay.url);
++		const device = generateKeyPair();
++		const event = finalizeEvent({ kind: 30078, tags: [], content: 'hi', created_at: 1 }, device.secretKey);
++
++		const result = await relay.publish(event);
++		expect(result).toEqual({ ok: false, message: 'invalid: created_at is too old' });
++		relay.close();
++	});
++
++	test('query() collects events until EOSE', async () => {
++		testRelay = await startTestRelay();
++		const device = generateKeyPair();
++		const events = [1, 2].map(n => finalizeEvent({ kind: 30078, tags: [['d', `${n}`]], content: 'hi', created_at: n }, device.secretKey));
++
++		testRelay.server.on('connection', socket => {
++			socket.on('message', raw => {
++				const [type, subId] = JSON.parse(raw.toString());
++				if (type !== 'REQ') return;
++				for (const event of events) socket.send(JSON.stringify(['EVENT', subId, event]));
++				socket.send(JSON.stringify(['EOSE', subId]));
++			});
++		});
++
++		const relay = new Relay(testRelay.url);
++		const results = await relay.query({ kinds: [30078] });
++		expect(results.map(e => e.id).sort()).toEqual(events.map(e => e.id).sort());
++		relay.close();
++	});
++
++	test('subscribe() delivers live events until unsubscribed', async () => {
++		testRelay = await startTestRelay();
++		const device = generateKeyPair();
++		const event = finalizeEvent({ kind: 30078, tags: [], content: 'hi', created_at: Math.floor(Date.now() / 1000) }, device.secretKey);
++		let subSocket: WebSocket | null = null;
++		let liveSubId: string | null = null;
++
++		testRelay.server.on('connection', socket => {
++			socket.on('message', raw => {
++				const [type, subId] = JSON.parse(raw.toString());
++				if (type === 'REQ') {
++					subSocket = socket;
++					liveSubId = subId;
++				}
++			});
++		});
++
++		const relay = new Relay(testRelay.url);
++		const received: string[] = [];
++		const unsubscribe = relay.subscribe({ kinds: [30078] }, e => received.push(e.id));
++
++		await new Promise(r => setTimeout(r, 50));
++		expect(subSocket).not.toBeNull();
++		subSocket!.send(JSON.stringify(['EVENT', liveSubId, event]));
++		await new Promise(r => setTimeout(r, 50));
++
++		expect(received).toEqual([event.id]);
++		unsubscribe();
++		relay.close();
++	});
++
++	test('relayPool.queryAll de-duplicates the same event id seen from several relays', async () => {
++		const relayA = await startTestRelay();
++		const relayB = await startTestRelay();
++		const device = generateKeyPair();
++		const event = finalizeEvent({ kind: 30078, tags: [], content: 'hi', created_at: Math.floor(Date.now() / 1000) }, device.secretKey);
++
++		for (const r of [relayA, relayB]) {
++			r.server.on('connection', socket => {
++				socket.on('message', raw => {
++					const [type, subId] = JSON.parse(raw.toString());
++					if (type !== 'REQ') return;
++					socket.send(JSON.stringify(['EVENT', subId, event]));
++					socket.send(JSON.stringify(['EOSE', subId]));
++				});
++			});
++		}
++
++		const pool = new RelayPool([relayA.url, relayB.url]);
++		const results = await pool.queryAll({ kinds: [30078] });
++		expect(results).toHaveLength(1);
++		expect(results[0].id).toBe(event.id);
++
++		pool.close();
++		await relayA.close();
++		await relayB.close();
++	});
++
++	test('relayPool.publishAll succeeds when at least one relay says OK', async () => {
++		const relayA = await startTestRelay();
++		const relayB = await startTestRelay();
++		relayA.server.on('connection', socket => {
++			socket.on('message', raw => {
++				const [type, event] = JSON.parse(raw.toString());
++				if (type === 'EVENT') socket.send(JSON.stringify(['OK', event.id, true, '']));
++			});
++		});
++		relayB.server.on('connection', socket => {
++			socket.on('message', raw => {
++				const [type, event] = JSON.parse(raw.toString());
++				if (type === 'EVENT') socket.send(JSON.stringify(['OK', event.id, false, 'blocked']));
++			});
++		});
++
++		const device = generateKeyPair();
++		const event = finalizeEvent({ kind: 30078, tags: [], content: 'hi', created_at: Math.floor(Date.now() / 1000) }, device.secretKey);
++		const pool = new RelayPool([relayA.url, relayB.url]);
++		const results = await pool.publishAll(event);
++
++		expect(results.find(r => r.url === relayA.url)).toMatchObject({ ok: true });
++		expect(results.find(r => r.url === relayB.url)).toMatchObject({ ok: false, message: 'blocked' });
++
++		pool.close();
++		await relayA.close();
++		await relayB.close();
++	});
++});
+diff --git a/packages/app-mobile/lists/sync/relayPool.ts b/packages/app-mobile/lists/sync/relayPool.ts
+new file mode 100644
+index 0000000..1df010b
+--- /dev/null
++++ b/packages/app-mobile/lists/sync/relayPool.ts
+@@ -0,0 +1,339 @@
++// Minimal NIP-01 client over the global WebSocket (React Native provides one;
++// under jest we fall back to the 'ws' package). Deliberately small: only what
++// the shopping-list sync layer needs (publish/query/subscribe), not a general
++// Nostr client.
++import { Filter, VerifiedEvent, verifyEvent } from 'nostr-tools';
++
++// Structural subset of the DOM/RN WebSocket API this module relies on, so we
++// don't need the 'dom' lib (not enabled for this package) just for a type.
++interface WebSocketLike {
++	readyState: number;
++	onopen: (()=> void) | null;
++	onclose: ((event: { code?: number; reason?: string })=> void) | null;
++	onmessage: ((event: { data: string })=> void) | null;
++	onerror: ((event: unknown)=> void) | null;
++	send(data: string): void;
++	close(): void;
++}
++
++type WebSocketCtor = new (url: string)=> WebSocketLike;
++
++const WEBSOCKET_OPEN = 1;
++
++const getWebSocketCtor = (): WebSocketCtor => {
++	const globalCtor = (globalThis as unknown as { WebSocket?: WebSocketCtor }).WebSocket;
++	if (globalCtor) return globalCtor;
++	// Reached only in jest (node has no global WebSocket): the 'ws' package is
++	// a devDependency of several workspace packages and present in node_modules.
++	// eslint-disable-next-line @typescript-eslint/no-var-requires -- test-only fallback, see above
++	return require('ws');
++};
++
++export interface PublishResult {
++	ok: boolean;
++	message: string;
++}
++
++export interface RelayPublishResult extends PublishResult {
++	url: string;
++}
++
++const PUBLISH_TIMEOUT_MS = 10000;
++const QUERY_TIMEOUT_MS = 10000;
++const MIN_BACKOFF_MS = 1000;
++const MAX_BACKOFF_MS = 60000;
++
++let subIdCounter = 0;
++const nextSubId = (): string => `s${++subIdCounter}${Math.random().toString(36).slice(2, 8)}`;
++
++interface PendingPublish {
++	resolve: (result: PublishResult)=> void;
++	timer: ReturnType<typeof setTimeout>;
++}
++
++interface PendingQuery {
++	events: Map<string, VerifiedEvent>;
++	resolve: (events: VerifiedEvent[])=> void;
++	timer: ReturnType<typeof setTimeout>;
++}
++
++interface Subscription {
++	filters: Filter[];
++	onEvent: (event: VerifiedEvent)=> void;
++}
++
++// A single relay connection: connects lazily on the first publish/query/
++// subscribe call, reconnects with exponential backoff (capped at 60s) when
++// the socket drops, and re-issues open subscriptions after a reconnect.
++export class Relay {
++	public readonly url: string;
++	private ws: WebSocketLike | null = null;
++	private connecting = false;
++	private closedByUser = false;
++	private backoffMs = MIN_BACKOFF_MS;
++	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
++	private sendQueue: string[] = [];
++	private pendingPublishes = new Map<string, PendingPublish>();
++	private pendingQueries = new Map<string, PendingQuery>();
++	private subscriptions = new Map<string, Subscription>();
++	// True once this relay has completed the WebSocket handshake at least
++	// once, used to tell "this relay is unreachable" apart from "this relay
++	// is reachable but has nothing to say yet" (see RelayPool.anyConnected()).
++	public connectedOnce = false;
++
++	public constructor(url: string) {
++		this.url = url;
++	}
++
++	private ensureConnected(): void {
++		if (this.ws || this.connecting || this.closedByUser) return;
++		this.connecting = true;
++		const Ctor = getWebSocketCtor();
++		let socket: WebSocketLike;
++		try {
++			socket = new Ctor(this.url);
++		} catch (error) {
++			this.connecting = false;
++			this.scheduleReconnect();
++			return;
++		}
++		socket.onopen = () => {
++			this.connecting = false;
++			this.connectedOnce = true;
++			this.backoffMs = MIN_BACKOFF_MS;
++			this.ws = socket;
++			const queued = this.sendQueue;
++			this.sendQueue = [];
++			for (const raw of queued) socket.send(raw);
++			for (const [subId, sub] of this.subscriptions) socket.send(JSON.stringify(['REQ', subId, ...sub.filters]));
++		};
++		socket.onerror = () => { /* onclose always follows a failed connection attempt */ };
++		socket.onmessage = event => this.handleMessage(event.data);
++		socket.onclose = () => {
++			this.ws = null;
++			this.connecting = false;
++			for (const [subId, pending] of this.pendingQueries) {
++				clearTimeout(pending.timer);
++				pending.resolve(Array.from(pending.events.values()));
++				this.pendingQueries.delete(subId);
++			}
++			// A relay that drops the connection without ever sending an OK is
++			// treated as a failed publish, not left hanging until the timeout.
++			for (const [eventId, pending] of this.pendingPublishes) {
++				clearTimeout(pending.timer);
++				pending.resolve({ ok: false, message: 'Connection closed' });
++				this.pendingPublishes.delete(eventId);
++			}
++			if (!this.closedByUser) this.scheduleReconnect();
++		};
++	}
++
++	private scheduleReconnect(): void {
++		if (this.closedByUser || this.reconnectTimer) return;
++		this.reconnectTimer = setTimeout(() => {
++			this.reconnectTimer = null;
++			this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
++			this.ensureConnected();
++		}, this.backoffMs);
++	}
++
++	private send(raw: string): void {
++		if (this.ws && this.ws.readyState === WEBSOCKET_OPEN) {
++			this.ws.send(raw);
++			return;
++		}
++		this.sendQueue.push(raw);
++		this.ensureConnected();
++	}
++
++	private handleMessage(raw: string): void {
++		let message: unknown[];
++		try {
++			message = JSON.parse(raw);
++		} catch (error) {
++			return;
++		}
++		const type = message[0];
++
++		if (type === 'EVENT') {
++			const [, subId, event] = message as [string, string, VerifiedEvent];
++			if (!verifyEvent(event)) return;
++			const query = this.pendingQueries.get(subId);
++			if (query) {
++				query.events.set(event.id, event);
++				return;
++			}
++			this.subscriptions.get(subId)?.onEvent(event);
++			return;
++		}
++
++		if (type === 'EOSE') {
++			const [, subId] = message as [string, string];
++			const query = this.pendingQueries.get(subId);
++			if (!query) return;
++			clearTimeout(query.timer);
++			this.pendingQueries.delete(subId);
++			query.resolve(Array.from(query.events.values()));
++			this.send(JSON.stringify(['CLOSE', subId]));
++			return;
++		}
++
++		if (type === 'OK') {
++			const [, eventId, ok, okMessage] = message as [string, string, boolean, string];
++			const pending = this.pendingPublishes.get(eventId);
++			if (!pending) return;
++			clearTimeout(pending.timer);
++			this.pendingPublishes.delete(eventId);
++			pending.resolve({ ok: !!ok, message: okMessage ?? '' });
++			return;
++		}
++
++		if (type === 'CLOSED') {
++			const [, subId, closedMessage] = message as [string, string, string];
++			const query = this.pendingQueries.get(subId);
++			if (query) {
++				clearTimeout(query.timer);
++				this.pendingQueries.delete(subId);
++				query.resolve(Array.from(query.events.values()));
++			}
++			this.subscriptions.delete(subId);
++			void closedMessage;
++			return;
++		}
++
++		// NOTICE and AUTH (and anything else) are ignored: relays send NOTICE
++		// for human-readable diagnostics, and this client never opts into AUTH.
++	}
++
++	public publish(event: VerifiedEvent): Promise<PublishResult> {
++		return new Promise(resolve => {
++			const timer = setTimeout(() => {
++				this.pendingPublishes.delete(event.id);
++				resolve({ ok: false, message: 'Timed out waiting for OK' });
++			}, PUBLISH_TIMEOUT_MS);
++			this.pendingPublishes.set(event.id, { resolve, timer });
++			this.send(JSON.stringify(['EVENT', event]));
++		});
++	}
++
++	public query(filter: Filter | Filter[]): Promise<VerifiedEvent[]> {
++		const filters = Array.isArray(filter) ? filter : [filter];
++		const subId = nextSubId();
++		return new Promise(resolve => {
++			const pending: PendingQuery = {
++				events: new Map(),
++				resolve,
++				timer: setTimeout(() => {
++					this.pendingQueries.delete(subId);
++					resolve(Array.from(pending.events.values()));
++					this.send(JSON.stringify(['CLOSE', subId]));
++				}, QUERY_TIMEOUT_MS),
++			};
++			this.pendingQueries.set(subId, pending);
++			this.send(JSON.stringify(['REQ', subId, ...filters]));
++		});
++	}
++
++	// Live subscription: onEvent fires for every verified event the relay
++	// pushes for this filter, including ones received after a reconnect (the
++	// REQ is re-sent automatically). Returns an unsubscribe function.
++	public subscribe(filter: Filter | Filter[], onEvent: (event: VerifiedEvent)=> void): ()=> void {
++		const filters = Array.isArray(filter) ? filter : [filter];
++		const subId = nextSubId();
++		this.subscriptions.set(subId, { filters, onEvent });
++		this.send(JSON.stringify(['REQ', subId, ...filters]));
++		return () => {
++			this.subscriptions.delete(subId);
++			this.send(JSON.stringify(['CLOSE', subId]));
++		};
++	}
++
++	public close(): void {
++		this.closedByUser = true;
++		if (this.reconnectTimer) {
++			clearTimeout(this.reconnectTimer);
++			this.reconnectTimer = null;
++		}
++		for (const [eventId, pending] of this.pendingPublishes) {
++			clearTimeout(pending.timer);
++			pending.resolve({ ok: false, message: 'Relay closed' });
++			this.pendingPublishes.delete(eventId);
++		}
++		for (const [subId, pending] of this.pendingQueries) {
++			clearTimeout(pending.timer);
++			pending.resolve(Array.from(pending.events.values()));
++			this.pendingQueries.delete(subId);
++		}
++		this.subscriptions.clear();
++		if (this.ws) {
++			this.ws.onclose = null;
++			this.ws.close();
++			this.ws = null;
++		}
++	}
++}
++
++// Convenience: true if at least one publish result reports success. A
++// shopping list only needs one relay to accept an event for it to eventually
++// reach every member (see docs/KONZEPT.md section 3, "Relays sind Briefkasten").
++export const publishSucceeded = (results: RelayPublishResult[]): boolean => results.some(result => result.ok);
++
++// The surface ListsSync actually uses, factored out as an interface (rather
++// than using the RelayPool class directly) so tests can inject an in-memory
++// fake pool -- see lists/sync/testing/fakeRelay.ts -- without it needing to
++// match RelayPool's private fields too.
++export interface RelayPoolLike {
++	publishAll(event: VerifiedEvent): Promise<RelayPublishResult[]>;
++	queryAll(filter: Filter | Filter[]): Promise<VerifiedEvent[]>;
++	subscribeAll(filter: Filter | Filter[], onEvent: (event: VerifiedEvent)=> void): ()=> void;
++	close(): void;
++	anyConnected(): boolean;
++}
++
++// A pool of relays queried/published to in parallel. Callers don't need to
++// know which relay ultimately served a query result or accepted a publish.
++export class RelayPool implements RelayPoolLike {
++	private relays: Relay[];
++
++	public constructor(urls: string[]) {
++		this.relays = urls.map(url => new Relay(url));
++	}
++
++	public async publishAll(event: VerifiedEvent): Promise<RelayPublishResult[]> {
++		return Promise.all(this.relays.map(async relay => ({ url: relay.url, ...(await relay.publish(event)) })));
++	}
++
++	public async queryAll(filter: Filter | Filter[]): Promise<VerifiedEvent[]> {
++		const perRelay = await Promise.all(this.relays.map(relay => relay.query(filter)));
++		const byId = new Map<string, VerifiedEvent>();
++		for (const events of perRelay) {
++			for (const event of events) byId.set(event.id, event);
++		}
++		return Array.from(byId.values());
++	}
++
++	// Subscribes on every relay in the pool; onEvent may fire more than once
++	// for the same event id if several relays have it, which is harmless since
++	// applying an already-applied item/directory update is idempotent.
++	public subscribeAll(filter: Filter | Filter[], onEvent: (event: VerifiedEvent)=> void): ()=> void {
++		const unsubscribes = this.relays.map(relay => relay.subscribe(filter, onEvent));
++		return () => {
++			for (const unsubscribe of unsubscribes) unsubscribe();
++		};
++	}
++
++	public close(): void {
++		for (const relay of this.relays) relay.close();
++	}
++
++	// False only when every relay in the pool has never completed a WebSocket
++	// handshake -- the "no relay reachable" / offline condition the sync layer
++	// reports as status 'offline' rather than 'error'.
++	public anyConnected(): boolean {
++		return this.relays.some(relay => relay.connectedOnce);
++	}
++}
++
++export type RelayPoolFactory = (urls: string[])=> RelayPoolLike;
++
++export const defaultRelayPoolFactory: RelayPoolFactory = (urls: string[]) => new RelayPool(urls);
+diff --git a/packages/app-mobile/lists/sync/testing/fakeRelay.ts b/packages/app-mobile/lists/sync/testing/fakeRelay.ts
+new file mode 100644
+index 0000000..0490187
+--- /dev/null
++++ b/packages/app-mobile/lists/sync/testing/fakeRelay.ts
+@@ -0,0 +1,142 @@
++// In-memory relay network implementing enough of NIP-01 (addressable-event
++// replacement per author+kind+d-tag, and Filter matching) for lists/sync
++// tests, without opening a real WebSocket. See relayPool.ts#RelayPoolLike for
++// the interface a fake pool needs to satisfy.
++import { Filter, VerifiedEvent } from 'nostr-tools';
++import { PublishResult, RelayPoolFactory, RelayPoolLike, RelayPublishResult } from '../relayPool';
++
++const matchesFilter = (filter: Filter, event: VerifiedEvent): boolean => {
++	if (filter.ids && !filter.ids.includes(event.id)) return false;
++	if (filter.kinds && !filter.kinds.includes(event.kind)) return false;
++	if (filter.authors && !filter.authors.includes(event.pubkey)) return false;
++	if (filter.since !== undefined && event.created_at < filter.since) return false;
++	if (filter.until !== undefined && event.created_at > filter.until) return false;
++	for (const key of Object.keys(filter)) {
++		if (!key.startsWith('#')) continue;
++		const wanted = (filter as Record<string, string[] | undefined>)[key];
++		if (!wanted || wanted.length === 0) continue;
++		const tagName = key.slice(1);
++		const values = event.tags.filter(t => t[0] === tagName).map(t => t[1]);
++		if (!wanted.some(v => values.includes(v))) return false;
++	}
++	return true;
++};
++
++const matchesAny = (filters: Filter[], event: VerifiedEvent): boolean => filters.some(filter => matchesFilter(filter, event));
++
++const addressableKey = (event: VerifiedEvent): string => {
++	const dTag = event.tags.find(t => t[0] === 'd')?.[1] ?? '';
++	return `${event.pubkey}:${event.kind}:${dTag}`;
++};
++
++// A single named relay's storage and live subscribers -- what two
++// FakeRelayPool instances that share a url actually talk to, simulating two
++// devices going through the same real relay.
++class FakeRelay {
++	public readonly url: string;
++	public reachable = true;
++	public rejectTooOld = false;
++	private events = new Map<string, VerifiedEvent>();
++	private subscribers = new Set<(event: VerifiedEvent)=> void>();
++
++	public constructor(url: string) {
++		this.url = url;
++	}
++
++	public publish(event: VerifiedEvent): PublishResult {
++		if (!this.reachable) return { ok: false, message: 'unreachable' };
++		if (this.rejectTooOld && event.created_at < Math.floor(Date.now() / 1000) - 3600) {
++			return { ok: false, message: 'invalid: created_at is too old' };
++		}
++		const key = addressableKey(event);
++		const existing = this.events.get(key);
++		if (!existing || existing.created_at <= event.created_at) {
++			this.events.set(key, event);
++			for (const subscriber of this.subscribers) subscriber(event);
++		}
++		return { ok: true, message: '' };
++	}
++
++	public query(filters: Filter[]): VerifiedEvent[] {
++		if (!this.reachable) return [];
++		return Array.from(this.events.values()).filter(event => matchesAny(filters, event));
++	}
++
++	public subscribe(filters: Filter[], onEvent: (event: VerifiedEvent)=> void): ()=> void {
++		const handler = (event: VerifiedEvent): void => { if (matchesAny(filters, event)) onEvent(event); };
++		this.subscribers.add(handler);
++		return () => this.subscribers.delete(handler);
++	}
++
++	// Simulates a relay losing an event (e.g. it expired it), to test
++	// ListsSync.republishAll().
++	public drop(pubkey: string, kind: number, dTag: string): void {
++		this.events.delete(`${pubkey}:${kind}:${dTag}`);
++	}
++}
++
++// A network of named relays shared by every FakeRelayPool built from the same
++// FakeRelayNetwork instance -- construct one per test, hand its factory to
++// every device's ListsSync so they can reach each other.
++export class FakeRelayNetwork {
++	private relays = new Map<string, FakeRelay>();
++
++	public relay(url: string): FakeRelay {
++		let relay = this.relays.get(url);
++		if (!relay) {
++			relay = new FakeRelay(url);
++			this.relays.set(url, relay);
++		}
++		return relay;
++	}
++
++	public setReachable(url: string, reachable: boolean): void {
++		this.relay(url).reachable = reachable;
++	}
++
++	public setRejectTooOld(url: string, reject: boolean): void {
++		this.relay(url).rejectTooOld = reject;
++	}
++
++	public drop(url: string, pubkey: string, kind: number, dTag: string): void {
++		this.relay(url).drop(pubkey, kind, dTag);
++	}
++}
++
++class FakeRelayPool implements RelayPoolLike {
++	private relays: FakeRelay[];
++
++	public constructor(network: FakeRelayNetwork, urls: string[]) {
++		this.relays = urls.map(url => network.relay(url));
++	}
++
++	public async publishAll(event: VerifiedEvent): Promise<RelayPublishResult[]> {
++		return this.relays.map(relay => ({ url: relay.url, ...relay.publish(event) }));
++	}
++
++	public async queryAll(filter: Filter | Filter[]): Promise<VerifiedEvent[]> {
++		const filters = Array.isArray(filter) ? filter : [filter];
++		const byId = new Map<string, VerifiedEvent>();
++		for (const relay of this.relays) {
++			for (const event of relay.query(filters)) byId.set(event.id, event);
++		}
++		return Array.from(byId.values());
++	}
++
++	public subscribeAll(filter: Filter | Filter[], onEvent: (event: VerifiedEvent)=> void): ()=> void {
++		const filters = Array.isArray(filter) ? filter : [filter];
++		const unsubscribes = this.relays.map(relay => relay.subscribe(filters, onEvent));
++		return () => { for (const unsubscribe of unsubscribes) unsubscribe(); };
++	}
++
++	public close(): void {
++		// Nothing to release: the underlying FakeRelay objects live in the
++		// shared network, not in this pool.
++	}
++
++	public anyConnected(): boolean {
++		return this.relays.some(relay => relay.reachable);
++	}
++}
++
++export const fakeRelayPoolFactory = (network: FakeRelayNetwork): RelayPoolFactory => (urls: string[]) => new FakeRelayPool(network, urls);
+diff --git a/packages/tools/cspell/dictionary4.txt b/packages/tools/cspell/dictionary4.txt
+index 6ae0204..c156d6f 100644
+--- a/packages/tools/cspell/dictionary4.txt
++++ b/packages/tools/cspell/dictionary4.txt
+@@ -366,3 +366,29 @@ gruß
+ milc
+ abcdefghjkmnpqrstvwxyz
+ relays
++eier
++eose
++pubkeys
++obst
++joplintiles
++gemuese
++unbekannt
++ohne
++mittel
++lookback
++kategorie
++kaffee
++hackfleisch
++brot
++stück
++sind
++packungen
++packung
++flaschen
++flasche
++dosen
++damus
++bündel
++bund
++möhren
++briefkasten

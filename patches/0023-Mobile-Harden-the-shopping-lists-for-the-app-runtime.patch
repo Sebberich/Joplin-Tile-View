@@ -1,0 +1,765 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 17:31:34 +0000
+Subject: [PATCH 23/29] Mobile: Harden the shopping lists for the app runtime
+
+The relay client takes the WebSocket constructor as a parameter instead
+of falling back to a Node-only require that Metro would bundle; a small
+TextEncoder/TextDecoder polyfill covers Hermes builds without them;
+category changes are published like other edits; lists can be left;
+the foreground refresh no longer touches the database before a list
+exists. Verified with a Metro release bundle.
+
+diff --git a/.gitignore b/.gitignore
+index e7b360e..1362830 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1127,6 +1127,8 @@ packages/app-mobile/utils/polyfills/bufferPolyfill.js
+ packages/app-mobile/utils/polyfills/crypto-polyfill/index.js
+ packages/app-mobile/utils/polyfills/index.js
+ packages/app-mobile/utils/polyfills/index.web.js
++packages/app-mobile/utils/polyfills/textEncoding.test.js
++packages/app-mobile/utils/polyfills/textEncoding.js
+ packages/app-mobile/utils/setupNotifications.js
+ packages/app-mobile/utils/shareFile.js
+ packages/app-mobile/utils/shareHandler.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index c5f363b..588db00 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -1153,6 +1153,8 @@ packages/app-mobile/utils/polyfills/bufferPolyfill.js
+ packages/app-mobile/utils/polyfills/crypto-polyfill/index.js
+ packages/app-mobile/utils/polyfills/index.js
+ packages/app-mobile/utils/polyfills/index.web.js
++packages/app-mobile/utils/polyfills/textEncoding.test.js
++packages/app-mobile/utils/polyfills/textEncoding.js
+ packages/app-mobile/utils/setupNotifications.js
+ packages/app-mobile/utils/shareFile.js
+ packages/app-mobile/utils/shareHandler.js
+diff --git a/packages/app-mobile/lists/core/db.test.ts b/packages/app-mobile/lists/core/db.test.ts
+index 4698a02..4ac2bb1 100644
+--- a/packages/app-mobile/lists/core/db.test.ts
++++ b/packages/app-mobile/lists/core/db.test.ts
+@@ -73,6 +73,18 @@ describe('lists/core/db', () => {
+ 		expect(await db.list('imported-id')).toEqual(record);
+ 	});
+ 
++	test('deleteList removes the list, its members and its items', async () => {
++		const list = await db.createList('open', 'Groceries');
++		await db.upsertMember({ listId: list.id, pubkey: 'mem1', name: 'Sebastian', role: 'member', since: 1, removedAt: null });
++		await db.upsertItem(item({ listId: list.id, dTag: 'tag-1' }));
++
++		await db.deleteList(list.id);
++
++		expect(await db.list(list.id)).toBeNull();
++		expect(await db.members(list.id)).toEqual([]);
++		expect(await db.items(list.id)).toEqual([]);
++	});
++
+ 	test('items() excludes deleted items and can filter by open state', async () => {
+ 		await db.upsertItem(item({ dTag: 'open-item', open: true }));
+ 		await db.upsertItem(item({ dTag: 'closed-item', open: false }));
+@@ -96,9 +108,13 @@ describe('lists/core/db', () => {
+ 		stored = await db.item('list-1', 'tag-1');
+ 		expect(stored).toMatchObject({ detail: '2 l', detailT: 11 });
+ 
+-		await db.deleteItem('list-1', 'tag-1', 12, 'bbbbbbbb');
++		await db.setCategory('list-1', 'tag-1', 'Kühlregal', 12, 'bbbbbbbb');
++		stored = await db.item('list-1', 'tag-1');
++		expect(stored).toMatchObject({ category: 'Kühlregal', categoryT: 12, pending: true });
++
++		await db.deleteItem('list-1', 'tag-1', 13, 'bbbbbbbb');
+ 		stored = await db.item('list-1', 'tag-1');
+-		expect(stored).toMatchObject({ deleted: true, deletedT: 12 });
++		expect(stored).toMatchObject({ deleted: true, deletedT: 13 });
+ 	});
+ 
+ 	test('undeleteItem revives a tombstoned item and re-opens it', async () => {
+diff --git a/packages/app-mobile/lists/core/db.ts b/packages/app-mobile/lists/core/db.ts
+index cb564a6..ba41498 100644
+--- a/packages/app-mobile/lists/core/db.ts
++++ b/packages/app-mobile/lists/core/db.ts
+@@ -248,6 +248,17 @@ export class ListsDatabase {
+ 		return contentKey;
+ 	}
+ 
++	// Removes a list and everything scoped to it (members, items) from this
++	// device only -- relays and other members' local copies are untouched, see
++	// ListsStore.leaveList().
++	public async deleteList(id: string): Promise<void> {
++		await this.db.transactionExecBatch([
++			{ sql: 'DELETE FROM items WHERE list_id = ?', params: [id] },
++			{ sql: 'DELETE FROM members WHERE list_id = ?', params: [id] },
++			{ sql: 'DELETE FROM lists WHERE id = ?', params: [id] },
++		]);
++	}
++
+ 	// --- members -------------------------------------------------------
+ 
+ 	public async members(listId: string): Promise<MemberRecord[]> {
+@@ -320,6 +331,13 @@ export class ListsDatabase {
+ 		);
+ 	}
+ 
++	public async setCategory(listId: string, dTag: string, category: string | null, t: number, device: string): Promise<void> {
++		await this.db.exec(
++			'UPDATE items SET category = ?, category_t = ?, device = ?, pending = 1 WHERE list_id = ? AND d_tag = ?',
++			[category, t, device, listId, dTag],
++		);
++	}
++
+ 	// Tombstones an item rather than removing the row, so a device that was
+ 	// offline when it was deleted doesn't resurrect it (see KONZEPT.md).
+ 	public async deleteItem(listId: string, dTag: string, t: number, device: string): Promise<void> {
+diff --git a/packages/app-mobile/lists/core/store.test.ts b/packages/app-mobile/lists/core/store.test.ts
+index eebbe65..79df006 100644
+--- a/packages/app-mobile/lists/core/store.test.ts
++++ b/packages/app-mobile/lists/core/store.test.ts
+@@ -82,6 +82,32 @@ describe('lists/core/store', () => {
+ 		expect(stored.openT).toBeGreaterThan(item.openT);
+ 	});
+ 
++	test('setCategory updates the category and marks the item pending', async () => {
++		const list = await store.createOpenList('Groceries');
++		const item = await store.addItem(list.id, 'Milch');
++		await store.markPublished(list.id, item.dTag);
++		expect((await store.pendingItems(list.id))).toEqual([]);
++
++		await store.setCategory(list.id, item.dTag, 'Kühlregal');
++
++		const [stored] = await store.items(list.id);
++		expect(stored.category).toBe('Kühlregal');
++		expect(stored.categoryT).toBeGreaterThanOrEqual(item.categoryT ?? 0);
++		expect(stored.pending).toBe(true);
++		expect((await store.pendingItems(list.id)).map(i => i.dTag)).toEqual([item.dTag]);
++	});
++
++	test('leaveList removes the list and its items locally', async () => {
++		const list = await store.createOpenList('Groceries');
++		await store.addItem(list.id, 'Milch');
++		expect(await store.lists()).toHaveLength(1);
++
++		await store.leaveList(list.id);
++
++		expect(await store.lists()).toEqual([]);
++		expect(await store.items(list.id)).toEqual([]);
++	});
++
+ 	test('an open-list invite round-trips to another store joining the same list', async () => {
+ 		const list = await store.createOpenList('Groceries');
+ 		const { link } = await store.inviteFor(list.id);
+diff --git a/packages/app-mobile/lists/core/store.ts b/packages/app-mobile/lists/core/store.ts
+index 6b7971e..b09311d 100644
+--- a/packages/app-mobile/lists/core/store.ts
++++ b/packages/app-mobile/lists/core/store.ts
+@@ -248,6 +248,13 @@ export class ListsStore {
+ 		this.changes.emit();
+ 	}
+ 
++	public async setCategory(listId: string, itemDTag: string, category: string | null): Promise<void> {
++		const identity = await this.ensureOpen();
++		const t = await this.nextTimestamp(listId);
++		await this.db.setCategory(listId, itemDTag, category, t, deviceTag(identity.publicKey));
++		this.changes.emit();
++	}
++
+ 	public async removeItem(listId: string, itemDTag: string): Promise<void> {
+ 		const identity = await this.ensureOpen();
+ 		const t = await this.nextTimestamp(listId);
+@@ -277,6 +284,15 @@ export class ListsStore {
+ 		await this.ensureOpen();
+ 		await this.db.markPublished(listId, itemDTag);
+ 	}
++
++	// Removes a list from this device only: its local rows are deleted, but
++	// relays and other members' copies are untouched, so anyone else still on
++	// the list keeps seeing it and each other's changes.
++	public async leaveList(listId: string): Promise<void> {
++		await this.ensureOpen();
++		await this.db.deleteList(listId);
++		this.changes.emit();
++	}
+ }
+ 
+ // Re-exported so the sync layer can build the same payload shape this store
+diff --git a/packages/app-mobile/lists/sync/relayPool.test.ts b/packages/app-mobile/lists/sync/relayPool.test.ts
+index fd15965..f828d11 100644
+--- a/packages/app-mobile/lists/sync/relayPool.test.ts
++++ b/packages/app-mobile/lists/sync/relayPool.test.ts
+@@ -1,10 +1,14 @@
+ import WebSocket from 'ws';
+ import { finalizeEvent } from 'nostr-tools';
+ import { generateKeyPair } from '../core/crypto';
+-import { Relay, RelayPool } from './relayPool';
++import { Relay, RelayPool, WebSocketCtor } from './relayPool';
+ 
+ const WebSocketServer = WebSocket.Server;
+ type TestWebSocketServer = InstanceType<typeof WebSocket.Server>;
++// 'ws' types its constructor with overloads that don't structurally match
++// WebSocketCtor (e.g. a `null`-only address signature); cast once here rather
++// than at each call site.
++const WsCtor = WebSocket as unknown as WebSocketCtor;
+ 
+ // A tiny real WebSocket server speaking just enough NIP-01 to exercise the
+ // Relay/RelayPool client against actual sockets (the sync-layer scenario
+@@ -40,7 +44,7 @@ describe('lists/sync/relayPool', () => {
+ 			});
+ 		});
+ 
+-		const relay = new Relay(testRelay.url);
++		const relay = new Relay(testRelay.url, WsCtor);
+ 		const device = generateKeyPair();
+ 		const event = finalizeEvent({ kind: 30078, tags: [], content: 'hi', created_at: Math.floor(Date.now() / 1000) }, device.secretKey);
+ 
+@@ -58,7 +62,7 @@ describe('lists/sync/relayPool', () => {
+ 			});
+ 		});
+ 
+-		const relay = new Relay(testRelay.url);
++		const relay = new Relay(testRelay.url, WsCtor);
+ 		const device = generateKeyPair();
+ 		const event = finalizeEvent({ kind: 30078, tags: [], content: 'hi', created_at: 1 }, device.secretKey);
+ 
+@@ -81,7 +85,7 @@ describe('lists/sync/relayPool', () => {
+ 			});
+ 		});
+ 
+-		const relay = new Relay(testRelay.url);
++		const relay = new Relay(testRelay.url, WsCtor);
+ 		const results = await relay.query({ kinds: [30078] });
+ 		expect(results.map(e => e.id).sort()).toEqual(events.map(e => e.id).sort());
+ 		relay.close();
+@@ -104,7 +108,7 @@ describe('lists/sync/relayPool', () => {
+ 			});
+ 		});
+ 
+-		const relay = new Relay(testRelay.url);
++		const relay = new Relay(testRelay.url, WsCtor);
+ 		const received: string[] = [];
+ 		const unsubscribe = relay.subscribe({ kinds: [30078] }, e => received.push(e.id));
+ 
+@@ -135,7 +139,7 @@ describe('lists/sync/relayPool', () => {
+ 			});
+ 		}
+ 
+-		const pool = new RelayPool([relayA.url, relayB.url]);
++		const pool = new RelayPool([relayA.url, relayB.url], WsCtor);
+ 		const results = await pool.queryAll({ kinds: [30078] });
+ 		expect(results).toHaveLength(1);
+ 		expect(results[0].id).toBe(event.id);
+@@ -163,7 +167,7 @@ describe('lists/sync/relayPool', () => {
+ 
+ 		const device = generateKeyPair();
+ 		const event = finalizeEvent({ kind: 30078, tags: [], content: 'hi', created_at: Math.floor(Date.now() / 1000) }, device.secretKey);
+-		const pool = new RelayPool([relayA.url, relayB.url]);
++		const pool = new RelayPool([relayA.url, relayB.url], WsCtor);
+ 		const results = await pool.publishAll(event);
+ 
+ 		expect(results.find(r => r.url === relayA.url)).toMatchObject({ ok: true });
+diff --git a/packages/app-mobile/lists/sync/relayPool.ts b/packages/app-mobile/lists/sync/relayPool.ts
+index 1df010b..35f2605 100644
+--- a/packages/app-mobile/lists/sync/relayPool.ts
++++ b/packages/app-mobile/lists/sync/relayPool.ts
+@@ -1,12 +1,11 @@
+-// Minimal NIP-01 client over the global WebSocket (React Native provides one;
+-// under jest we fall back to the 'ws' package). Deliberately small: only what
+-// the shopping-list sync layer needs (publish/query/subscribe), not a general
+-// Nostr client.
++// Minimal NIP-01 client over the global WebSocket (React Native provides one).
++// Deliberately small: only what the shopping-list sync layer needs
++// (publish/query/subscribe), not a general Nostr client.
+ import { Filter, VerifiedEvent, verifyEvent } from 'nostr-tools';
+ 
+ // Structural subset of the DOM/RN WebSocket API this module relies on, so we
+ // don't need the 'dom' lib (not enabled for this package) just for a type.
+-interface WebSocketLike {
++export interface WebSocketLike {
+ 	readyState: number;
+ 	onopen: (()=> void) | null;
+ 	onclose: ((event: { code?: number; reason?: string })=> void) | null;
+@@ -16,17 +15,20 @@ interface WebSocketLike {
+ 	close(): void;
+ }
+ 
+-type WebSocketCtor = new (url: string)=> WebSocketLike;
++export type WebSocketCtor = new (url: string)=> WebSocketLike;
+ 
+ const WEBSOCKET_OPEN = 1;
+ 
+-const getWebSocketCtor = (): WebSocketCtor => {
++// Resolved lazily (not at module load) so that importing this module never
++// requires a global WebSocket to exist yet. Metro resolves `require`/`import`
++// statically, so there must be no dynamic `require('ws')` (or similar
++// Node-only module) anywhere in this file -- it would otherwise get bundled
++// into the React Native app. Tests that need a real WebSocket implementation
++// pass one explicitly (see relayPool.test.ts), since test files aren't bundled.
++const getDefaultWebSocketCtor = (): WebSocketCtor => {
+ 	const globalCtor = (globalThis as unknown as { WebSocket?: WebSocketCtor }).WebSocket;
+-	if (globalCtor) return globalCtor;
+-	// Reached only in jest (node has no global WebSocket): the 'ws' package is
+-	// a devDependency of several workspace packages and present in node_modules.
+-	// eslint-disable-next-line @typescript-eslint/no-var-requires -- test-only fallback, see above
+-	return require('ws');
++	if (!globalCtor) throw new Error('lists/sync/relayPool: no global WebSocket implementation available and none was provided');
++	return globalCtor;
+ };
+ 
+ export interface PublishResult {
+@@ -67,6 +69,7 @@ interface Subscription {
+ // the socket drops, and re-issues open subscriptions after a reconnect.
+ export class Relay {
+ 	public readonly url: string;
++	private readonly webSocketCtor: WebSocketCtor;
+ 	private ws: WebSocketLike | null = null;
+ 	private connecting = false;
+ 	private closedByUser = false;
+@@ -81,14 +84,15 @@ export class Relay {
+ 	// is reachable but has nothing to say yet" (see RelayPool.anyConnected()).
+ 	public connectedOnce = false;
+ 
+-	public constructor(url: string) {
++	public constructor(url: string, webSocketCtor: WebSocketCtor = getDefaultWebSocketCtor()) {
+ 		this.url = url;
++		this.webSocketCtor = webSocketCtor;
+ 	}
+ 
+ 	private ensureConnected(): void {
+ 		if (this.ws || this.connecting || this.closedByUser) return;
+ 		this.connecting = true;
+-		const Ctor = getWebSocketCtor();
++		const Ctor = this.webSocketCtor;
+ 		let socket: WebSocketLike;
+ 		try {
+ 			socket = new Ctor(this.url);
+@@ -295,8 +299,8 @@ export interface RelayPoolLike {
+ export class RelayPool implements RelayPoolLike {
+ 	private relays: Relay[];
+ 
+-	public constructor(urls: string[]) {
+-		this.relays = urls.map(url => new Relay(url));
++	public constructor(urls: string[], webSocketCtor?: WebSocketCtor) {
++		this.relays = urls.map(url => (webSocketCtor ? new Relay(url, webSocketCtor) : new Relay(url)));
+ 	}
+ 
+ 	public async publishAll(event: VerifiedEvent): Promise<RelayPublishResult[]> {
+@@ -337,3 +341,8 @@ export class RelayPool implements RelayPoolLike {
+ export type RelayPoolFactory = (urls: string[])=> RelayPoolLike;
+ 
+ export const defaultRelayPoolFactory: RelayPoolFactory = (urls: string[]) => new RelayPool(urls);
++
++// A factory that always uses the given WebSocket implementation, for callers
++// (tests, mainly) that want to be explicit rather than relying on the global.
++export const relayPoolFactoryWithWebSocket = (webSocketCtor: WebSocketCtor): RelayPoolFactory =>
++	(urls: string[]) => new RelayPool(urls, webSocketCtor);
+diff --git a/packages/app-mobile/lists/ui/ListScreen.tsx b/packages/app-mobile/lists/ui/ListScreen.tsx
+index 3ccaddc..cf66029 100644
+--- a/packages/app-mobile/lists/ui/ListScreen.tsx
++++ b/packages/app-mobile/lists/ui/ListScreen.tsx
+@@ -10,7 +10,6 @@ import { MenuOptionStyle } from '../../components/BottomDrawerMenu';
+ import { BaseScreenComponent } from '../../components/base-screen';
+ import { themeStyle } from '../../components/global-style';
+ import { getListsDatabase, getListsStore } from './listsRuntime';
+-import { itemRecordToPayload } from '../core/store';
+ import PromptModal from './components/PromptModal';
+ import { getListsSync } from './syncApi';
+ import { parseItemInput } from './parseItemInput';
+@@ -181,16 +180,8 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		for (const item of boughtItems) await store.removeItem(listId, item.dTag);
+ 	}, [store, listId, boughtItems]);
+ 
+-	// The store has no dedicated "set category" call (only setDetail/setOpen),
+-	// so this goes through the same LWW merge applyRemoteItem() uses for
+-	// incoming events, bumping the category field's timestamp directly. Unlike
+-	// setDetail/setOpen this doesn't mark the item `pending`, so a category
+-	// change made here won't be picked up for publishing until the store
+-	// gains a real setCategory() -- left as an open item for lists/core.
+ 	const setItemCategory = useCallback(async (item: ItemRecord, category: string | null) => {
+-		const payload = itemRecordToPayload(item);
+-		payload.category = { v: category ?? '', t: Date.now() };
+-		await store.applyRemoteItem(listId, item.dTag, payload);
++		await store.setCategory(listId, item.dTag, category);
+ 	}, [store, listId]);
+ 
+ 	const onRenameSubmit = useCallback(async (name: string) => {
+diff --git a/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx b/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx
+index d21b542..6882c31 100644
+--- a/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx
++++ b/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx
+@@ -1,8 +1,9 @@
+ import * as React from 'react';
+ import { useCallback, useEffect, useMemo, useState } from 'react';
+-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+ import { Dispatch } from 'redux';
+ import { _ } from '@joplin/lib/locale';
++import shim from '@joplin/lib/shim';
+ import { ScreenHeader } from '../../components/ScreenHeader';
+ import Icon from '../../components/Icon';
+ import { BaseScreenComponent } from '../../components/base-screen';
+@@ -112,6 +113,25 @@ const ListsOverviewComponent: React.FC<Props> = props => {
+ 		await reload();
+ 	}, [renamingList, reload]);
+ 
++	const onLeaveList = useCallback(async (list: ListRecord) => {
++		const ok = await shim.showConfirmationDialog(_('Leave "%s"? Other members keep their copy of this list.', list.name));
++		if (!ok) return;
++		await store.leaveList(list.id);
++		await reload();
++	}, [store, reload]);
++
++	const onLongPressList = useCallback((list: ListRecord) => {
++		Alert.alert(
++			list.name,
++			undefined,
++			[
++				{ text: _('Rename'), onPress: () => setRenamingList(list) },
++				{ text: _('Leave list'), style: 'destructive', onPress: () => { void onLeaveList(list); } },
++				{ text: _('Cancel'), style: 'cancel' },
++			],
++		);
++	}, [onLeaveList]);
++
+ 	return (
+ 		<View style={styles.container}>
+ 			<ScreenHeader title={_('Shopping lists')} showBackButton />
+@@ -129,7 +149,7 @@ const ListsOverviewComponent: React.FC<Props> = props => {
+ 					<TouchableOpacity
+ 						style={styles.row}
+ 						onPress={() => openList(item.list.id)}
+-						onLongPress={() => setRenamingList(item.list)}
++						onLongPress={() => onLongPressList(item.list)}
+ 					>
+ 						<Icon
+ 							name={item.list.kind === 'managed' ? 'ionicon shield-checkmark-outline' : 'ionicon people-outline'}
+diff --git a/packages/app-mobile/lists/ui/syncApi.ts b/packages/app-mobile/lists/ui/syncApi.ts
+index 45191fa..a250afd 100644
+--- a/packages/app-mobile/lists/ui/syncApi.ts
++++ b/packages/app-mobile/lists/ui/syncApi.ts
+@@ -6,7 +6,11 @@
+ // as unavailable) whether or not that module exists yet, and so a field
+ // rename on the sync side only needs to be reflected in the adapter below.
+ 
+-import { getListsDatabaseInstance, getListsStore } from './listsRuntime';
++import { AppState, AppStateStatus, NativeEventSubscription } from 'react-native';
++import Logger from '@joplin/utils/Logger';
++import { getListsDatabase, getListsDatabaseInstance, getListsStore } from './listsRuntime';
++
++const logger = Logger.create('lists/syncApi');
+ 
+ export type NearbyState = 'off' | 'searching' | 'found' | 'unavailable';
+ 
+@@ -140,7 +144,6 @@ interface RealNearbyTransport {
+ 
+ interface SyncModule {
+ 	ListsSync?: RealListsSyncStatic;
+-	startListsSyncLifecycle?: ()=> void;
+ }
+ 
+ interface NearbyModule {
+@@ -173,11 +176,24 @@ const adaptNearbyTransport = (real: RealNearbyTransport): NearbyTransport => ({
+ 	})),
+ });
+ 
+-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- require() has no typings for an as-yet-unbuilt module
+-const tryRequire = (path: string): any => {
++// Metro (unlike plain Node/jest) statically resolves every `require()` call
++// and needs a literal string argument to do so -- a `require(path)` with a
++// variable `path` fails the production bundle build even though it works
++// under jest. So these are two separate, literal-argument requires rather
++// than a single helper parameterized by path.
++const tryRequireSyncModule = (): SyncModule | null => {
+ 	try {
+ 		// eslint-disable-next-line @typescript-eslint/no-var-requires -- lazy, optional load of a module that may not exist yet
+-		return require(path);
++		return require('../sync');
++	} catch {
++		return null;
++	}
++};
++
++const tryRequireNearbyModule = (): NearbyModule | null => {
++	try {
++		// eslint-disable-next-line @typescript-eslint/no-var-requires -- lazy, optional load of a module that may not exist yet
++		return require('../sync/nearby');
+ 	} catch {
+ 		return null;
+ 	}
+@@ -188,7 +204,7 @@ let cachedNearby: NearbyTransport | null = null;
+ 
+ export const getListsSync = (): ListsSyncApi => {
+ 	if (!cachedSync) {
+-		const syncModule = tryRequire('../sync') as SyncModule | null;
++		const syncModule = tryRequireSyncModule();
+ 		if (!syncModule?.ListsSync) {
+ 			cachedSync = new NoopListsSync();
+ 		} else {
+@@ -209,7 +225,7 @@ export const getListsSync = (): ListsSyncApi => {
+ 
+ export const getNearbyTransport = (): NearbyTransport => {
+ 	if (!cachedNearby) {
+-		const nearbyModule = tryRequire('../sync/nearby') as NearbyModule | null;
++		const nearbyModule = tryRequireNearbyModule();
+ 		cachedNearby = nearbyModule?.UnavailableNearbyTransport
+ 			? adaptNearbyTransport(new nearbyModule.UnavailableNearbyTransport())
+ 			: new UnavailableNearbyTransportFallback();
+@@ -217,12 +233,40 @@ export const getNearbyTransport = (): NearbyTransport => {
+ 	return cachedNearby;
+ };
+ 
++const LIFECYCLE_THROTTLE_MS = 30 * 1000;
++
++// Refreshes every list over the network, guarded so this never rejects: this
++// runs unconditionally on every app start (see root.tsx), including for
++// people who have never opened the shopping-list feature, so the lists DB
++// may never have been created yet. Opens it lazily here, does nothing when
++// there are no lists (so it doesn't open a relay socket for nobody), and
++// logs rather than throws on any failure.
++const safeRefreshAll = async (): Promise<void> => {
++	try {
++		const db = await getListsDatabase();
++		const lists = await db.lists();
++		if (!lists.length) return;
++		await getListsSync().refreshAll();
++	} catch (error) {
++		logger.warn('Failed to refresh shopping lists', error);
++	}
++};
++
+ // Starts the sync agent's background lifecycle (relay subscriptions, periodic
+-// refresh, ...). Safe to call even if lists/sync doesn't exist yet. Ensures
+-// ListsSync is initialized first, so the AppState-driven refresh this wires
+-// up doesn't hit ListsSync.instance()'s "not initialized" error.
+-export const startListsSyncLifecycle = (): void => {
+-	getListsSync();
+-	const syncModule = tryRequire('../sync') as SyncModule | null;
+-	if (syncModule?.startListsSyncLifecycle) syncModule.startListsSyncLifecycle();
++// refresh, ...): refreshes every list when the app comes to the foreground,
++// throttled so rapid foreground/background cycles don't cause a sync storm.
++// Safe to call even if lists/sync doesn't exist yet or the lists DB has never
++// been opened -- see safeRefreshAll() above. Call the returned function to
++// tear it down (e.g. in tests).
++export const startListsSyncLifecycle = (): (()=> void) => {
++	let lastRefresh = 0;
++	const onChange = (nextState: AppStateStatus): void => {
++		if (nextState !== 'active') return;
++		const now = Date.now();
++		if (now - lastRefresh < LIFECYCLE_THROTTLE_MS) return;
++		lastRefresh = now;
++		void safeRefreshAll();
++	};
++	const subscription: NativeEventSubscription = AppState.addEventListener('change', onChange);
++	return () => subscription.remove();
+ };
+diff --git a/packages/app-mobile/utils/polyfills/index.ts b/packages/app-mobile/utils/polyfills/index.ts
+index 281d39f..621c282 100644
+--- a/packages/app-mobile/utils/polyfills/index.ts
++++ b/packages/app-mobile/utils/polyfills/index.ts
+@@ -1,5 +1,10 @@
+ import './bufferPolyfill';
+ 
++// Must run before anything that calls `new TextDecoder()`/`new TextEncoder()`
++// at module load time, notably nostr-tools (used by the shopping-list sync
++// code) -- see textEncoding.ts.
++import './textEncoding';
++
+ // For aws-sdk-js-v3
+ import 'react-native-get-random-values';
+ import 'react-native-url-polyfill/auto';
+diff --git a/packages/app-mobile/utils/polyfills/textEncoding.test.ts b/packages/app-mobile/utils/polyfills/textEncoding.test.ts
+new file mode 100644
+index 0000000..857c81e
+--- /dev/null
++++ b/packages/app-mobile/utils/polyfills/textEncoding.test.ts
+@@ -0,0 +1,42 @@
++import { installTextEncodingPolyfill, PolyfillTextDecoder, PolyfillTextEncoder } from './textEncoding';
++
++describe('utils/polyfills/textEncoding', () => {
++	test.each([
++		'',
++		'hello world',
++		'Müsli, Käse, Straße',
++		'😀🚀 emoji test 🎉',
++		'混合 テキスト',
++	])('encode/decode roundtrips %j', input => {
++		const encoder = new PolyfillTextEncoder();
++		const decoder = new PolyfillTextDecoder();
++		expect(decoder.decode(encoder.encode(input))).toBe(input);
++	});
++
++	test('encode() matches the native TextEncoder byte-for-byte', () => {
++		const input = 'Müsli, Käse, Straße 😀';
++		const polyfillBytes = Array.from(new PolyfillTextEncoder().encode(input));
++		const nativeBytes = Array.from(new TextEncoder().encode(input));
++		expect(polyfillBytes).toEqual(nativeBytes);
++	});
++
++	test('installTextEncodingPolyfill() is a no-op when natives already exist', () => {
++		const nativeEncoder = function() { /* stand-in for the real TextEncoder */ } as unknown as typeof TextEncoder;
++		const nativeDecoder = function() { /* stand-in for the real TextDecoder */ } as unknown as typeof TextDecoder;
++		const fakeGlobal = { TextEncoder: nativeEncoder, TextDecoder: nativeDecoder } as unknown as typeof globalThis;
++
++		installTextEncodingPolyfill(fakeGlobal);
++
++		expect(fakeGlobal.TextEncoder).toBe(nativeEncoder);
++		expect(fakeGlobal.TextDecoder).toBe(nativeDecoder);
++	});
++
++	test('installTextEncodingPolyfill() installs the polyfill when natives are missing', () => {
++		const fakeGlobal = {} as unknown as typeof globalThis;
++
++		installTextEncodingPolyfill(fakeGlobal);
++
++		expect(fakeGlobal.TextEncoder).toBe(PolyfillTextEncoder);
++		expect(fakeGlobal.TextDecoder).toBe(PolyfillTextDecoder);
++	});
++});
+diff --git a/packages/app-mobile/utils/polyfills/textEncoding.ts b/packages/app-mobile/utils/polyfills/textEncoding.ts
+new file mode 100644
+index 0000000..f4e5742
+--- /dev/null
++++ b/packages/app-mobile/utils/polyfills/textEncoding.ts
+@@ -0,0 +1,105 @@
++// Minimal pure-JS UTF-8 TextEncoder/TextDecoder polyfill, installed on
++// globalThis only when the environment doesn't already provide one. Hermes
++// (RN 0.81) is known to provide TextEncoder but not reliably TextDecoder, and
++// nostr-tools calls `new TextDecoder()` at module load time (see
++// nostr-tools/utils), so this must run before that module is first imported.
++// Not a general TextEncoding implementation: UTF-8 only, no other encodings,
++// no streaming decode -- exactly what the shopping-list crypto/invite code
++// and nostr-tools need.
++
++class PolyfillTextEncoder {
++	public readonly encoding = 'utf-8';
++
++	public encode(input = ''): Uint8Array {
++		const bytes: number[] = [];
++		for (let i = 0; i < input.length; i++) {
++			const codePoint = input.codePointAt(i);
++			if (codePoint > 0xffff) i++; // consumed a surrogate pair
++
++			if (codePoint < 0x80) {
++				bytes.push(codePoint);
++			} else if (codePoint < 0x800) {
++				bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
++			} else if (codePoint < 0x10000) {
++				bytes.push(
++					0xe0 | (codePoint >> 12),
++					0x80 | ((codePoint >> 6) & 0x3f),
++					0x80 | (codePoint & 0x3f),
++				);
++			} else {
++				bytes.push(
++					0xf0 | (codePoint >> 18),
++					0x80 | ((codePoint >> 12) & 0x3f),
++					0x80 | ((codePoint >> 6) & 0x3f),
++					0x80 | (codePoint & 0x3f),
++				);
++			}
++		}
++		return Uint8Array.from(bytes);
++	}
++}
++
++class PolyfillTextDecoder {
++	public readonly encoding = 'utf-8';
++
++	public constructor(label = 'utf-8') {
++		if (label && label.toLowerCase() !== 'utf-8' && label.toLowerCase() !== 'utf8') {
++			throw new RangeError(`PolyfillTextDecoder: unsupported encoding "${label}"`);
++		}
++	}
++
++	public decode(input?: ArrayBuffer | ArrayBufferView): string {
++		if (!input) return '';
++		const bytes = input instanceof Uint8Array ? input : new Uint8Array(ArrayBuffer.isView(input) ? input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) : input);
++
++		let result = '';
++		let i = 0;
++		while (i < bytes.length) {
++			const byte1 = bytes[i];
++			let codePoint: number;
++			let extraBytes: number;
++
++			if (byte1 < 0x80) {
++				codePoint = byte1;
++				extraBytes = 0;
++			} else if ((byte1 & 0xe0) === 0xc0) {
++				codePoint = byte1 & 0x1f;
++				extraBytes = 1;
++			} else if ((byte1 & 0xf0) === 0xe0) {
++				codePoint = byte1 & 0x0f;
++				extraBytes = 2;
++			} else if ((byte1 & 0xf8) === 0xf0) {
++				codePoint = byte1 & 0x07;
++				extraBytes = 3;
++			} else {
++				// Invalid leading byte; emit the replacement character and move on.
++				result += '�';
++				i++;
++				continue;
++			}
++
++			if (i + extraBytes >= bytes.length) {
++				result += '�';
++				break;
++			}
++
++			for (let j = 1; j <= extraBytes; j++) {
++				const continuationByte = bytes[i + j];
++				codePoint = (codePoint << 6) | (continuationByte & 0x3f);
++			}
++
++			result += String.fromCodePoint(codePoint);
++			i += extraBytes + 1;
++		}
++		return result;
++	}
++}
++
++export const installTextEncodingPolyfill = (target: typeof globalThis = globalThis): void => {
++	if (!target.TextEncoder) target.TextEncoder = PolyfillTextEncoder as unknown as typeof TextEncoder;
++	if (!target.TextDecoder) target.TextDecoder = PolyfillTextDecoder as unknown as typeof TextDecoder;
++};
++
++installTextEncodingPolyfill();
++
++export { PolyfillTextEncoder, PolyfillTextDecoder };
+diff --git a/packages/lib/locales/de_DE.json b/packages/lib/locales/de_DE.json
+index 14837a1..ec9457f 100644
+--- a/packages/lib/locales/de_DE.json
++++ b/packages/lib/locales/de_DE.json
+@@ -2443,9 +2443,15 @@
+ 	"Learn more": [
+ 		"Mehr erfahren"
+ 	],
++	"Leave \"%s\"? Other members keep their copy of this list.": [
++		"„%s“ verlassen? Andere Mitglieder behalten ihre Kopie dieser Liste."
++	],
+ 	"Leave it blank to download the language files from the default website": [
+ 		"Leer lassen, um die Sprachdateien von der Standard-Website herunterzuladen"
+ 	],
++	"Leave list": [
++		"Liste verlassen"
++	],
+ 	"Leave notebook": [
+ 		"Notizbuch verlassen"
+ 	],
+diff --git a/packages/tools/locales/de_DE.po b/packages/tools/locales/de_DE.po
+index 4da0f1c..3ea8daf 100644
+--- a/packages/tools/locales/de_DE.po
++++ b/packages/tools/locales/de_DE.po
+@@ -95,6 +95,14 @@ msgstr "Beitrittsanfrage gesendet"
+ msgid "Last synced %s"
+ msgstr "Zuletzt abgeglichen %s"
+ 
++#: packages/app-mobile/lists/ui/ListsOverviewScreen.tsx:117
++msgid "Leave \"%s\"? Other members keep their copy of this list."
++msgstr "„%s“ verlassen? Andere Mitglieder behalten ihre Kopie dieser Liste."
++
++#: packages/app-mobile/lists/ui/ListsOverviewScreen.tsx:129
++msgid "Leave list"
++msgstr "Liste verlassen"
++
+ #: packages/app-mobile/lists/ui/components/CreateListModal.tsx:67
+ msgid "List name"
+ msgstr "Listenname"

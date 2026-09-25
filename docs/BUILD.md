@@ -17,6 +17,7 @@ Joplin-Tile-View/
 │   ├── apply-patches.sh   Apply patches/*.patch onto the tile-view branch in the submodule
 │   ├── export-patches.sh  Export the tile-view branch in the submodule to patches/
 │   └── build-android.sh   Build the APK (release = installable, debug = requires Metro)
+├── plugins/formula-tables/  Joplin plugin "Formula Tables" (own npm project, built in CI, .jpl attached to releases)
 ├── docs/              Handover, analysis, this file
 └── .github/workflows/android-apk.yml   Builds the APK on GitHub runners
 ```

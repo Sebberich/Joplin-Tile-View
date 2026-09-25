@@ -1,0 +1,6311 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 16:35:46 +0000
+Subject: [PATCH 20/29] Mobile: Add the shopping list core (data model,
+ storage, crypto)
+
+Pure, UI-free core for shared shopping lists: one record per item with
+field-wise last-writer-wins merging, an own SQLite file next to Joplin's
+database, device key pairs, open lists (shared key) and managed lists
+(admins, per-member wrapped content key), invite links/codes, and
+NIP-78 events encrypted with NIP-44 for the relay transport. Ships an
+emoji icon catalog with German synonyms.
+
+diff --git a/.gitignore b/.gitignore
+index 3fb55d5..daa11c6 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -806,7 +806,6 @@ packages/app-mobile/components/NoteTile.js
+ packages/app-mobile/components/NoteTileFolderDialog.js
+ packages/app-mobile/components/NoteTileList.test.js
+ packages/app-mobile/components/NoteTileList.js
+-packages/app-mobile/components/NoteTileToolbar.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileEditor.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileSwitcher.js
+ packages/app-mobile/components/ProfileSwitcher/useProfileConfig.js
+@@ -948,7 +947,7 @@ packages/app-mobile/components/screens/NoteRevisionViewer.js
+ packages/app-mobile/components/screens/NoteTagsDialog.js
+ packages/app-mobile/components/screens/Notes/NewNoteButton.test.js
+ packages/app-mobile/components/screens/Notes/NewNoteButton.js
+-packages/app-mobile/components/screens/Notes/NoteListLayoutBar.js
++packages/app-mobile/components/screens/Notes/Notes.test.js
+ packages/app-mobile/components/screens/Notes/Notes.js
+ packages/app-mobile/components/screens/Notes/TextWrapCalculator.js
+ packages/app-mobile/components/screens/ResourceScreen.js
+@@ -1014,6 +1013,21 @@ packages/app-mobile/contentScripts/utils/readFileToBase64.js
+ packages/app-mobile/contentScripts/utils/setUpLogger.js
+ packages/app-mobile/gulpfile.js
+ packages/app-mobile/index.web.js
++packages/app-mobile/lists/core/crypto.test.js
++packages/app-mobile/lists/core/crypto.js
++packages/app-mobile/lists/core/db.test.js
++packages/app-mobile/lists/core/db.js
++packages/app-mobile/lists/core/events.test.js
++packages/app-mobile/lists/core/events.js
++packages/app-mobile/lists/core/invite.test.js
++packages/app-mobile/lists/core/invite.js
++packages/app-mobile/lists/core/merge.test.js
++packages/app-mobile/lists/core/merge.js
++packages/app-mobile/lists/core/normalize.test.js
++packages/app-mobile/lists/core/normalize.js
++packages/app-mobile/lists/core/store.test.js
++packages/app-mobile/lists/core/store.js
++packages/app-mobile/lists/core/types.js
+ packages/app-mobile/root.js
+ packages/app-mobile/services/AlarmServiceDriver.android.js
+ packages/app-mobile/services/AlarmServiceDriver.ios.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index bdc1519..4103115 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -832,7 +832,6 @@ packages/app-mobile/components/NoteTile.js
+ packages/app-mobile/components/NoteTileFolderDialog.js
+ packages/app-mobile/components/NoteTileList.test.js
+ packages/app-mobile/components/NoteTileList.js
+-packages/app-mobile/components/NoteTileToolbar.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileEditor.js
+ packages/app-mobile/components/ProfileSwitcher/ProfileSwitcher.js
+ packages/app-mobile/components/ProfileSwitcher/useProfileConfig.js
+@@ -974,7 +973,7 @@ packages/app-mobile/components/screens/NoteRevisionViewer.js
+ packages/app-mobile/components/screens/NoteTagsDialog.js
+ packages/app-mobile/components/screens/Notes/NewNoteButton.test.js
+ packages/app-mobile/components/screens/Notes/NewNoteButton.js
+-packages/app-mobile/components/screens/Notes/NoteListLayoutBar.js
++packages/app-mobile/components/screens/Notes/Notes.test.js
+ packages/app-mobile/components/screens/Notes/Notes.js
+ packages/app-mobile/components/screens/Notes/TextWrapCalculator.js
+ packages/app-mobile/components/screens/ResourceScreen.js
+@@ -1040,6 +1039,21 @@ packages/app-mobile/contentScripts/utils/readFileToBase64.js
+ packages/app-mobile/contentScripts/utils/setUpLogger.js
+ packages/app-mobile/gulpfile.js
+ packages/app-mobile/index.web.js
++packages/app-mobile/lists/core/crypto.test.js
++packages/app-mobile/lists/core/crypto.js
++packages/app-mobile/lists/core/db.test.js
++packages/app-mobile/lists/core/db.js
++packages/app-mobile/lists/core/events.test.js
++packages/app-mobile/lists/core/events.js
++packages/app-mobile/lists/core/invite.test.js
++packages/app-mobile/lists/core/invite.js
++packages/app-mobile/lists/core/merge.test.js
++packages/app-mobile/lists/core/merge.js
++packages/app-mobile/lists/core/normalize.test.js
++packages/app-mobile/lists/core/normalize.js
++packages/app-mobile/lists/core/store.test.js
++packages/app-mobile/lists/core/store.js
++packages/app-mobile/lists/core/types.js
+ packages/app-mobile/root.js
+ packages/app-mobile/services/AlarmServiceDriver.android.js
+ packages/app-mobile/services/AlarmServiceDriver.ios.js
+diff --git a/packages/app-mobile/lists/catalog/README.md b/packages/app-mobile/lists/catalog/README.md
+new file mode 100644
+index 0000000..334202b
+--- /dev/null
++++ b/packages/app-mobile/lists/catalog/README.md
+@@ -0,0 +1,69 @@
++# Einkaufslisten-Katalog
++
++Dieser Ordner enthält die Datengrundlage für die Einkaufslisten-Funktion
++(ähnlich wie die App „Bring!“): eine deutschsprachige Kategorien- und
++Artikel-Datenbank, die für Autovervollständigung, Icons und die Sortierung
++der Liste nach typischem Supermarkt-Rundgang genutzt wird.
++
++## Dateien
++
++- **`categories.json`** — geordnetes Array der Kategorien in der
++  Reihenfolge eines typischen deutschen Supermarkt-Rundgangs
++  (Obst & Gemüse → … → Sonstiges). Jede Kategorie hat die Form:
++
++  ```json
++  { "id": "obst_gemuese", "name": "Obst & Gemüse", "emoji": "🥦" }
++  ```
++
++- **`items.json`** — Array vordefinierter Artikel. Jeder Eintrag hat die
++  Form:
++
++  ```json
++  {
++    "name": "Milch",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": ["vollmilch", "h-milch", "frischmilch", "milk"]
++  }
++  ```
++
++## Regeln
++
++- **Icons** sind reine Unicode-Emoji, die vom Systemfont gerendert werden
++  – keine Bild-Assets. Es werden nur weit verbreitete Emoji (Unicode ≤ 14)
++  verwendet, keine Emoji mit Hautton-Modifikatoren; ZWJ-Sequenzen nur, wenn
++  sie gebräuchlich sind (im aktuellen Datensatz keine nötig).
++- **`name`** ist der kanonische deutsche Anzeigename, geschrieben wie auf
++  einem Regaletikett (z. B. „Äpfel“, „Toilettenpapier“, „Spülmittel“).
++- **`emoji`** muss visuell zum Artikel passen. Passt kein spezifisches
++  Emoji, wird das Emoji der zugehörigen Kategorie aus `categories.json`
++  verwendet.
++- **`category`** muss exakt einer `id` aus `categories.json` entsprechen.
++- **`synonyms`** sind klein geschrieben, enthalten nicht den kanonischen
++  Namen selbst, und decken gängige Varianten ab: Singular/Plural,
++  Schreibvarianten (ä/ae, ß/ss), markenneutrale Alternativbegriffe und den
++  englischen Begriff. Die Liste kann leer sein (`[]`).
++- **Eindeutigkeit:** Jeder `name` ist im gesamten Datensatz einzigartig.
++  Kein Synonym darf dem Namen eines anderen Eintrags entsprechen oder sich
++  mit dem Synonym eines anderen Eintrags überschneiden.
++
++## Neue Einträge hinzufügen
++
++1. Neuen Artikel als Objekt in `items.json` ergänzen (Feldreihenfolge wie
++   oben: `name`, `emoji`, `category`, `synonyms`).
++2. Sicherstellen, dass `category` eine existierende `id` aus
++   `categories.json` ist.
++3. Groß-/Kleinschreibung und Umlaute wie im Regal verwenden; Synonyme klein
++   schreiben.
++4. Eindeutigkeit prüfen — z. B. mit einem kurzen Node-Skript, das beide
++   Dateien parst und kontrolliert, dass:
++   - alle `name`-Werte einzigartig sind,
++   - kein Synonym einen fremden `name` oder ein fremdes Synonym dupliziert,
++   - jede `category` in `categories.json` existiert.
++5. JSON muss gültig, UTF-8-kodiert und mit 2 Leerzeichen eingerückt sein.
++
++## Neue Kategorie hinzufügen
++
++Neues Objekt `{ "id": ..., "name": ..., "emoji": ... }` an der passenden
++Stelle im `categories.json`-Array einfügen — die Reihenfolge im Array
++bestimmt die Sortierung in der App (Supermarkt-Rundgang).
+diff --git a/packages/app-mobile/lists/catalog/categories.json b/packages/app-mobile/lists/catalog/categories.json
+new file mode 100644
+index 0000000..8a01386
+--- /dev/null
++++ b/packages/app-mobile/lists/catalog/categories.json
+@@ -0,0 +1,77 @@
++[
++  {
++    "id": "obst_gemuese",
++    "name": "Obst & Gemüse",
++    "emoji": "🥦"
++  },
++  {
++    "id": "brot_backwaren",
++    "name": "Brot & Backwaren",
++    "emoji": "🍞"
++  },
++  {
++    "id": "kuehlregal",
++    "name": "Kühlregal",
++    "emoji": "🥛"
++  },
++  {
++    "id": "fleisch_fisch",
++    "name": "Fleisch & Fisch",
++    "emoji": "🥩"
++  },
++  {
++    "id": "tiefkuehl",
++    "name": "Tiefkühl",
++    "emoji": "🧊"
++  },
++  {
++    "id": "vorrat",
++    "name": "Vorrat",
++    "emoji": "🥫"
++  },
++  {
++    "id": "fruehstueck",
++    "name": "Frühstück",
++    "emoji": "🥣"
++  },
++  {
++    "id": "suesses_snacks",
++    "name": "Süßes & Snacks",
++    "emoji": "🍫"
++  },
++  {
++    "id": "getraenke",
++    "name": "Getränke",
++    "emoji": "🥤"
++  },
++  {
++    "id": "gewuerze_saucen",
++    "name": "Gewürze & Saucen",
++    "emoji": "🧂"
++  },
++  {
++    "id": "drogerie",
++    "name": "Drogerie",
++    "emoji": "🧴"
++  },
++  {
++    "id": "haushalt",
++    "name": "Haushalt",
++    "emoji": "🧽"
++  },
++  {
++    "id": "baby",
++    "name": "Baby",
++    "emoji": "🍼"
++  },
++  {
++    "id": "tier",
++    "name": "Tier",
++    "emoji": "🐾"
++  },
++  {
++    "id": "sonstiges",
++    "name": "Sonstiges",
++    "emoji": "🛒"
++  }
++]
+diff --git a/packages/app-mobile/lists/catalog/items.json b/packages/app-mobile/lists/catalog/items.json
+new file mode 100644
+index 0000000..4edbd3f
+--- /dev/null
++++ b/packages/app-mobile/lists/catalog/items.json
+@@ -0,0 +1,3686 @@
++[
++  {
++    "name": "Äpfel",
++    "emoji": "🍎",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "apfel",
++      "aepfel",
++      "apple"
++    ]
++  },
++  {
++    "name": "Bananen",
++    "emoji": "🍌",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "banane",
++      "bananas"
++    ]
++  },
++  {
++    "name": "Orangen",
++    "emoji": "🍊",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "orange",
++      "apfelsinen",
++      "apfelsine"
++    ]
++  },
++  {
++    "name": "Mandarinen",
++    "emoji": "🍊",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "mandarine",
++      "clementinen",
++      "clementine"
++    ]
++  },
++  {
++    "name": "Zitronen",
++    "emoji": "🍋",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "zitrone",
++      "lemon"
++    ]
++  },
++  {
++    "name": "Limetten",
++    "emoji": "🍋",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "limette",
++      "lime"
++    ]
++  },
++  {
++    "name": "Trauben",
++    "emoji": "🍇",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "weintrauben",
++      "traube",
++      "grapes"
++    ]
++  },
++  {
++    "name": "Birnen",
++    "emoji": "🍐",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "birne",
++      "pear"
++    ]
++  },
++  {
++    "name": "Pfirsiche",
++    "emoji": "🍑",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "pfirsich",
++      "peach"
++    ]
++  },
++  {
++    "name": "Aprikosen",
++    "emoji": "🍑",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "aprikose",
++      "marille",
++      "apricot"
++    ]
++  },
++  {
++    "name": "Pflaumen",
++    "emoji": "🍑",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "pflaume",
++      "zwetschgen",
++      "zwetschge",
++      "plum"
++    ]
++  },
++  {
++    "name": "Kirschen",
++    "emoji": "🍒",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "kirsche",
++      "cherry"
++    ]
++  },
++  {
++    "name": "Erdbeeren",
++    "emoji": "🍓",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "erdbeere",
++      "strawberry"
++    ]
++  },
++  {
++    "name": "Himbeeren",
++    "emoji": "🍓",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "himbeere",
++      "raspberry"
++    ]
++  },
++  {
++    "name": "Blaubeeren",
++    "emoji": "🫐",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "blaubeere",
++      "heidelbeeren",
++      "heidelbeere",
++      "blueberry"
++    ]
++  },
++  {
++    "name": "Brombeeren",
++    "emoji": "🫐",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "brombeere",
++      "blackberry"
++    ]
++  },
++  {
++    "name": "Johannisbeeren",
++    "emoji": "🫐",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "johannisbeere",
++      "currant"
++    ]
++  },
++  {
++    "name": "Wassermelone",
++    "emoji": "🍉",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "watermelon"
++    ]
++  },
++  {
++    "name": "Honigmelone",
++    "emoji": "🍈",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "cantaloupe",
++      "netzmelone"
++    ]
++  },
++  {
++    "name": "Ananas",
++    "emoji": "🍍",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "pineapple"
++    ]
++  },
++  {
++    "name": "Mango",
++    "emoji": "🥭",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "mangos"
++    ]
++  },
++  {
++    "name": "Kiwi",
++    "emoji": "🥝",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "kiwis"
++    ]
++  },
++  {
++    "name": "Avocado",
++    "emoji": "🥑",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "avocados"
++    ]
++  },
++  {
++    "name": "Granatapfel",
++    "emoji": "🍎",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "granatäpfel",
++      "pomegranate"
++    ]
++  },
++  {
++    "name": "Feigen",
++    "emoji": "🍇",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "feige",
++      "fig"
++    ]
++  },
++  {
++    "name": "Datteln",
++    "emoji": "🍇",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "dattel",
++      "dates"
++    ]
++  },
++  {
++    "name": "Rosinen",
++    "emoji": "🍇",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "rosine",
++      "raisins"
++    ]
++  },
++  {
++    "name": "Nüsse",
++    "emoji": "🥜",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "nuss",
++      "nuts"
++    ]
++  },
++  {
++    "name": "Walnüsse",
++    "emoji": "🥜",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "walnuss",
++      "walnut"
++    ]
++  },
++  {
++    "name": "Haselnüsse",
++    "emoji": "🥜",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "haselnuss",
++      "hazelnut"
++    ]
++  },
++  {
++    "name": "Mandeln",
++    "emoji": "🥜",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "mandel",
++      "almonds"
++    ]
++  },
++  {
++    "name": "Tomaten",
++    "emoji": "🍅",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "tomate",
++      "tomato"
++    ]
++  },
++  {
++    "name": "Kirschtomaten",
++    "emoji": "🍅",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "cherrytomaten",
++      "cocktailtomaten",
++      "cherry tomatoes"
++    ]
++  },
++  {
++    "name": "Gurken",
++    "emoji": "🥒",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "gurke",
++      "salatgurke",
++      "cucumber"
++    ]
++  },
++  {
++    "name": "Paprika",
++    "emoji": "🫑",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "paprikaschote",
++      "pepper",
++      "peperoni"
++    ]
++  },
++  {
++    "name": "Chili",
++    "emoji": "🌶️",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "chilischote",
++      "chili pepper"
++    ]
++  },
++  {
++    "name": "Zwiebeln",
++    "emoji": "🧅",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "zwiebel",
++      "onion"
++    ]
++  },
++  {
++    "name": "Frühlingszwiebeln",
++    "emoji": "🧅",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "frühlingszwiebel",
++      "lauchzwiebel",
++      "lauchzwiebeln",
++      "spring onion"
++    ]
++  },
++  {
++    "name": "Knoblauch",
++    "emoji": "🧄",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "garlic"
++    ]
++  },
++  {
++    "name": "Kartoffeln",
++    "emoji": "🥔",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "kartoffel",
++      "erdäpfel",
++      "potato",
++      "potatoes"
++    ]
++  },
++  {
++    "name": "Süßkartoffeln",
++    "emoji": "🍠",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "süßkartoffel",
++      "batate",
++      "sweet potato"
++    ]
++  },
++  {
++    "name": "Karotten",
++    "emoji": "🥕",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "karotte",
++      "möhren",
++      "möhre",
++      "mohrrüben",
++      "carrot"
++    ]
++  },
++  {
++    "name": "Rote Bete",
++    "emoji": "🥕",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "rote beete",
++      "rande",
++      "beetroot"
++    ]
++  },
++  {
++    "name": "Radieschen",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "radiesli",
++      "radish"
++    ]
++  },
++  {
++    "name": "Sellerie",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "staudensellerie",
++      "knollensellerie",
++      "celery"
++    ]
++  },
++  {
++    "name": "Fenchel",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "fennel"
++    ]
++  },
++  {
++    "name": "Lauch",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "porree",
++      "leek"
++    ]
++  },
++  {
++    "name": "Brokkoli",
++    "emoji": "🥦",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "broccoli"
++    ]
++  },
++  {
++    "name": "Blumenkohl",
++    "emoji": "🥦",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "karfiol",
++      "cauliflower"
++    ]
++  },
++  {
++    "name": "Rosenkohl",
++    "emoji": "🥦",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "brussels sprouts"
++    ]
++  },
++  {
++    "name": "Weißkohl",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "weisskohl",
++      "kohl",
++      "cabbage"
++    ]
++  },
++  {
++    "name": "Rotkohl",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "rotkraut",
++      "blaukraut",
++      "red cabbage"
++    ]
++  },
++  {
++    "name": "Wirsing",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "savoy cabbage"
++    ]
++  },
++  {
++    "name": "Spinat",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "spinach"
++    ]
++  },
++  {
++    "name": "Feldsalat",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "rapunzel",
++      "lamb's lettuce"
++    ]
++  },
++  {
++    "name": "Kopfsalat",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "salat",
++      "lettuce"
++    ]
++  },
++  {
++    "name": "Rucola",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "rauke",
++      "arugula"
++    ]
++  },
++  {
++    "name": "Eisbergsalat",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "iceberg lettuce"
++    ]
++  },
++  {
++    "name": "Aubergine",
++    "emoji": "🍆",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "melanzani",
++      "eggplant"
++    ]
++  },
++  {
++    "name": "Zucchini",
++    "emoji": "🥒",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "zucchino",
++      "courgette"
++    ]
++  },
++  {
++    "name": "Kürbis",
++    "emoji": "🎃",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "hokkaido",
++      "pumpkin"
++    ]
++  },
++  {
++    "name": "Mais",
++    "emoji": "🌽",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "maiskolben",
++      "corn"
++    ]
++  },
++  {
++    "name": "Erbsen",
++    "emoji": "🫛",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "erbse",
++      "peas"
++    ]
++  },
++  {
++    "name": "Zuckerschoten",
++    "emoji": "🫛",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "zuckerschote",
++      "snap peas"
++    ]
++  },
++  {
++    "name": "Grüne Bohnen",
++    "emoji": "🫘",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "grüne bohne",
++      "green beans"
++    ]
++  },
++  {
++    "name": "Champignons",
++    "emoji": "🍄",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "pilze",
++      "champignon",
++      "mushrooms"
++    ]
++  },
++  {
++    "name": "Kräuter",
++    "emoji": "🌿",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "frische kräuter",
++      "herbs"
++    ]
++  },
++  {
++    "name": "Petersilie",
++    "emoji": "🌿",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "parsley"
++    ]
++  },
++  {
++    "name": "Schnittlauch",
++    "emoji": "🌿",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "chives"
++    ]
++  },
++  {
++    "name": "Basilikum",
++    "emoji": "🌿",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "basil"
++    ]
++  },
++  {
++    "name": "Ingwer",
++    "emoji": "🫚",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "ginger"
++    ]
++  },
++  {
++    "name": "Kohlrabi",
++    "emoji": "🥬",
++    "category": "obst_gemuese",
++    "synonyms": [
++      "kohlrabis"
++    ]
++  },
++  {
++    "name": "Mischbrot",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "graubrot",
++      "bauernbrot"
++    ]
++  },
++  {
++    "name": "Vollkornbrot",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "wholegrain bread"
++    ]
++  },
++  {
++    "name": "Weißbrot",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "weissbrot",
++      "white bread"
++    ]
++  },
++  {
++    "name": "Baguette",
++    "emoji": "🥖",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "stangenweißbrot"
++    ]
++  },
++  {
++    "name": "Brötchen",
++    "emoji": "🥐",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "semmeln",
++      "semmel",
++      "schrippen",
++      "rolls"
++    ]
++  },
++  {
++    "name": "Croissants",
++    "emoji": "🥐",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "croissant"
++    ]
++  },
++  {
++    "name": "Toastbrot",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "toast"
++    ]
++  },
++  {
++    "name": "Knäckebrot",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "knaeckebrot",
++      "crispbread"
++    ]
++  },
++  {
++    "name": "Laugenbrezel",
++    "emoji": "🥨",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "brezel",
++      "brezn",
++      "pretzel"
++    ]
++  },
++  {
++    "name": "Fladenbrot",
++    "emoji": "🫓",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "pita",
++      "pitabrot"
++    ]
++  },
++  {
++    "name": "Tortillas",
++    "emoji": "🫓",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "tortilla",
++      "wraps"
++    ]
++  },
++  {
++    "name": "Kuchen",
++    "emoji": "🍰",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "cake"
++    ]
++  },
++  {
++    "name": "Muffins",
++    "emoji": "🧁",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "muffin"
++    ]
++  },
++  {
++    "name": "Kekse",
++    "emoji": "🍪",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "plätzchen",
++      "cookies"
++    ]
++  },
++  {
++    "name": "Zwieback",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "rusk"
++    ]
++  },
++  {
++    "name": "Dinkelbrot",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "spelt bread"
++    ]
++  },
++  {
++    "name": "Roggenbrot",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "rye bread"
++    ]
++  },
++  {
++    "name": "Hefeteig",
++    "emoji": "🍞",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "hefezopf"
++    ]
++  },
++  {
++    "name": "Blätterteig",
++    "emoji": "🥐",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "puff pastry"
++    ]
++  },
++  {
++    "name": "Pizzateig",
++    "emoji": "🍕",
++    "category": "brot_backwaren",
++    "synonyms": [
++      "pizza dough"
++    ]
++  },
++  {
++    "name": "Milch",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "vollmilch",
++      "h-milch",
++      "frischmilch",
++      "milk"
++    ]
++  },
++  {
++    "name": "Hafermilch",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "haferdrink",
++      "oat milk"
++    ]
++  },
++  {
++    "name": "Mandelmilch",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "almond milk"
++    ]
++  },
++  {
++    "name": "Sojamilch",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "soja drink",
++      "soy milk"
++    ]
++  },
++  {
++    "name": "Buttermilch",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "buttermilk"
++    ]
++  },
++  {
++    "name": "Sahne",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "schlagsahne",
++      "rahm",
++      "cream"
++    ]
++  },
++  {
++    "name": "Schmand",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "sour cream"
++    ]
++  },
++  {
++    "name": "Crème fraîche",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "creme fraiche"
++    ]
++  },
++  {
++    "name": "Joghurt",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "yoghurt",
++      "yogurt"
++    ]
++  },
++  {
++    "name": "Griechischer Joghurt",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "greek yoghurt"
++    ]
++  },
++  {
++    "name": "Skyr",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": []
++  },
++  {
++    "name": "Quark",
++    "emoji": "🥛",
++    "category": "kuehlregal",
++    "synonyms": [
++      "topfen",
++      "quark speisequark"
++    ]
++  },
++  {
++    "name": "Frischkäse",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "cream cheese"
++    ]
++  },
++  {
++    "name": "Butter",
++    "emoji": "🧈",
++    "category": "kuehlregal",
++    "synonyms": [
++      "butterschmalz"
++    ]
++  },
++  {
++    "name": "Margarine",
++    "emoji": "🧈",
++    "category": "kuehlregal",
++    "synonyms": []
++  },
++  {
++    "name": "Eier",
++    "emoji": "🥚",
++    "category": "kuehlregal",
++    "synonyms": [
++      "ei",
++      "eggs"
++    ]
++  },
++  {
++    "name": "Gouda",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "goudakäse"
++    ]
++  },
++  {
++    "name": "Emmentaler",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "emmentaler käse"
++    ]
++  },
++  {
++    "name": "Gervais",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": []
++  },
++  {
++    "name": "Mozzarella",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": []
++  },
++  {
++    "name": "Feta",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "schafskäse"
++    ]
++  },
++  {
++    "name": "Parmesan",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "parmigiano"
++    ]
++  },
++  {
++    "name": "Camembert",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": []
++  },
++  {
++    "name": "Brie",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": []
++  },
++  {
++    "name": "Streichkäse",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "spreadable cheese"
++    ]
++  },
++  {
++    "name": "Käse gerieben",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "reibekäse",
++      "geriebener käse",
++      "grated cheese"
++    ]
++  },
++  {
++    "name": "Schnittkäse",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "scheibenkäse"
++    ]
++  },
++  {
++    "name": "Hüttenkäse",
++    "emoji": "🧀",
++    "category": "kuehlregal",
++    "synonyms": [
++      "cottage cheese"
++    ]
++  },
++  {
++    "name": "Tofu",
++    "emoji": "🧈",
++    "category": "kuehlregal",
++    "synonyms": []
++  },
++  {
++    "name": "Pudding",
++    "emoji": "🍮",
++    "category": "kuehlregal",
++    "synonyms": [
++      "pudding fertig"
++    ]
++  },
++  {
++    "name": "Fertigpizza",
++    "emoji": "🍕",
++    "category": "tiefkuehl",
++    "synonyms": []
++  },
++  {
++    "name": "Aufschnitt",
++    "emoji": "🥓",
++    "category": "kuehlregal",
++    "synonyms": [
++      "wurstaufschnitt"
++    ]
++  },
++  {
++    "name": "Kochschinken",
++    "emoji": "🥓",
++    "category": "kuehlregal",
++    "synonyms": [
++      "schinken"
++    ]
++  },
++  {
++    "name": "Salami",
++    "emoji": "🍖",
++    "category": "kuehlregal",
++    "synonyms": []
++  },
++  {
++    "name": "Frühlingsrollen",
++    "emoji": "🥟",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "spring rolls"
++    ]
++  },
++  {
++    "name": "Hähnchenbrust",
++    "emoji": "🍗",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "hühnerbrust",
++      "chicken breast"
++    ]
++  },
++  {
++    "name": "Hähnchenschenkel",
++    "emoji": "🍗",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "chicken legs"
++    ]
++  },
++  {
++    "name": "Rinderhack",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "hackfleisch rind",
++      "ground beef"
++    ]
++  },
++  {
++    "name": "Schweinehack",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "hackfleisch schwein",
++      "ground pork"
++    ]
++  },
++  {
++    "name": "Gemischtes Hack",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "hackfleisch gemischt"
++    ]
++  },
++  {
++    "name": "Rindersteak",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "steak",
++      "beef steak"
++    ]
++  },
++  {
++    "name": "Schweineschnitzel",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "schnitzel"
++    ]
++  },
++  {
++    "name": "Rinderbraten",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "braten"
++    ]
++  },
++  {
++    "name": "Gulasch",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": []
++  },
++  {
++    "name": "Rippchen",
++    "emoji": "🍖",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "spareribs",
++      "ribs"
++    ]
++  },
++  {
++    "name": "Speck",
++    "emoji": "🥓",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "bacon"
++    ]
++  },
++  {
++    "name": "Bratwurst",
++    "emoji": "🌭",
++    "category": "fleisch_fisch",
++    "synonyms": []
++  },
++  {
++    "name": "Wiener Würstchen",
++    "emoji": "🌭",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "wiener",
++      "würstchen",
++      "hot dog"
++    ]
++  },
++  {
++    "name": "Leberkäse",
++    "emoji": "🍖",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "fleischkäse"
++    ]
++  },
++  {
++    "name": "Hackfleisch",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "hack"
++    ]
++  },
++  {
++    "name": "Lammfleisch",
++    "emoji": "🍖",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "lamm",
++      "lamb"
++    ]
++  },
++  {
++    "name": "Ente",
++    "emoji": "🍗",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "duck"
++    ]
++  },
++  {
++    "name": "Pute",
++    "emoji": "🍗",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "truthahn",
++      "turkey"
++    ]
++  },
++  {
++    "name": "Lachs",
++    "emoji": "🐟",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "salmon"
++    ]
++  },
++  {
++    "name": "Thunfisch",
++    "emoji": "🐟",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "tuna"
++    ]
++  },
++  {
++    "name": "Forelle",
++    "emoji": "🐟",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "trout"
++    ]
++  },
++  {
++    "name": "Garnelen",
++    "emoji": "🦐",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "shrimps",
++      "krabben",
++      "prawns"
++    ]
++  },
++  {
++    "name": "Kabeljau",
++    "emoji": "🐟",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "dorsch",
++      "cod"
++    ]
++  },
++  {
++    "name": "Matjes",
++    "emoji": "🐟",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "hering"
++    ]
++  },
++  {
++    "name": "Fischstäbchen",
++    "emoji": "🐟",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "fish sticks"
++    ]
++  },
++  {
++    "name": "Räucherlachs",
++    "emoji": "🐟",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "smoked salmon"
++    ]
++  },
++  {
++    "name": "Tatar",
++    "emoji": "🥩",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "beef tartar"
++    ]
++  },
++  {
++    "name": "Kalbfleisch",
++    "emoji": "🍖",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "kalb",
++      "veal"
++    ]
++  },
++  {
++    "name": "Poulet",
++    "emoji": "🍗",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "hähnchen ganz",
++      "whole chicken"
++    ]
++  },
++  {
++    "name": "Wildfleisch",
++    "emoji": "🍖",
++    "category": "fleisch_fisch",
++    "synonyms": [
++      "wild",
++      "game meat"
++    ]
++  },
++  {
++    "name": "Tiefkühlgemüse",
++    "emoji": "🧊",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tk-gemüse",
++      "frozen vegetables"
++    ]
++  },
++  {
++    "name": "Tiefkühlpizza",
++    "emoji": "🍕",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tk-pizza",
++      "frozen pizza"
++    ]
++  },
++  {
++    "name": "Pommes",
++    "emoji": "🍟",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "pommes frites",
++      "fries"
++    ]
++  },
++  {
++    "name": "Eiscreme",
++    "emoji": "🍦",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "eis",
++      "speiseeis",
++      "ice cream"
++    ]
++  },
++  {
++    "name": "Tiefkühlbeeren",
++    "emoji": "🍓",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tk-beeren",
++      "frozen berries"
++    ]
++  },
++  {
++    "name": "Tiefkühlfisch",
++    "emoji": "🐟",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tk-fisch",
++      "frozen fish"
++    ]
++  },
++  {
++    "name": "Tiefkühlkräuter",
++    "emoji": "🌿",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tk-kräuter",
++      "frozen herbs"
++    ]
++  },
++  {
++    "name": "Eiswürfel",
++    "emoji": "🧊",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "ice cubes"
++    ]
++  },
++  {
++    "name": "Tiefkühl-Lasagne",
++    "emoji": "🍝",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tk-lasagne",
++      "frozen lasagne"
++    ]
++  },
++  {
++    "name": "Blätterteig TK",
++    "emoji": "🥐",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tiefkühl blätterteig"
++    ]
++  },
++  {
++    "name": "Pizzabrötchen TK",
++    "emoji": "🥖",
++    "category": "tiefkuehl",
++    "synonyms": []
++  },
++  {
++    "name": "Waffeln TK",
++    "emoji": "🧇",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tiefkühl waffeln",
++      "frozen waffles"
++    ]
++  },
++  {
++    "name": "Ravioli TK",
++    "emoji": "🥟",
++    "category": "tiefkuehl",
++    "synonyms": []
++  },
++  {
++    "name": "Falafel TK",
++    "emoji": "🧆",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "tiefkühl falafel"
++    ]
++  },
++  {
++    "name": "Gemüsebratlinge TK",
++    "emoji": "🥬",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "veggie burger tk"
++    ]
++  },
++  {
++    "name": "Spaghetti",
++    "emoji": "🍝",
++    "category": "vorrat",
++    "synonyms": [
++      "spaghetti nudeln"
++    ]
++  },
++  {
++    "name": "Nudeln",
++    "emoji": "🍝",
++    "category": "vorrat",
++    "synonyms": [
++      "pasta",
++      "teigwaren"
++    ]
++  },
++  {
++    "name": "Penne",
++    "emoji": "🍝",
++    "category": "vorrat",
++    "synonyms": []
++  },
++  {
++    "name": "Fusilli",
++    "emoji": "🍝",
++    "category": "vorrat",
++    "synonyms": []
++  },
++  {
++    "name": "Lasagneplatten",
++    "emoji": "🍝",
++    "category": "vorrat",
++    "synonyms": [
++      "lasagneblätter"
++    ]
++  },
++  {
++    "name": "Reis",
++    "emoji": "🍚",
++    "category": "vorrat",
++    "synonyms": [
++      "rice"
++    ]
++  },
++  {
++    "name": "Basmatireis",
++    "emoji": "🍚",
++    "category": "vorrat",
++    "synonyms": [
++      "basmati"
++    ]
++  },
++  {
++    "name": "Risottoreis",
++    "emoji": "🍚",
++    "category": "vorrat",
++    "synonyms": [
++      "risotto rice"
++    ]
++  },
++  {
++    "name": "Couscous",
++    "emoji": "🍚",
++    "category": "vorrat",
++    "synonyms": []
++  },
++  {
++    "name": "Bulgur",
++    "emoji": "🍚",
++    "category": "vorrat",
++    "synonyms": []
++  },
++  {
++    "name": "Quinoa",
++    "emoji": "🍚",
++    "category": "vorrat",
++    "synonyms": []
++  },
++  {
++    "name": "Linsen",
++    "emoji": "🫘",
++    "category": "vorrat",
++    "synonyms": [
++      "linse",
++      "lentils"
++    ]
++  },
++  {
++    "name": "Kichererbsen",
++    "emoji": "🫘",
++    "category": "vorrat",
++    "synonyms": [
++      "chickpeas"
++    ]
++  },
++  {
++    "name": "Kidneybohnen",
++    "emoji": "🫘",
++    "category": "vorrat",
++    "synonyms": [
++      "kidney beans"
++    ]
++  },
++  {
++    "name": "Weiße Bohnen",
++    "emoji": "🫘",
++    "category": "vorrat",
++    "synonyms": [
++      "white beans"
++    ]
++  },
++  {
++    "name": "Mehl",
++    "emoji": "🌾",
++    "category": "vorrat",
++    "synonyms": [
++      "weizenmehl",
++      "flour"
++    ]
++  },
++  {
++    "name": "Vollkornmehl",
++    "emoji": "🌾",
++    "category": "vorrat",
++    "synonyms": [
++      "wholemeal flour"
++    ]
++  },
++  {
++    "name": "Zucker",
++    "emoji": "🧂",
++    "category": "vorrat",
++    "synonyms": [
++      "haushaltszucker",
++      "sugar"
++    ]
++  },
++  {
++    "name": "Puderzucker",
++    "emoji": "🧂",
++    "category": "vorrat",
++    "synonyms": [
++      "icing sugar"
++    ]
++  },
++  {
++    "name": "Brauner Zucker",
++    "emoji": "🧂",
++    "category": "vorrat",
++    "synonyms": [
++      "rohrzucker",
++      "brown sugar"
++    ]
++  },
++  {
++    "name": "Vanillezucker",
++    "emoji": "🧂",
++    "category": "vorrat",
++    "synonyms": []
++  },
++  {
++    "name": "Backpulver",
++    "emoji": "🧁",
++    "category": "vorrat",
++    "synonyms": [
++      "baking powder"
++    ]
++  },
++  {
++    "name": "Natron",
++    "emoji": "🧁",
++    "category": "vorrat",
++    "synonyms": [
++      "baking soda"
++    ]
++  },
++  {
++    "name": "Hefe",
++    "emoji": "🍞",
++    "category": "vorrat",
++    "synonyms": [
++      "trockenhefe",
++      "yeast"
++    ]
++  },
++  {
++    "name": "Speisestärke",
++    "emoji": "🌽",
++    "category": "vorrat",
++    "synonyms": [
++      "stärke",
++      "maizena",
++      "cornstarch"
++    ]
++  },
++  {
++    "name": "Öl",
++    "emoji": "🫒",
++    "category": "vorrat",
++    "synonyms": [
++      "speiseöl",
++      "sonnenblumenöl",
++      "cooking oil"
++    ]
++  },
++  {
++    "name": "Olivenöl",
++    "emoji": "🫒",
++    "category": "vorrat",
++    "synonyms": [
++      "olive oil"
++    ]
++  },
++  {
++    "name": "Rapsöl",
++    "emoji": "🫒",
++    "category": "vorrat",
++    "synonyms": [
++      "canola oil"
++    ]
++  },
++  {
++    "name": "Essig",
++    "emoji": "🍶",
++    "category": "vorrat",
++    "synonyms": [
++      "vinegar"
++    ]
++  },
++  {
++    "name": "Balsamico",
++    "emoji": "🍶",
++    "category": "vorrat",
++    "synonyms": [
++      "balsamicoessig",
++      "balsamic vinegar"
++    ]
++  },
++  {
++    "name": "Tomatenmark",
++    "emoji": "🍅",
++    "category": "vorrat",
++    "synonyms": [
++      "tomato paste"
++    ]
++  },
++  {
++    "name": "Passierte Tomaten",
++    "emoji": "🍅",
++    "category": "vorrat",
++    "synonyms": [
++      "tomatensoße dose",
++      "passata"
++    ]
++  },
++  {
++    "name": "Gehackte Tomaten",
++    "emoji": "🍅",
++    "category": "vorrat",
++    "synonyms": [
++      "dosentomaten",
++      "chopped tomatoes"
++    ]
++  },
++  {
++    "name": "Mais Dose",
++    "emoji": "🌽",
++    "category": "vorrat",
++    "synonyms": [
++      "maisdose",
++      "canned corn"
++    ]
++  },
++  {
++    "name": "Kokosmilch",
++    "emoji": "🥥",
++    "category": "vorrat",
++    "synonyms": [
++      "coconut milk"
++    ]
++  },
++  {
++    "name": "Brühe",
++    "emoji": "🍲",
++    "category": "vorrat",
++    "synonyms": [
++      "brühwürfel",
++      "bouillon",
++      "stock"
++    ]
++  },
++  {
++    "name": "Gemüsebrühe",
++    "emoji": "🍲",
++    "category": "vorrat",
++    "synonyms": [
++      "vegetable stock"
++    ]
++  },
++  {
++    "name": "Fleischbrühe",
++    "emoji": "🍲",
++    "category": "vorrat",
++    "synonyms": [
++      "beef stock"
++    ]
++  },
++  {
++    "name": "Honig",
++    "emoji": "🍯",
++    "category": "vorrat",
++    "synonyms": [
++      "honey"
++    ]
++  },
++  {
++    "name": "Ahornsirup",
++    "emoji": "🍯",
++    "category": "vorrat",
++    "synonyms": [
++      "maple syrup"
++    ]
++  },
++  {
++    "name": "Marmelade",
++    "emoji": "🍓",
++    "category": "fruehstueck",
++    "synonyms": [
++      "konfitüre",
++      "jam"
++    ]
++  },
++  {
++    "name": "Thunfisch Dose",
++    "emoji": "🐟",
++    "category": "vorrat",
++    "synonyms": [
++      "dosenthunfisch",
++      "canned tuna"
++    ]
++  },
++  {
++    "name": "Erbsen Dose",
++    "emoji": "🫛",
++    "category": "vorrat",
++    "synonyms": [
++      "dosenerbsen",
++      "canned peas"
++    ]
++  },
++  {
++    "name": "Sauerkraut",
++    "emoji": "🥬",
++    "category": "vorrat",
++    "synonyms": []
++  },
++  {
++    "name": "Rote Linsen",
++    "emoji": "🫘",
++    "category": "vorrat",
++    "synonyms": [
++      "red lentils"
++    ]
++  },
++  {
++    "name": "Trockenpilze",
++    "emoji": "🍄",
++    "category": "vorrat",
++    "synonyms": [
++      "getrocknete pilze",
++      "dried mushrooms"
++    ]
++  },
++  {
++    "name": "Ketchup",
++    "emoji": "🍅",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Senf",
++    "emoji": "🌭",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "mustard"
++    ]
++  },
++  {
++    "name": "Mayonnaise",
++    "emoji": "🥚",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "mayo"
++    ]
++  },
++  {
++    "name": "Sojasauce",
++    "emoji": "🍶",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "soy sauce"
++    ]
++  },
++  {
++    "name": "Salz",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "speisesalz",
++      "salt"
++    ]
++  },
++  {
++    "name": "Pfeffer",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "schwarzer pfeffer",
++      "black pepper"
++    ]
++  },
++  {
++    "name": "Paprikapulver",
++    "emoji": "🌶️",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "paprika edelsüß"
++    ]
++  },
++  {
++    "name": "Curry",
++    "emoji": "🍛",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "currypulver"
++    ]
++  },
++  {
++    "name": "Zimt",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "cinnamon"
++    ]
++  },
++  {
++    "name": "Muskat",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "muskatnuss",
++      "nutmeg"
++    ]
++  },
++  {
++    "name": "Oregano",
++    "emoji": "🌿",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Basilikum getrocknet",
++    "emoji": "🌿",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "dried basil"
++    ]
++  },
++  {
++    "name": "Vanillinzucker",
++    "emoji": "🧂",
++    "category": "vorrat",
++    "synonyms": [
++      "vanillin"
++    ]
++  },
++  {
++    "name": "Knoblauchpulver",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "garlic powder"
++    ]
++  },
++  {
++    "name": "Müsli",
++    "emoji": "🥣",
++    "category": "fruehstueck",
++    "synonyms": [
++      "muesli",
++      "cereal"
++    ]
++  },
++  {
++    "name": "Cornflakes",
++    "emoji": "🥣",
++    "category": "fruehstueck",
++    "synonyms": [
++      "corn flakes"
++    ]
++  },
++  {
++    "name": "Haferflocken",
++    "emoji": "🥣",
++    "category": "fruehstueck",
++    "synonyms": [
++      "oatmeal",
++      "porridge"
++    ]
++  },
++  {
++    "name": "Nutella",
++    "emoji": "🍫",
++    "category": "fruehstueck",
++    "synonyms": [
++      "nuss-nougat-creme",
++      "schokoaufstrich"
++    ]
++  },
++  {
++    "name": "Nussmus",
++    "emoji": "🥜",
++    "category": "fruehstueck",
++    "synonyms": [
++      "erdnussbutter",
++      "peanut butter"
++    ]
++  },
++  {
++    "name": "Kaffee",
++    "emoji": "☕",
++    "category": "fruehstueck",
++    "synonyms": [
++      "kaffeebohnen",
++      "coffee"
++    ]
++  },
++  {
++    "name": "Tee",
++    "emoji": "🍵",
++    "category": "fruehstueck",
++    "synonyms": [
++      "teebeutel",
++      "tea"
++    ]
++  },
++  {
++    "name": "Kakaopulver",
++    "emoji": "🍫",
++    "category": "fruehstueck",
++    "synonyms": [
++      "cocoa powder"
++    ]
++  },
++  {
++    "name": "Kakao Getränkepulver",
++    "emoji": "🍫",
++    "category": "fruehstueck",
++    "synonyms": [
++      "trinkschokolade pulver"
++    ]
++  },
++  {
++    "name": "Toastaufstrich",
++    "emoji": "🍞",
++    "category": "fruehstueck",
++    "synonyms": [
++      "brotaufstrich"
++    ]
++  },
++  {
++    "name": "Frühstücksflocken",
++    "emoji": "🥣",
++    "category": "fruehstueck",
++    "synonyms": [
++      "breakfast flakes"
++    ]
++  },
++  {
++    "name": "Porridge Sachets",
++    "emoji": "🥣",
++    "category": "fruehstueck",
++    "synonyms": [
++      "instant porridge"
++    ]
++  },
++  {
++    "name": "Zwieback Frühstück",
++    "emoji": "🍞",
++    "category": "fruehstueck",
++    "synonyms": []
++  },
++  {
++    "name": "Milchkaffeepulver",
++    "emoji": "☕",
++    "category": "fruehstueck",
++    "synonyms": []
++  },
++  {
++    "name": "Croissant Frühstück",
++    "emoji": "🥐",
++    "category": "fruehstueck",
++    "synonyms": []
++  },
++  {
++    "name": "Marmelade Aprikose",
++    "emoji": "🍑",
++    "category": "fruehstueck",
++    "synonyms": [
++      "aprikosenmarmelade"
++    ]
++  },
++  {
++    "name": "Honigglas",
++    "emoji": "🍯",
++    "category": "fruehstueck",
++    "synonyms": []
++  },
++  {
++    "name": "Trockenfrüchte",
++    "emoji": "🍇",
++    "category": "fruehstueck",
++    "synonyms": [
++      "dried fruits"
++    ]
++  },
++  {
++    "name": "Chiasamen",
++    "emoji": "🌱",
++    "category": "fruehstueck",
++    "synonyms": [
++      "chia seeds"
++    ]
++  },
++  {
++    "name": "Leinsamen",
++    "emoji": "🌱",
++    "category": "fruehstueck",
++    "synonyms": [
++      "flax seeds"
++    ]
++  },
++  {
++    "name": "Schokolade",
++    "emoji": "🍫",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "chocolate"
++    ]
++  },
++  {
++    "name": "Gummibärchen",
++    "emoji": "🐻",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "fruchtgummi",
++      "gummy bears"
++    ]
++  },
++  {
++    "name": "Chips",
++    "emoji": "🥔",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "kartoffelchips",
++      "crisps"
++    ]
++  },
++  {
++    "name": "Salzstangen",
++    "emoji": "🥨",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "pretzel sticks"
++    ]
++  },
++  {
++    "name": "Erdnussflips",
++    "emoji": "🥜",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "flips"
++    ]
++  },
++  {
++    "name": "Popcorn",
++    "emoji": "🍿",
++    "category": "suesses_snacks",
++    "synonyms": []
++  },
++  {
++    "name": "Kekse süß",
++    "emoji": "🍪",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "cookies süß"
++    ]
++  },
++  {
++    "name": "Bonbons",
++    "emoji": "🍬",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "süßigkeiten",
++      "candy"
++    ]
++  },
++  {
++    "name": "Lakritz",
++    "emoji": "🖤",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "licorice"
++    ]
++  },
++  {
++    "name": "Kaugummi",
++    "emoji": "🍬",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "chewing gum"
++    ]
++  },
++  {
++    "name": "Nussmischung",
++    "emoji": "🥜",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "studentenfutter",
++      "trail mix"
++    ]
++  },
++  {
++    "name": "Müsliriegel",
++    "emoji": "🍫",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "cerealriegel",
++      "granola bar"
++    ]
++  },
++  {
++    "name": "Schokoriegel",
++    "emoji": "🍫",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "candy bar"
++    ]
++  },
++  {
++    "name": "Marshmallows",
++    "emoji": "🍡",
++    "category": "suesses_snacks",
++    "synonyms": []
++  },
++  {
++    "name": "Kuchenmischung",
++    "emoji": "🎂",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "backmischung",
++      "cake mix"
++    ]
++  },
++  {
++    "name": "Pudding Pulver",
++    "emoji": "🍮",
++    "category": "suesses_snacks",
++    "synonyms": []
++  },
++  {
++    "name": "Tortenguss",
++    "emoji": "🍰",
++    "category": "suesses_snacks",
++    "synonyms": []
++  },
++  {
++    "name": "Vanilleeis",
++    "emoji": "🍦",
++    "category": "tiefkuehl",
++    "synonyms": [
++      "vanilla ice cream"
++    ]
++  },
++  {
++    "name": "Waffeln süß",
++    "emoji": "🧇",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "waffles"
++    ]
++  },
++  {
++    "name": "Kokosraspeln",
++    "emoji": "🥥",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "coconut flakes"
++    ]
++  },
++  {
++    "name": "Rosinen Snack",
++    "emoji": "🍇",
++    "category": "suesses_snacks",
++    "synonyms": []
++  },
++  {
++    "name": "Trockenobst Snack",
++    "emoji": "🍑",
++    "category": "suesses_snacks",
++    "synonyms": []
++  },
++  {
++    "name": "Schokodrops",
++    "emoji": "🍫",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "chocolate chips"
++    ]
++  },
++  {
++    "name": "Nougat",
++    "emoji": "🍫",
++    "category": "suesses_snacks",
++    "synonyms": []
++  },
++  {
++    "name": "Marzipan",
++    "emoji": "🌰",
++    "category": "suesses_snacks",
++    "synonyms": []
++  },
++  {
++    "name": "Karamellbonbons",
++    "emoji": "🍬",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "caramels"
++    ]
++  },
++  {
++    "name": "Riegel Protein",
++    "emoji": "🍫",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "proteinriegel",
++      "protein bar"
++    ]
++  },
++  {
++    "name": "Reiswaffeln",
++    "emoji": "🍘",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "rice cakes"
++    ]
++  },
++  {
++    "name": "Tortilla Chips",
++    "emoji": "🌽",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "nachos"
++    ]
++  },
++  {
++    "name": "Erdnüsse geröstet",
++    "emoji": "🥜",
++    "category": "suesses_snacks",
++    "synonyms": [
++      "roasted peanuts"
++    ]
++  },
++  {
++    "name": "Wasser",
++    "emoji": "💧",
++    "category": "getraenke",
++    "synonyms": [
++      "mineralwasser",
++      "sprudel",
++      "water"
++    ]
++  },
++  {
++    "name": "Stilles Wasser",
++    "emoji": "💧",
++    "category": "getraenke",
++    "synonyms": [
++      "still water"
++    ]
++  },
++  {
++    "name": "Apfelsaft",
++    "emoji": "🧃",
++    "category": "getraenke",
++    "synonyms": [
++      "apple juice"
++    ]
++  },
++  {
++    "name": "Orangensaft",
++    "emoji": "🧃",
++    "category": "getraenke",
++    "synonyms": [
++      "o-saft",
++      "orange juice"
++    ]
++  },
++  {
++    "name": "Multivitaminsaft",
++    "emoji": "🧃",
++    "category": "getraenke",
++    "synonyms": [
++      "multivitamin"
++    ]
++  },
++  {
++    "name": "Traubensaft",
++    "emoji": "🧃",
++    "category": "getraenke",
++    "synonyms": [
++      "grape juice"
++    ]
++  },
++  {
++    "name": "Cola",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": [
++      "coca cola"
++    ]
++  },
++  {
++    "name": "Limonade",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": [
++      "limo",
++      "lemonade"
++    ]
++  },
++  {
++    "name": "Fanta",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": []
++  },
++  {
++    "name": "Eistee",
++    "emoji": "🧊",
++    "category": "getraenke",
++    "synonyms": [
++      "ice tea"
++    ]
++  },
++  {
++    "name": "Energydrink",
++    "emoji": "⚡",
++    "category": "getraenke",
++    "synonyms": [
++      "energy drink"
++    ]
++  },
++  {
++    "name": "Bier",
++    "emoji": "🍺",
++    "category": "getraenke",
++    "synonyms": [
++      "beer"
++    ]
++  },
++  {
++    "name": "Alkoholfreies Bier",
++    "emoji": "🍺",
++    "category": "getraenke",
++    "synonyms": [
++      "alkoholfrei bier"
++    ]
++  },
++  {
++    "name": "Wein",
++    "emoji": "🍷",
++    "category": "getraenke",
++    "synonyms": [
++      "rotwein",
++      "weißwein",
++      "wine"
++    ]
++  },
++  {
++    "name": "Sekt",
++    "emoji": "🍾",
++    "category": "getraenke",
++    "synonyms": [
++      "prosecco",
++      "champagner"
++    ]
++  },
++  {
++    "name": "Schorle",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": [
++      "apfelschorle"
++    ]
++  },
++  {
++    "name": "Tonic Water",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": [
++      "tonic"
++    ]
++  },
++  {
++    "name": "Ginger Ale",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": []
++  },
++  {
++    "name": "Kaffeekapseln",
++    "emoji": "☕",
++    "category": "getraenke",
++    "synonyms": [
++      "kapseln"
++    ]
++  },
++  {
++    "name": "Instantkaffee",
++    "emoji": "☕",
++    "category": "getraenke",
++    "synonyms": [
++      "löslicher kaffee"
++    ]
++  },
++  {
++    "name": "Milchshake",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": [
++      "milkshake"
++    ]
++  },
++  {
++    "name": "Smoothie",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": []
++  },
++  {
++    "name": "Kokoswasser",
++    "emoji": "🥥",
++    "category": "getraenke",
++    "synonyms": [
++      "coconut water"
++    ]
++  },
++  {
++    "name": "Sirup",
++    "emoji": "🧃",
++    "category": "getraenke",
++    "synonyms": [
++      "fruchtsirup",
++      "syrup"
++    ]
++  },
++  {
++    "name": "Malzbier",
++    "emoji": "🍺",
++    "category": "getraenke",
++    "synonyms": []
++  },
++  {
++    "name": "Traubensaft rot",
++    "emoji": "🧃",
++    "category": "getraenke",
++    "synonyms": []
++  },
++  {
++    "name": "Sportgetränk",
++    "emoji": "🥤",
++    "category": "getraenke",
++    "synonyms": [
++      "isodrink",
++      "isotonic drink"
++    ]
++  },
++  {
++    "name": "Whisky",
++    "emoji": "🥃",
++    "category": "getraenke",
++    "synonyms": [
++      "whiskey"
++    ]
++  },
++  {
++    "name": "Wodka",
++    "emoji": "🥃",
++    "category": "getraenke",
++    "synonyms": [
++      "vodka"
++    ]
++  },
++  {
++    "name": "Rum",
++    "emoji": "🥃",
++    "category": "getraenke",
++    "synonyms": []
++  },
++  {
++    "name": "Gin",
++    "emoji": "🥃",
++    "category": "getraenke",
++    "synonyms": []
++  },
++  {
++    "name": "Likör",
++    "emoji": "🥃",
++    "category": "getraenke",
++    "synonyms": [
++      "liqueur"
++    ]
++  },
++  {
++    "name": "Kräutertee",
++    "emoji": "🍵",
++    "category": "getraenke",
++    "synonyms": [
++      "herbal tea"
++    ]
++  },
++  {
++    "name": "Früchtetee",
++    "emoji": "🍵",
++    "category": "getraenke",
++    "synonyms": [
++      "fruit tea"
++    ]
++  },
++  {
++    "name": "Grüner Tee",
++    "emoji": "🍵",
++    "category": "getraenke",
++    "synonyms": [
++      "green tea"
++    ]
++  },
++  {
++    "name": "Barbecuesauce",
++    "emoji": "🍖",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "bbq sauce",
++      "grillsauce"
++    ]
++  },
++  {
++    "name": "Chilisauce",
++    "emoji": "🌶️",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "chili sauce"
++    ]
++  },
++  {
++    "name": "Sambal Oelek",
++    "emoji": "🌶️",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Pesto",
++    "emoji": "🌿",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Currypaste",
++    "emoji": "🍛",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "curry paste"
++    ]
++  },
++  {
++    "name": "Worcestersauce",
++    "emoji": "🍶",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "worcestershire sauce"
++    ]
++  },
++  {
++    "name": "Remoulade",
++    "emoji": "🥚",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Salatdressing",
++    "emoji": "🥗",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "dressing"
++    ]
++  },
++  {
++    "name": "Kräutersalz",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Currypulver mild",
++    "emoji": "🍛",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Zimtstangen",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "cinnamon sticks"
++    ]
++  },
++  {
++    "name": "Lorbeerblätter",
++    "emoji": "🌿",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "bay leaves"
++    ]
++  },
++  {
++    "name": "Thymian",
++    "emoji": "🌿",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "thyme"
++    ]
++  },
++  {
++    "name": "Rosmarin",
++    "emoji": "🌿",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "rosemary"
++    ]
++  },
++  {
++    "name": "Kreuzkümmel",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "cumin"
++    ]
++  },
++  {
++    "name": "Kurkuma",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "turmeric"
++    ]
++  },
++  {
++    "name": "Ingwerpulver",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "ginger powder"
++    ]
++  },
++  {
++    "name": "Zwiebelpulver",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "onion powder"
++    ]
++  },
++  {
++    "name": "Chiliflocken",
++    "emoji": "🌶️",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "chili flakes"
++    ]
++  },
++  {
++    "name": "Sojasauce dunkel",
++    "emoji": "🍶",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "dark soy sauce"
++    ]
++  },
++  {
++    "name": "Fischsauce",
++    "emoji": "🐟",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "fish sauce"
++    ]
++  },
++  {
++    "name": "Austernsauce",
++    "emoji": "🦪",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "oyster sauce"
++    ]
++  },
++  {
++    "name": "Pizzagewürz",
++    "emoji": "🍕",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Grillgewürz",
++    "emoji": "🍖",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Vanilleschote",
++    "emoji": "🌱",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "vanilla pod"
++    ]
++  },
++  {
++    "name": "Cayennepfeffer",
++    "emoji": "🌶️",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "cayenne pepper"
++    ]
++  },
++  {
++    "name": "Senfkörner",
++    "emoji": "🌭",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "mustard seeds"
++    ]
++  },
++  {
++    "name": "Sauce Hollandaise",
++    "emoji": "🍶",
++    "category": "gewuerze_saucen",
++    "synonyms": []
++  },
++  {
++    "name": "Bratensauce",
++    "emoji": "🍖",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "gravy"
++    ]
++  },
++  {
++    "name": "Pfeffer bunt",
++    "emoji": "🧂",
++    "category": "gewuerze_saucen",
++    "synonyms": [
++      "mixed pepper"
++    ]
++  },
++  {
++    "name": "Zahnpasta",
++    "emoji": "🪥",
++    "category": "drogerie",
++    "synonyms": [
++      "zahncreme",
++      "toothpaste"
++    ]
++  },
++  {
++    "name": "Zahnbürste",
++    "emoji": "🪥",
++    "category": "drogerie",
++    "synonyms": [
++      "toothbrush"
++    ]
++  },
++  {
++    "name": "Zahnseide",
++    "emoji": "🪥",
++    "category": "drogerie",
++    "synonyms": [
++      "dental floss"
++    ]
++  },
++  {
++    "name": "Mundspülung",
++    "emoji": "🪥",
++    "category": "drogerie",
++    "synonyms": [
++      "mundwasser",
++      "mouthwash"
++    ]
++  },
++  {
++    "name": "Duschgel",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "shower gel"
++    ]
++  },
++  {
++    "name": "Shampoo",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": []
++  },
++  {
++    "name": "Spülung",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "conditioner"
++    ]
++  },
++  {
++    "name": "Seife",
++    "emoji": "🧼",
++    "category": "drogerie",
++    "synonyms": [
++      "handseife",
++      "soap"
++    ]
++  },
++  {
++    "name": "Deo",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "deodorant"
++    ]
++  },
++  {
++    "name": "Rasierer",
++    "emoji": "🪒",
++    "category": "drogerie",
++    "synonyms": [
++      "rasierklingen",
++      "razor"
++    ]
++  },
++  {
++    "name": "Rasierschaum",
++    "emoji": "🪒",
++    "category": "drogerie",
++    "synonyms": [
++      "rasiergel",
++      "shaving foam"
++    ]
++  },
++  {
++    "name": "Damenbinden",
++    "emoji": "🩸",
++    "category": "drogerie",
++    "synonyms": [
++      "binden",
++      "sanitary pads"
++    ]
++  },
++  {
++    "name": "Tampons",
++    "emoji": "🩸",
++    "category": "drogerie",
++    "synonyms": []
++  },
++  {
++    "name": "Toilettenpapier",
++    "emoji": "🧻",
++    "category": "haushalt",
++    "synonyms": [
++      "klopapier",
++      "toilet paper"
++    ]
++  },
++  {
++    "name": "Taschentücher",
++    "emoji": "🤧",
++    "category": "drogerie",
++    "synonyms": [
++      "tempo",
++      "tissues"
++    ]
++  },
++  {
++    "name": "Feuchttücher",
++    "emoji": "🧻",
++    "category": "drogerie",
++    "synonyms": [
++      "wet wipes"
++    ]
++  },
++  {
++    "name": "Handcreme",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "hand cream"
++    ]
++  },
++  {
++    "name": "Bodylotion",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "körperlotion",
++      "body lotion"
++    ]
++  },
++  {
++    "name": "Sonnencreme",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "sunscreen"
++    ]
++  },
++  {
++    "name": "Lippenpflege",
++    "emoji": "💋",
++    "category": "drogerie",
++    "synonyms": [
++      "labello",
++      "lip balm"
++    ]
++  },
++  {
++    "name": "Wattestäbchen",
++    "emoji": "🩹",
++    "category": "drogerie",
++    "synonyms": [
++      "cotton swabs"
++    ]
++  },
++  {
++    "name": "Wattepads",
++    "emoji": "🩹",
++    "category": "drogerie",
++    "synonyms": [
++      "cotton pads"
++    ]
++  },
++  {
++    "name": "Nagellack",
++    "emoji": "💅",
++    "category": "drogerie",
++    "synonyms": [
++      "nail polish"
++    ]
++  },
++  {
++    "name": "Nagelschere",
++    "emoji": "✂️",
++    "category": "drogerie",
++    "synonyms": [
++      "nail scissors"
++    ]
++  },
++  {
++    "name": "Kamm",
++    "emoji": "💇",
++    "category": "drogerie",
++    "synonyms": [
++      "comb"
++    ]
++  },
++  {
++    "name": "Haarbürste",
++    "emoji": "💇",
++    "category": "drogerie",
++    "synonyms": [
++      "hairbrush"
++    ]
++  },
++  {
++    "name": "Haargel",
++    "emoji": "💇",
++    "category": "drogerie",
++    "synonyms": [
++      "hair gel"
++    ]
++  },
++  {
++    "name": "Haarspray",
++    "emoji": "💇",
++    "category": "drogerie",
++    "synonyms": [
++      "hairspray"
++    ]
++  },
++  {
++    "name": "Make-up",
++    "emoji": "💄",
++    "category": "drogerie",
++    "synonyms": [
++      "makeup",
++      "kosmetik"
++    ]
++  },
++  {
++    "name": "Lippenstift",
++    "emoji": "💄",
++    "category": "drogerie",
++    "synonyms": [
++      "lipstick"
++    ]
++  },
++  {
++    "name": "Wimperntusche",
++    "emoji": "💄",
++    "category": "drogerie",
++    "synonyms": [
++      "mascara"
++    ]
++  },
++  {
++    "name": "Gesichtscreme",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "face cream"
++    ]
++  },
++  {
++    "name": "Reinigungsmilch",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "cleansing milk"
++    ]
++  },
++  {
++    "name": "Kondome",
++    "emoji": "🍆",
++    "category": "drogerie",
++    "synonyms": [
++      "condoms"
++    ]
++  },
++  {
++    "name": "Schmerztabletten",
++    "emoji": "💊",
++    "category": "drogerie",
++    "synonyms": [
++      "kopfschmerztabletten",
++      "painkillers"
++    ]
++  },
++  {
++    "name": "Pflaster",
++    "emoji": "🩹",
++    "category": "drogerie",
++    "synonyms": [
++      "band-aid",
++      "plaster"
++    ]
++  },
++  {
++    "name": "Hustensaft",
++    "emoji": "🍯",
++    "category": "drogerie",
++    "synonyms": [
++      "cough syrup"
++    ]
++  },
++  {
++    "name": "Vitamintabletten",
++    "emoji": "💊",
++    "category": "drogerie",
++    "synonyms": [
++      "vitamine",
++      "vitamins"
++    ]
++  },
++  {
++    "name": "Sonnenschutz Spray",
++    "emoji": "🧴",
++    "category": "drogerie",
++    "synonyms": [
++      "sun spray"
++    ]
++  },
++  {
++    "name": "Einwegrasierer",
++    "emoji": "🪒",
++    "category": "drogerie",
++    "synonyms": [
++      "disposable razor"
++    ]
++  },
++  {
++    "name": "Zahnspange Reiniger",
++    "emoji": "🪥",
++    "category": "drogerie",
++    "synonyms": []
++  },
++  {
++    "name": "Küchenrolle",
++    "emoji": "🧻",
++    "category": "haushalt",
++    "synonyms": [
++      "küchenpapier",
++      "paper towels"
++    ]
++  },
++  {
++    "name": "Müllbeutel",
++    "emoji": "🗑️",
++    "category": "haushalt",
++    "synonyms": [
++      "mülltüten",
++      "garbage bags"
++    ]
++  },
++  {
++    "name": "Spülmittel",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "geschirrspülmittel",
++      "dish soap"
++    ]
++  },
++  {
++    "name": "Spülmaschinentabs",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "geschirrspültabs",
++      "dishwasher tabs"
++    ]
++  },
++  {
++    "name": "Waschmittel",
++    "emoji": "🧺",
++    "category": "haushalt",
++    "synonyms": [
++      "waschpulver",
++      "laundry detergent"
++    ]
++  },
++  {
++    "name": "Weichspüler",
++    "emoji": "🧺",
++    "category": "haushalt",
++    "synonyms": [
++      "fabric softener"
++    ]
++  },
++  {
++    "name": "Fleckenentferner",
++    "emoji": "🧺",
++    "category": "haushalt",
++    "synonyms": [
++      "stain remover"
++    ]
++  },
++  {
++    "name": "Allzweckreiniger",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "universalreiniger",
++      "all-purpose cleaner"
++    ]
++  },
++  {
++    "name": "Glasreiniger",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "glass cleaner"
++    ]
++  },
++  {
++    "name": "Badreiniger",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "bathroom cleaner"
++    ]
++  },
++  {
++    "name": "WC-Reiniger",
++    "emoji": "🚽",
++    "category": "haushalt",
++    "synonyms": [
++      "toilettenreiniger",
++      "toilet cleaner"
++    ]
++  },
++  {
++    "name": "Entkalker",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "descaler"
++    ]
++  },
++  {
++    "name": "Schwämme",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "schwamm",
++      "sponges"
++    ]
++  },
++  {
++    "name": "Spültuch",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "dishcloth"
++    ]
++  },
++  {
++    "name": "Mikrofasertuch",
++    "emoji": "🧽",
++    "category": "haushalt",
++    "synonyms": [
++      "microfiber cloth"
++    ]
++  },
++  {
++    "name": "Alufolie",
++    "emoji": "🧻",
++    "category": "haushalt",
++    "synonyms": [
++      "aluminum foil"
++    ]
++  },
++  {
++    "name": "Frischhaltefolie",
++    "emoji": "🧻",
++    "category": "haushalt",
++    "synonyms": [
++      "cling film"
++    ]
++  },
++  {
++    "name": "Backpapier",
++    "emoji": "🧻",
++    "category": "haushalt",
++    "synonyms": [
++      "baking paper"
++    ]
++  },
++  {
++    "name": "Gefrierbeutel",
++    "emoji": "🧊",
++    "category": "haushalt",
++    "synonyms": [
++      "freezer bags"
++    ]
++  },
++  {
++    "name": "Streichhölzer",
++    "emoji": "🔥",
++    "category": "haushalt",
++    "synonyms": [
++      "matches"
++    ]
++  },
++  {
++    "name": "Feuerzeug",
++    "emoji": "🔥",
++    "category": "haushalt",
++    "synonyms": [
++      "lighter"
++    ]
++  },
++  {
++    "name": "Kerzen",
++    "emoji": "🕯️",
++    "category": "haushalt",
++    "synonyms": [
++      "candles"
++    ]
++  },
++  {
++    "name": "Batterien",
++    "emoji": "🔋",
++    "category": "haushalt",
++    "synonyms": [
++      "batteries"
++    ]
++  },
++  {
++    "name": "Glühbirne",
++    "emoji": "💡",
++    "category": "haushalt",
++    "synonyms": [
++      "leuchtmittel",
++      "lightbulb"
++    ]
++  },
++  {
++    "name": "Müllsackständer Beutel",
++    "emoji": "🗑️",
++    "category": "haushalt",
++    "synonyms": []
++  },
++  {
++    "name": "Staubsaugerbeutel",
++    "emoji": "🧹",
++    "category": "haushalt",
++    "synonyms": [
++      "vacuum bags"
++    ]
++  },
++  {
++    "name": "Besen",
++    "emoji": "🧹",
++    "category": "haushalt",
++    "synonyms": [
++      "broom"
++    ]
++  },
++  {
++    "name": "Wischmopp",
++    "emoji": "🧹",
++    "category": "haushalt",
++    "synonyms": [
++      "mop"
++    ]
++  },
++  {
++    "name": "Eimer",
++    "emoji": "🪣",
++    "category": "haushalt",
++    "synonyms": [
++      "bucket"
++    ]
++  },
++  {
++    "name": "Gummihandschuhe",
++    "emoji": "🧤",
++    "category": "haushalt",
++    "synonyms": [
++      "putzhandschuhe",
++      "rubber gloves"
++    ]
++  },
++  {
++    "name": "Kaffeefilter",
++    "emoji": "☕",
++    "category": "haushalt",
++    "synonyms": [
++      "coffee filters"
++    ]
++  },
++  {
++    "name": "Teelichter",
++    "emoji": "🕯️",
++    "category": "haushalt",
++    "synonyms": [
++      "tealights"
++    ]
++  },
++  {
++    "name": "Servietten",
++    "emoji": "🧻",
++    "category": "haushalt",
++    "synonyms": [
++      "napkins"
++    ]
++  },
++  {
++    "name": "Zahnstocher",
++    "emoji": "🥢",
++    "category": "haushalt",
++    "synonyms": [
++      "toothpicks"
++    ]
++  },
++  {
++    "name": "Trinkhalme",
++    "emoji": "🥤",
++    "category": "haushalt",
++    "synonyms": [
++      "straws"
++    ]
++  },
++  {
++    "name": "Windeln",
++    "emoji": "🍼",
++    "category": "baby",
++    "synonyms": [
++      "diapers"
++    ]
++  },
++  {
++    "name": "Feuchttücher Baby",
++    "emoji": "🍼",
++    "category": "baby",
++    "synonyms": [
++      "baby wipes"
++    ]
++  },
++  {
++    "name": "Babynahrung",
++    "emoji": "🍼",
++    "category": "baby",
++    "synonyms": [
++      "babybrei",
++      "baby food"
++    ]
++  },
++  {
++    "name": "Milchpulver",
++    "emoji": "🍼",
++    "category": "baby",
++    "synonyms": [
++      "säuglingsnahrung",
++      "formula"
++    ]
++  },
++  {
++    "name": "Babyöl",
++    "emoji": "🍼",
++    "category": "baby",
++    "synonyms": [
++      "baby oil"
++    ]
++  },
++  {
++    "name": "Schnuller",
++    "emoji": "🍼",
++    "category": "baby",
++    "synonyms": [
++      "pacifier"
++    ]
++  },
++  {
++    "name": "Baby Shampoo",
++    "emoji": "🍼",
++    "category": "baby",
++    "synonyms": []
++  },
++  {
++    "name": "Wickelunterlage",
++    "emoji": "🍼",
++    "category": "baby",
++    "synonyms": [
++      "changing pad"
++    ]
++  },
++  {
++    "name": "Hundefutter",
++    "emoji": "🐕",
++    "category": "tier",
++    "synonyms": [
++      "dog food"
++    ]
++  },
++  {
++    "name": "Katzenfutter",
++    "emoji": "🐈",
++    "category": "tier",
++    "synonyms": [
++      "cat food"
++    ]
++  },
++  {
++    "name": "Katzenstreu",
++    "emoji": "🐈",
++    "category": "tier",
++    "synonyms": [
++      "cat litter"
++    ]
++  },
++  {
++    "name": "Tierleckerli",
++    "emoji": "🐾",
++    "category": "tier",
++    "synonyms": [
++      "hundeleckerli",
++      "treats"
++    ]
++  },
++  {
++    "name": "Vogelfutter",
++    "emoji": "🐦",
++    "category": "tier",
++    "synonyms": [
++      "bird food"
++    ]
++  },
++  {
++    "name": "Fischfutter",
++    "emoji": "🐠",
++    "category": "tier",
++    "synonyms": [
++      "fish food"
++    ]
++  },
++  {
++    "name": "Hundeleine",
++    "emoji": "🐕",
++    "category": "tier",
++    "synonyms": [
++      "dog leash"
++    ]
++  },
++  {
++    "name": "Kauknochen",
++    "emoji": "🦴",
++    "category": "tier",
++    "synonyms": [
++      "chew bone"
++    ]
++  },
++  {
++    "name": "Geschenkpapier",
++    "emoji": "🎁",
++    "category": "sonstiges",
++    "synonyms": [
++      "gift wrap"
++    ]
++  },
++  {
++    "name": "Grußkarte",
++    "emoji": "💌",
++    "category": "sonstiges",
++    "synonyms": [
++      "greeting card"
++    ]
++  },
++  {
++    "name": "Luftballons",
++    "emoji": "🎈",
++    "category": "sonstiges",
++    "synonyms": [
++      "balloons"
++    ]
++  },
++  {
++    "name": "Einkaufstasche",
++    "emoji": "🛍️",
++    "category": "sonstiges",
++    "synonyms": [
++      "shopping bag"
++    ]
++  },
++  {
++    "name": "Zeitschrift",
++    "emoji": "📰",
++    "category": "sonstiges",
++    "synonyms": [
++      "magazine"
++    ]
++  },
++  {
++    "name": "Blumen",
++    "emoji": "💐",
++    "category": "sonstiges",
++    "synonyms": [
++      "flowers"
++    ]
++  },
++  {
++    "name": "Handyzubehör",
++    "emoji": "📱",
++    "category": "sonstiges",
++    "synonyms": []
++  },
++  {
++    "name": "Sonnenbrille",
++    "emoji": "🕶️",
++    "category": "sonstiges",
++    "synonyms": [
++      "sunglasses"
++    ]
++  },
++  {
++    "name": "Regenschirm",
++    "emoji": "☂️",
++    "category": "sonstiges",
++    "synonyms": [
++      "umbrella"
++    ]
++  },
++  {
++    "name": "Grillkohle",
++    "emoji": "🔥",
++    "category": "sonstiges",
++    "synonyms": [
++      "holzkohle",
++      "charcoal"
++    ]
++  }
++]
+diff --git a/packages/app-mobile/lists/core/crypto.test.ts b/packages/app-mobile/lists/core/crypto.test.ts
+new file mode 100644
+index 0000000..a061138
+--- /dev/null
++++ b/packages/app-mobile/lists/core/crypto.test.ts
+@@ -0,0 +1,95 @@
++import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools';
++import {
++	bytesToHex,
++	conversationKey,
++	decryptWithKey,
++	deriveOpenListKeys,
++	dTag,
++	encryptWithKey,
++	generateContentKey,
++	generateKeyPair,
++	generateListKey,
++	hexToBytes,
++} from './crypto';
++
++describe('lists/core/crypto', () => {
++	test('generateKeyPair produces a valid, verifiable device key pair', () => {
++		const pair = generateKeyPair();
++		expect(pair.secretKey).toHaveLength(32);
++		expect(pair.publicKey).toMatch(/^[0-9a-f]{64}$/);
++
++		// A pair that can actually sign and be verified with is a usable key pair.
++		const event = finalizeEvent({ kind: 1, tags: [], content: 'hi', created_at: 0 }, pair.secretKey);
++		expect(event.pubkey).toBe(pair.publicKey);
++		expect(verifyEvent(event)).toBe(true);
++	});
++
++	test('generateListKey and generateContentKey produce distinct 32-byte random keys', () => {
++		expect(generateListKey()).toHaveLength(32);
++		expect(bytesToHex(generateListKey())).not.toBe(bytesToHex(generateListKey()));
++		expect(generateContentKey()).toHaveLength(32);
++	});
++
++	test('deriveOpenListKeys is deterministic', () => {
++		const listKey = generateListKey();
++		const a = deriveOpenListKeys(listKey);
++		const b = deriveOpenListKeys(listKey);
++
++		expect(bytesToHex(a.listSecretKey)).toBe(bytesToHex(b.listSecretKey));
++		expect(a.listPubkey).toBe(b.listPubkey);
++		expect(bytesToHex(a.contentKey)).toBe(bytesToHex(b.contentKey));
++	});
++
++	test('deriveOpenListKeys derives a usable list key pair', () => {
++		const { listSecretKey, listPubkey } = deriveOpenListKeys(generateListKey());
++		expect(getPublicKey(listSecretKey)).toBe(listPubkey);
++	});
++
++	test('deriveOpenListKeys derives different keys for different list keys', () => {
++		const a = deriveOpenListKeys(generateListKey());
++		const b = deriveOpenListKeys(generateListKey());
++		expect(a.listPubkey).not.toBe(b.listPubkey);
++		expect(bytesToHex(a.contentKey)).not.toBe(bytesToHex(b.contentKey));
++	});
++
++	test('dTag is stable for the same content key and name, and differs otherwise', () => {
++		const contentKey = generateContentKey();
++		const tagA = dTag(contentKey, 'milch');
++		const tagB = dTag(contentKey, 'milch');
++		expect(tagA).toBe(tagB);
++		expect(tagA).toMatch(/^[0-9a-f]{64}$/);
++
++		expect(dTag(contentKey, 'butter')).not.toBe(tagA);
++		expect(dTag(generateContentKey(), 'milch')).not.toBe(tagA);
++	});
++
++	test('encryptWithKey/decryptWithKey round-trip with a shared content key', () => {
++		const key = generateContentKey();
++		const ciphertext = encryptWithKey(key, 'hello shopping list');
++		expect(ciphertext).not.toContain('hello');
++		expect(decryptWithKey(key, ciphertext)).toBe('hello shopping list');
++	});
++
++	test('decrypting with the wrong key fails', () => {
++		const ciphertext = encryptWithKey(generateContentKey(), 'secret');
++		expect(() => decryptWithKey(generateContentKey(), ciphertext)).toThrow();
++	});
++
++	test('conversationKey lets two device key pairs agree on the same shared secret', () => {
++		const alice = generateKeyPair();
++		const bob = generateKeyPair();
++
++		const aliceToBob = conversationKey(alice.secretKey, bob.publicKey);
++		const bobToAlice = conversationKey(bob.secretKey, alice.publicKey);
++
++		expect(bytesToHex(aliceToBob)).toBe(bytesToHex(bobToAlice));
++
++		const ciphertext = encryptWithKey(aliceToBob, 'join request');
++		expect(decryptWithKey(bobToAlice, ciphertext)).toBe('join request');
++	});
++
++	test('hexToBytes/bytesToHex round-trip', () => {
++		const bytes = generateContentKey();
++		expect(hexToBytes(bytesToHex(bytes))).toEqual(bytes);
++	});
++});
+diff --git a/packages/app-mobile/lists/core/crypto.ts b/packages/app-mobile/lists/core/crypto.ts
+new file mode 100644
+index 0000000..610a22c
+--- /dev/null
++++ b/packages/app-mobile/lists/core/crypto.ts
+@@ -0,0 +1,56 @@
++import { generateSecretKey, getPublicKey, nip44 } from 'nostr-tools';
++import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils';
++import { hkdf } from '@noble/hashes/hkdf';
++import { hmac } from '@noble/hashes/hmac';
++import { sha256 } from '@noble/hashes/sha256';
++
++export interface KeyPair {
++	secretKey: Uint8Array;
++	publicKey: string;
++}
++
++// Used for both device identities and a managed list's own (random) key pair.
++export const generateKeyPair = (): KeyPair => {
++	const secretKey = generateSecretKey();
++	return { secretKey, publicKey: getPublicKey(secretKey) };
++};
++
++export const generateListKey = (): Uint8Array => randomBytes(32);
++export const generateContentKey = (): Uint8Array => randomBytes(32);
++
++const deriveKey = (ikm: Uint8Array, info: string, length = 32): Uint8Array => hkdf(sha256, ikm, undefined, info, length);
++
++const LIST_SECRET_KEY_INFO = 'joplin-tiles/list/nostr-sk';
++const CONTENT_KEY_INFO = 'joplin-tiles/list/content-key';
++
++export interface OpenListKeys {
++	listSecretKey: Uint8Array;
++	listPubkey: string;
++	contentKey: Uint8Array;
++}
++
++// Derives an open list's identity and content key from its shared list key
++// (the secret carried by an open-list invite). Deterministic: the same list
++// key always derives the same keys, on any device.
++export const deriveOpenListKeys = (listKey: Uint8Array): OpenListKeys => {
++	const listSecretKey = deriveKey(listKey, LIST_SECRET_KEY_INFO);
++	return {
++		listSecretKey,
++		listPubkey: getPublicKey(listSecretKey),
++		contentKey: deriveKey(listKey, CONTENT_KEY_INFO),
++	};
++};
++
++export const hmacSha256 = (key: Uint8Array, message: string): Uint8Array => hmac(sha256, key, new TextEncoder().encode(message));
++
++// HMAC(contentKey, 'item:' + normalizedName), the addressable event's d-tag.
++export const dTag = (contentKey: Uint8Array, normalizedName: string): string => bytesToHex(hmacSha256(contentKey, `item:${normalizedName}`));
++
++export const encryptWithKey = (key: Uint8Array, plaintext: string): string => nip44.encrypt(plaintext, key);
++export const decryptWithKey = (key: Uint8Array, payload: string): string => nip44.decrypt(payload, key);
++
++// Conversation key for direct (device-to-device) NIP-44 messages, e.g. wrapping
++// a content key for a specific member, or a join request sent to an admin.
++export const conversationKey = (secretKey: Uint8Array, peerPubkey: string): Uint8Array => nip44.getConversationKey(secretKey, peerPubkey);
++
++export { bytesToHex, hexToBytes, randomBytes };
+diff --git a/packages/app-mobile/lists/core/db.test.ts b/packages/app-mobile/lists/core/db.test.ts
+new file mode 100644
+index 0000000..4698a02
+--- /dev/null
++++ b/packages/app-mobile/lists/core/db.test.ts
+@@ -0,0 +1,158 @@
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import { ListsDatabase } from './db';
++import { bytesToHex } from './crypto';
++import { ItemRecord, ListRecord, MemberRecord } from './types';
++
++const openTestDatabase = async (): Promise<{ db: ListsDatabase; path: string }> => {
++	const path = join(tmpdir(), `tiles-lists-test-${uuid.createNano()}.sqlite`);
++	const db = new ListsDatabase(new Database(new DatabaseDriverNode()));
++	await db.openOrCreate(path);
++	return { db, path };
++};
++
++const item = (overrides: Partial<ItemRecord> = {}): ItemRecord => ({
++	listId: 'list-1', dTag: 'tag-1', name: 'Milch',
++	detail: null, detailT: null, category: null, categoryT: null, icon: null, iconT: null,
++	open: true, openT: 1, deleted: false, deletedT: null, device: 'aaaaaaaa', pending: false,
++	...overrides,
++});
++
++describe('lists/core/db', () => {
++	let db: ListsDatabase;
++	let path: string;
++
++	beforeEach(async () => {
++		({ db, path } = await openTestDatabase());
++	});
++
++	afterEach(async () => {
++		await db.close();
++		await rm(path, { force: true });
++	});
++
++	test('opening twice does not re-create the schema', async () => {
++		await db.openOrCreate(path);
++		await expect(db.lists()).resolves.toEqual([]);
++	});
++
++	test('deviceIdentity is generated once and then persisted', async () => {
++		const a = await db.deviceIdentity();
++		const b = await db.deviceIdentity();
++		expect(a.publicKey).toBe(b.publicKey);
++		expect(a.name).toBe('Joplin Tiles');
++	});
++
++	test('createList generates an open list with a list key and a content key', async () => {
++		const list = await db.createList('open', 'Groceries');
++		expect(list.kind).toBe('open');
++		expect(list.listKey).toMatch(/^[0-9a-f]{64}$/);
++		expect(list.contentKey).toMatch(/^[0-9a-f]{64}$/);
++
++		const stored = await db.list(list.id);
++		expect(stored).toEqual(list);
++	});
++
++	test('createList generates a managed list whose id is its own key pair', async () => {
++		const list = await db.createList('managed', 'Household');
++		expect(list.kind).toBe('managed');
++		expect(list.listKey).toMatch(/^[0-9a-f]{64}$/); // the list's own secret key, held by the creator
++		expect(list.contentKey).toMatch(/^[0-9a-f]{64}$/);
++	});
++
++	test('importList persists a list record as given, without generating keys', async () => {
++		const record: ListRecord = {
++			id: 'imported-id', kind: 'managed', listKey: null, contentKey: null,
++			name: 'Joined list', settings: null, relays: null, sortOrder: 0,
++		};
++		await db.importList(record);
++		expect(await db.list('imported-id')).toEqual(record);
++	});
++
++	test('items() excludes deleted items and can filter by open state', async () => {
++		await db.upsertItem(item({ dTag: 'open-item', open: true }));
++		await db.upsertItem(item({ dTag: 'closed-item', open: false }));
++		await db.upsertItem(item({ dTag: 'deleted-item', deleted: true, deletedT: 5 }));
++
++		const all = await db.items('list-1');
++		expect(all.map(i => i.dTag).sort()).toEqual(['closed-item', 'open-item']);
++
++		const openOnly = await db.items('list-1', { open: true });
++		expect(openOnly.map(i => i.dTag)).toEqual(['open-item']);
++	});
++
++	test('setOpen, setDetail and deleteItem update the targeted item and mark it pending', async () => {
++		await db.upsertItem(item({ pending: false }));
++
++		await db.setOpen('list-1', 'tag-1', false, 10, 'bbbbbbbb');
++		let stored = await db.item('list-1', 'tag-1');
++		expect(stored).toMatchObject({ open: false, openT: 10, device: 'bbbbbbbb', pending: true });
++
++		await db.setDetail('list-1', 'tag-1', '2 l', 11, 'bbbbbbbb');
++		stored = await db.item('list-1', 'tag-1');
++		expect(stored).toMatchObject({ detail: '2 l', detailT: 11 });
++
++		await db.deleteItem('list-1', 'tag-1', 12, 'bbbbbbbb');
++		stored = await db.item('list-1', 'tag-1');
++		expect(stored).toMatchObject({ deleted: true, deletedT: 12 });
++	});
++
++	test('undeleteItem revives a tombstoned item and re-opens it', async () => {
++		await db.upsertItem(item({ deleted: true, deletedT: 5, open: false }));
++
++		await db.undeleteItem('list-1', 'tag-1', 20, 'cccccccc');
++
++		const stored = await db.item('list-1', 'tag-1');
++		expect(stored).toMatchObject({ deleted: false, open: true, openT: 20 });
++	});
++
++	test('maxSeenTime returns the highest field timestamp seen for the list', async () => {
++		await db.upsertItem(item({ dTag: 'a', openT: 5, detail: 'x', detailT: 50 }));
++		await db.upsertItem(item({ dTag: 'b', openT: 30, categoryT: null }));
++
++		expect(await db.maxSeenTime('list-1')).toBe(50);
++		expect(await db.maxSeenTime('unknown-list')).toBe(0);
++	});
++
++	test('pendingItems and markPublished track which items still need publishing', async () => {
++		await db.upsertItem(item({ dTag: 'a', pending: true }));
++		await db.upsertItem(item({ dTag: 'b', pending: false }));
++
++		expect((await db.pendingItems('list-1')).map(i => i.dTag)).toEqual(['a']);
++
++		await db.markPublished('list-1', 'a');
++		expect(await db.pendingItems('list-1')).toEqual([]);
++	});
++
++	test('members can be upserted and removed (tombstoned)', async () => {
++		const member: MemberRecord = { listId: 'list-1', pubkey: 'mem1', name: 'Sebastian', role: 'admin', since: 1, removedAt: null };
++		await db.upsertMember(member);
++		expect(await db.members('list-1')).toEqual([member]);
++
++		await db.removeMember('list-1', 'mem1', 42);
++		expect(await db.members('list-1')).toEqual([{ ...member, removedAt: 42 }]);
++	});
++
++	test('rotateContentKey and setContentKey change the list content key', async () => {
++		const list = await db.createList('managed', 'Household');
++		const rotated = await db.rotateContentKey(list.id);
++		const stored = await db.list(list.id);
++		expect(stored!.contentKey).not.toBe(list.contentKey);
++
++		await db.setContentKey(list.id, rotated);
++		expect((await db.list(list.id))!.contentKey).toBe(bytesToHex(rotated));
++	});
++
++	test('suggestions returns catalog matches by prefix, then previously used item names', async () => {
++		const fromCatalog = await db.suggestions('Milc');
++		expect(fromCatalog.some(s => s.canonical === 'Milch')).toBe(true);
++
++		await db.upsertItem(item({ dTag: 'custom', name: 'Zauberkeks' }));
++		const custom = await db.suggestions('Zauber');
++		expect(custom).toContainEqual({ canonical: 'Zauberkeks', emoji: null, category: null });
++	});
++});
+diff --git a/packages/app-mobile/lists/core/db.ts b/packages/app-mobile/lists/core/db.ts
+new file mode 100644
+index 0000000..cb564a6
+--- /dev/null
++++ b/packages/app-mobile/lists/core/db.ts
+@@ -0,0 +1,400 @@
++import Database, { Row } from '@joplin/lib/database';
++import { getPublicKey } from 'nostr-tools';
++import { generateContentKey, generateKeyPair, generateListKey, deriveOpenListKeys, bytesToHex, hexToBytes } from './crypto';
++import { normalizeName } from './normalize';
++import { CatalogItemDef, CatalogMatch, ItemRecord, ListKind, ListRecord, MemberRecord } from './types';
++
++// eslint-disable-next-line @typescript-eslint/no-var-requires -- plain JSON data file, no resolveJsonModule configured for this package
++const catalogItems: CatalogItemDef[] = require('../catalog/items.json');
++
++const SCHEMA_VERSION = 1;
++const DEFAULT_DEVICE_NAME = 'Joplin Tiles';
++
++const CREATE_TABLES: string[] = [
++	`CREATE TABLE lists (
++		id TEXT PRIMARY KEY,
++		kind TEXT NOT NULL,
++		list_key TEXT,
++		content_key TEXT,
++		name TEXT NOT NULL,
++		settings TEXT,
++		relays TEXT,
++		sort_order INTEGER NOT NULL DEFAULT 0
++	)`,
++	`CREATE TABLE members (
++		list_id TEXT NOT NULL,
++		pubkey TEXT NOT NULL,
++		name TEXT,
++		role TEXT NOT NULL,
++		since INTEGER NOT NULL,
++		removed_at INTEGER,
++		PRIMARY KEY (list_id, pubkey)
++	)`,
++	`CREATE TABLE items (
++		list_id TEXT NOT NULL,
++		d_tag TEXT NOT NULL,
++		name TEXT NOT NULL,
++		detail TEXT,
++		detail_t INTEGER,
++		category TEXT,
++		category_t INTEGER,
++		icon TEXT,
++		icon_t INTEGER,
++		open INTEGER NOT NULL,
++		open_t INTEGER NOT NULL,
++		deleted INTEGER NOT NULL DEFAULT 0,
++		deleted_t INTEGER,
++		device TEXT NOT NULL,
++		pending INTEGER NOT NULL DEFAULT 0,
++		PRIMARY KEY (list_id, d_tag)
++	)`,
++	'CREATE INDEX items_display ON items(list_id, deleted, open, category)',
++	'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)',
++];
++
++export interface DeviceIdentity {
++	secretKey: Uint8Array;
++	publicKey: string;
++	name: string;
++}
++
++const rowToList = (row: Row): ListRecord => ({
++	id: row.id,
++	kind: row.kind,
++	listKey: row.list_key ?? null,
++	contentKey: row.content_key ?? null,
++	name: row.name,
++	settings: row.settings ?? null,
++	relays: row.relays ? JSON.parse(row.relays) : null,
++	sortOrder: Number(row.sort_order),
++});
++
++const rowToMember = (row: Row): MemberRecord => ({
++	listId: row.list_id,
++	pubkey: row.pubkey,
++	name: row.name ?? null,
++	role: row.role,
++	since: Number(row.since),
++	removedAt: row.removed_at === null || row.removed_at === undefined ? null : Number(row.removed_at),
++});
++
++const nullableNumber = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
++
++const rowToItem = (row: Row): ItemRecord => ({
++	listId: row.list_id,
++	dTag: row.d_tag,
++	name: row.name,
++	detail: row.detail ?? null,
++	detailT: nullableNumber(row.detail_t),
++	category: row.category ?? null,
++	categoryT: nullableNumber(row.category_t),
++	icon: row.icon ?? null,
++	iconT: nullableNumber(row.icon_t),
++	open: !!row.open,
++	openT: Number(row.open_t),
++	deleted: !!row.deleted,
++	deletedT: nullableNumber(row.deleted_t),
++	device: row.device,
++	pending: !!row.pending,
++});
++
++// Local persistence for the shopping-list feature: its own SQLite file,
++// independent of Joplin's own database and migration numbering (see
++// docs/KONZEPT.md section 2). The Database instance (and its driver -- RN's
++// expo-sqlite in the app, the Node driver in tests) is provided by the caller.
++export class ListsDatabase {
++	private db: Database;
++	private opened = false;
++
++	public constructor(db: Database) {
++		this.db = db;
++	}
++
++	public async openOrCreate(name: string): Promise<void> {
++		if (this.opened) return;
++		await this.db.open({ name });
++		await this.migrate();
++		this.opened = true;
++	}
++
++	public async close(): Promise<void> {
++		if (!this.opened) return;
++		await this.db.close();
++		this.opened = false;
++	}
++
++	private async migrate(): Promise<void> {
++		const row = await this.db.selectOne('PRAGMA user_version');
++		const version = Number(row?.user_version ?? 0);
++		if (version < SCHEMA_VERSION) {
++			await this.db.transactionExecBatch([...CREATE_TABLES, `PRAGMA user_version = ${SCHEMA_VERSION}`]);
++		}
++	}
++
++	// --- meta / device identity -----------------------------------------
++
++	public async getMeta(key: string): Promise<string | null> {
++		const row = await this.db.selectOne('SELECT value FROM meta WHERE key = ?', [key]);
++		return row ? (row.value as string) : null;
++	}
++
++	public async setMeta(key: string, value: string): Promise<void> {
++		await this.db.exec(
++			'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
++			[key, value],
++		);
++	}
++
++	// Reads the device's key pair and display name from meta, generating and
++	// persisting a fresh key pair the first time this is called.
++	public async deviceIdentity(): Promise<DeviceIdentity> {
++		let secretHex = await this.getMeta('deviceSecretKey');
++		if (!secretHex) {
++			const pair = generateKeyPair();
++			secretHex = bytesToHex(pair.secretKey);
++			await this.setMeta('deviceSecretKey', secretHex);
++		}
++		let name = await this.getMeta('deviceName');
++		if (!name) {
++			name = DEFAULT_DEVICE_NAME;
++			await this.setMeta('deviceName', name);
++		}
++		const secretKey = hexToBytes(secretHex);
++		return { secretKey, publicKey: getPublicKey(secretKey), name };
++	}
++
++	public async setDeviceName(name: string): Promise<void> {
++		await this.setMeta('deviceName', name);
++	}
++
++	// --- lists -------------------------------------------------------------
++
++	public async lists(): Promise<ListRecord[]> {
++		const rows = await this.db.selectAll('SELECT * FROM lists ORDER BY sort_order ASC, name ASC');
++		return rows.map(rowToList);
++	}
++
++	public async list(id: string): Promise<ListRecord | null> {
++		const row = await this.db.selectOne('SELECT * FROM lists WHERE id = ?', [id]);
++		return row ? rowToList(row) : null;
++	}
++
++	// Persists a fully-formed list record as-is, without generating any keys.
++	// Used both by createList() below and when joining a list from an invite.
++	public async importList(record: ListRecord): Promise<void> {
++		const rows = await this.db.selectAll('SELECT COALESCE(MAX(sort_order), -1) as maxOrder FROM lists');
++		const nextOrder = record.sortOrder || Number(rows[0]?.maxOrder ?? -1) + 1;
++		await this.db.exec(
++			`INSERT INTO lists (id, kind, list_key, content_key, name, settings, relays, sort_order)
++				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
++				ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, list_key = excluded.list_key,
++					content_key = excluded.content_key, name = excluded.name, settings = excluded.settings,
++					relays = excluded.relays`,
++			[record.id, record.kind, record.listKey, record.contentKey, record.name, record.settings, record.relays ? JSON.stringify(record.relays) : null, nextOrder],
++		);
++	}
++
++	// Creates a brand-new list, generating its keys locally (see
++	// docs/KONZEPT.md section 3 for open vs. managed). For a managed list, the
++	// `list_key` column holds the list's own secret key -- kept only on the
++	// creating admin's device, never distributed -- rather than being empty as
++	// it is for a device that only ever joined one.
++	public async createList(kind: ListKind, name: string): Promise<ListRecord> {
++		let id: string;
++		let listKeyHex: string | null;
++		let contentKey: Uint8Array;
++
++		if (kind === 'open') {
++			const listKey = generateListKey();
++			const derived = deriveOpenListKeys(listKey);
++			id = derived.listPubkey;
++			listKeyHex = bytesToHex(listKey);
++			contentKey = derived.contentKey;
++		} else {
++			const pair = generateKeyPair();
++			id = pair.publicKey;
++			listKeyHex = bytesToHex(pair.secretKey);
++			contentKey = generateContentKey();
++		}
++
++		const record: ListRecord = {
++			id, kind, listKey: listKeyHex, contentKey: bytesToHex(contentKey),
++			name, settings: null, relays: null, sortOrder: 0,
++		};
++		await this.importList(record);
++		return record;
++	}
++
++	public async renameList(id: string, name: string): Promise<void> {
++		await this.db.exec('UPDATE lists SET name = ? WHERE id = ?', [name, id]);
++	}
++
++	public async setListSettings(id: string, settings: string | null): Promise<void> {
++		await this.db.exec('UPDATE lists SET settings = ? WHERE id = ?', [settings, id]);
++	}
++
++	// Sets a list's content key to a specific value, e.g. once a joining
++	// device has unwrapped it from the admin's directory event.
++	public async setContentKey(listId: string, contentKey: Uint8Array): Promise<void> {
++		await this.db.exec('UPDATE lists SET content_key = ? WHERE id = ?', [bytesToHex(contentKey), listId]);
++	}
++
++	// Replaces a managed list's content key, e.g. after removing a member.
++	// Returns the new key so the caller can build and publish a fresh
++	// directory event with it.
++	public async rotateContentKey(listId: string): Promise<Uint8Array> {
++		const contentKey = generateContentKey();
++		await this.db.exec('UPDATE lists SET content_key = ? WHERE id = ?', [bytesToHex(contentKey), listId]);
++		return contentKey;
++	}
++
++	// --- members -------------------------------------------------------
++
++	public async members(listId: string): Promise<MemberRecord[]> {
++		const rows = await this.db.selectAll('SELECT * FROM members WHERE list_id = ? ORDER BY since ASC', [listId]);
++		return rows.map(rowToMember);
++	}
++
++	public async upsertMember(member: MemberRecord): Promise<void> {
++		await this.db.exec(
++			`INSERT INTO members (list_id, pubkey, name, role, since, removed_at) VALUES (?, ?, ?, ?, ?, ?)
++				ON CONFLICT(list_id, pubkey) DO UPDATE SET name = excluded.name, role = excluded.role,
++					since = excluded.since, removed_at = excluded.removed_at`,
++			[member.listId, member.pubkey, member.name, member.role, member.since, member.removedAt],
++		);
++	}
++
++	public async removeMember(listId: string, pubkey: string, removedAt: number): Promise<void> {
++		await this.db.exec('UPDATE members SET removed_at = ? WHERE list_id = ? AND pubkey = ?', [removedAt, listId, pubkey]);
++	}
++
++	// --- items -----------------------------------------------------------
++
++	public async items(listId: string, options: { open?: boolean } = {}): Promise<ItemRecord[]> {
++		let sql = 'SELECT * FROM items WHERE list_id = ? AND deleted = 0';
++		const params: (string | number)[] = [listId];
++		if (options.open !== undefined) {
++			sql += ' AND open = ?';
++			params.push(options.open ? 1 : 0);
++		}
++		sql += ' ORDER BY category ASC, name ASC';
++		const rows = await this.db.selectAll(sql, params);
++		return rows.map(rowToItem);
++	}
++
++	public async item(listId: string, dTag: string): Promise<ItemRecord | null> {
++		const row = await this.db.selectOne('SELECT * FROM items WHERE list_id = ? AND d_tag = ?', [listId, dTag]);
++		return row ? rowToItem(row) : null;
++	}
++
++	// Inserts or fully replaces an item row, e.g. after merging a remote
++	// payload. `pending` is left at 0 -- callers that make a local change
++	// should go through the field setters below, which set it.
++	public async upsertItem(item: ItemRecord): Promise<void> {
++		await this.db.exec(
++			`INSERT INTO items (list_id, d_tag, name, detail, detail_t, category, category_t, icon, icon_t, open, open_t, deleted, deleted_t, device, pending)
++				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++				ON CONFLICT(list_id, d_tag) DO UPDATE SET name = excluded.name, detail = excluded.detail,
++					detail_t = excluded.detail_t, category = excluded.category, category_t = excluded.category_t,
++					icon = excluded.icon, icon_t = excluded.icon_t, open = excluded.open, open_t = excluded.open_t,
++					deleted = excluded.deleted, deleted_t = excluded.deleted_t, device = excluded.device, pending = excluded.pending`,
++			[
++				item.listId, item.dTag, item.name, item.detail, item.detailT, item.category, item.categoryT,
++				item.icon, item.iconT, item.open ? 1 : 0, item.openT, item.deleted ? 1 : 0, item.deletedT, item.device,
++				item.pending ? 1 : 0,
++			],
++		);
++	}
++
++	public async setOpen(listId: string, dTag: string, open: boolean, t: number, device: string): Promise<void> {
++		await this.db.exec(
++			'UPDATE items SET open = ?, open_t = ?, device = ?, pending = 1 WHERE list_id = ? AND d_tag = ?',
++			[open ? 1 : 0, t, device, listId, dTag],
++		);
++	}
++
++	public async setDetail(listId: string, dTag: string, detail: string | null, t: number, device: string): Promise<void> {
++		await this.db.exec(
++			'UPDATE items SET detail = ?, detail_t = ?, device = ?, pending = 1 WHERE list_id = ? AND d_tag = ?',
++			[detail, t, device, listId, dTag],
++		);
++	}
++
++	// Tombstones an item rather than removing the row, so a device that was
++	// offline when it was deleted doesn't resurrect it (see KONZEPT.md).
++	public async deleteItem(listId: string, dTag: string, t: number, device: string): Promise<void> {
++		await this.db.exec(
++			'UPDATE items SET deleted = 1, deleted_t = ?, device = ?, pending = 1 WHERE list_id = ? AND d_tag = ?',
++			[t, device, listId, dTag],
++		);
++	}
++
++	// Un-tombstones an existing item, e.g. when adding an item whose name
++	// matches one previously deleted.
++	public async undeleteItem(listId: string, dTag: string, t: number, device: string): Promise<void> {
++		await this.db.exec(
++			'UPDATE items SET deleted = 0, deleted_t = ?, open = 1, open_t = ?, device = ?, pending = 1 WHERE list_id = ? AND d_tag = ?',
++			[t, t, device, listId, dTag],
++		);
++	}
++
++	// The latest field timestamp seen so far for a list, used to clamp new
++	// local timestamps against a misbehaving device clock (see merge.ts).
++	public async maxSeenTime(listId: string): Promise<number> {
++		const row = await this.db.selectOne(
++			`SELECT MAX(
++				COALESCE(open_t, 0), COALESCE(detail_t, 0), COALESCE(category_t, 0), COALESCE(deleted_t, 0)
++			) as maxT FROM items WHERE list_id = ?`,
++			[listId],
++		);
++		return Number(row?.maxT ?? 0);
++	}
++
++	public async pendingItems(listId?: string): Promise<ItemRecord[]> {
++		const rows = listId
++			? await this.db.selectAll('SELECT * FROM items WHERE list_id = ? AND pending = 1', [listId])
++			: await this.db.selectAll('SELECT * FROM items WHERE pending = 1');
++		return rows.map(rowToItem);
++	}
++
++	public async markPublished(listId: string, dTag: string): Promise<void> {
++		await this.db.exec('UPDATE items SET pending = 0 WHERE list_id = ? AND d_tag = ?', [listId, dTag]);
++	}
++
++	// Autocomplete suggestions for the "add item" field: catalog entries
++	// (name or synonym) whose text starts with the prefix, then previously
++	// used item names across all lists that aren't already covered.
++	public async suggestions(prefix: string, limit = 10): Promise<CatalogMatch[]> {
++		const normalizedPrefix = normalizeName(prefix);
++		const results: CatalogMatch[] = [];
++		const seen = new Set<string>();
++
++		if (normalizedPrefix) {
++			for (const item of catalogItems) {
++				if (results.length >= limit) break;
++				const matches = normalizeName(item.name).startsWith(normalizedPrefix)
++					|| item.synonyms.some(s => normalizeName(s).startsWith(normalizedPrefix));
++				if (matches && !seen.has(item.name)) {
++					seen.add(item.name);
++					results.push({ canonical: item.name, emoji: item.emoji, category: item.category });
++				}
++			}
++		}
++
++		if (results.length < limit) {
++			const rows = await this.db.selectAll(
++				'SELECT DISTINCT name FROM items WHERE deleted = 0 AND name LIKE ? ORDER BY name LIMIT ?',
++				[`${prefix}%`, limit - results.length],
++			);
++			for (const row of rows) {
++				const name = row.name as string;
++				if (!seen.has(name)) {
++					seen.add(name);
++					results.push({ canonical: name, emoji: null, category: null });
++				}
++			}
++		}
++
++		return results.slice(0, limit);
++	}
++}
+diff --git a/packages/app-mobile/lists/core/events.test.ts b/packages/app-mobile/lists/core/events.test.ts
+new file mode 100644
+index 0000000..9aaee56
+--- /dev/null
++++ b/packages/app-mobile/lists/core/events.test.ts
+@@ -0,0 +1,133 @@
++import { generateContentKey, generateKeyPair } from './crypto';
++import {
++	buildItemEvent,
++	buildJoinRequestEvent,
++	buildManagedDirectoryEvent,
++	buildOpenDirectoryEvent,
++	DirectoryPayload,
++	InvalidEventError,
++	isDirectoryAcceptable,
++	parseItemEvent,
++	parseJoinRequestEvent,
++	parseManagedDirectoryEvent,
++	parseOpenDirectoryEvent,
++	unwrapManagedContentKey,
++} from './events';
++import { ItemPayload, MemberRecord } from './types';
++
++describe('lists/core/events', () => {
++	const payload = (): ItemPayload => ({ name: 'Milch', open: { v: true, t: 1 }, device: 'aaaaaaaa' });
++
++	test('item event round-trips through build/parse', () => {
++		const device = generateKeyPair();
++		const contentKey = generateContentKey();
++
++		const event = buildItemEvent(device.secretKey, 'list-pubkey', 'd-tag', contentKey, payload());
++
++		expect(parseItemEvent(event, contentKey)).toEqual(payload());
++	});
++
++	test('parsing an item event fails with a wrong content key', () => {
++		const device = generateKeyPair();
++		const event = buildItemEvent(device.secretKey, 'list-pubkey', 'd-tag', generateContentKey(), payload());
++
++		expect(() => parseItemEvent(event, generateContentKey())).toThrow();
++	});
++
++	test('parsing a tampered item event fails signature verification', () => {
++		const device = generateKeyPair();
++		const contentKey = generateContentKey();
++		const event = buildItemEvent(device.secretKey, 'list-pubkey', 'd-tag', contentKey, payload());
++
++		// A plain JSON round-trip (rather than a spread) drops nostr-tools'
++		// internal "already verified" cache flag, so verifyEvent actually
++		// re-checks this tampered copy instead of trusting the original.
++		const tampered = { ...JSON.parse(JSON.stringify(event)), content: `${event.content.slice(0, -2)}zz` };
++
++		expect(() => parseItemEvent(tampered, contentKey)).toThrow(InvalidEventError);
++	});
++
++	test('open list directory round-trips and is signed by the list key', () => {
++		const list = generateKeyPair();
++		const contentKey = generateContentKey();
++		const directoryPayload: DirectoryPayload = { members: [{ listId: list.publicKey, pubkey: 'x', name: null, role: 'member', since: 1, removedAt: null }], settings: null };
++
++		const event = buildOpenDirectoryEvent(list.secretKey, contentKey, directoryPayload);
++
++		expect(event.pubkey).toBe(list.publicKey);
++		expect(parseOpenDirectoryEvent(event, contentKey)).toEqual(directoryPayload);
++	});
++
++	test('managed directory lets a wrapped member recover the content key and then the directory', () => {
++		const admin = generateKeyPair();
++		const member = generateKeyPair();
++		const contentKey = generateContentKey();
++		const members: MemberRecord[] = [
++			{ listId: 'l', pubkey: admin.publicKey, name: 'Admin', role: 'admin', since: 1, removedAt: null },
++			{ listId: 'l', pubkey: member.publicKey, name: 'Member', role: 'member', since: 2, removedAt: null },
++		];
++		const directoryPayload: DirectoryPayload = { members, settings: null };
++
++		const event = buildManagedDirectoryEvent(admin.secretKey, contentKey, directoryPayload);
++
++		const recoveredKey = unwrapManagedContentKey(event, member.secretKey);
++		expect(recoveredKey).toEqual(contentKey);
++		expect(parseManagedDirectoryEvent(event, recoveredKey)).toEqual(directoryPayload);
++	});
++
++	test('managed directory omits removed members from the wrapped keys', () => {
++		const admin = generateKeyPair();
++		const removed = generateKeyPair();
++		const members: MemberRecord[] = [
++			{ listId: 'l', pubkey: admin.publicKey, name: 'Admin', role: 'admin', since: 1, removedAt: null },
++			{ listId: 'l', pubkey: removed.publicKey, name: 'Gone', role: 'member', since: 2, removedAt: 999 },
++		];
++		const event = buildManagedDirectoryEvent(admin.secretKey, generateContentKey(), { members, settings: null });
++
++		expect(() => unwrapManagedContentKey(event, removed.secretKey)).toThrow();
++	});
++
++	describe('isDirectoryAcceptable', () => {
++		test('accepts the very first directory only if signed by the list key', () => {
++			const listPubkey = generateKeyPair().publicKey;
++			expect(isDirectoryAcceptable(null, listPubkey, listPubkey)).toBe(true);
++			expect(isDirectoryAcceptable(null, listPubkey, 'someone-else')).toBe(false);
++		});
++
++		test('accepts a later directory only if signed by an admin from the previous one', () => {
++			const admin = generateKeyPair();
++			const nonAdmin = generateKeyPair();
++			const previous: DirectoryPayload = {
++				members: [
++					{ listId: 'l', pubkey: admin.publicKey, name: null, role: 'admin', since: 1, removedAt: null },
++					{ listId: 'l', pubkey: nonAdmin.publicKey, name: null, role: 'member', since: 1, removedAt: null },
++				],
++				settings: null,
++			};
++
++			expect(isDirectoryAcceptable(previous, 'list-pubkey', admin.publicKey)).toBe(true);
++			expect(isDirectoryAcceptable(previous, 'list-pubkey', nonAdmin.publicKey)).toBe(false);
++			expect(isDirectoryAcceptable(previous, 'list-pubkey', 'list-pubkey')).toBe(false);
++		});
++
++		test('rejects a directory signed by a removed admin', () => {
++			const admin = generateKeyPair();
++			const previous: DirectoryPayload = {
++				members: [{ listId: 'l', pubkey: admin.publicKey, name: null, role: 'admin', since: 1, removedAt: 5 }],
++				settings: null,
++			};
++
++			expect(isDirectoryAcceptable(previous, 'list-pubkey', admin.publicKey)).toBe(false);
++		});
++	});
++
++	test('join request round-trips and reveals the requesting device pubkey', () => {
++		const device = generateKeyPair();
++		const admin = generateKeyPair();
++
++		const event = buildJoinRequestEvent(device.secretKey, admin.publicKey, { inviteToken: 'ABCD-1234', deviceName: 'My phone' });
++
++		const parsed = parseJoinRequestEvent(event, admin.secretKey);
++		expect(parsed).toEqual({ inviteToken: 'ABCD-1234', deviceName: 'My phone', devicePubkey: device.publicKey });
++	});
++});
+diff --git a/packages/app-mobile/lists/core/events.ts b/packages/app-mobile/lists/core/events.ts
+new file mode 100644
+index 0000000..1dea620
+--- /dev/null
++++ b/packages/app-mobile/lists/core/events.ts
+@@ -0,0 +1,152 @@
++import { EventTemplate, finalizeEvent, getPublicKey, nip44, VerifiedEvent, verifyEvent } from 'nostr-tools';
++import { bytesToHex, hexToBytes } from './crypto';
++import { ItemPayload, MemberRecord } from './types';
++
++// NIP-78 "application-specific data", addressable per (pubkey, kind, d-tag).
++export const LIST_EVENT_KIND = 30078;
++
++const nowSeconds = (): number => Math.floor(Date.now() / 1000);
++
++// --- Item events -----------------------------------------------------------
++
++// Builds a signed, encrypted item event. Author is always the device that
++// made the change; the 'L' tag lets relays be queried for a whole list
++// (`#L` = listPubkey) across all members' events.
++export const buildItemEvent = (deviceSecretKey: Uint8Array, listPubkey: string, dTag: string, contentKey: Uint8Array, payload: ItemPayload, createdAt: number = nowSeconds()): VerifiedEvent => {
++	const template: EventTemplate = {
++		kind: LIST_EVENT_KIND,
++		tags: [['d', dTag], ['L', listPubkey]],
++		content: nip44.encrypt(JSON.stringify(payload), contentKey),
++		created_at: createdAt,
++	};
++	return finalizeEvent(template, deviceSecretKey);
++};
++
++export class InvalidEventError extends Error {}
++
++// Verifies the event's signature, then decrypts and parses its payload.
++// Throws InvalidEventError if the signature doesn't check out, or whatever
++// nip44.decrypt/JSON.parse throw (e.g. a wrong content key) otherwise.
++export const parseItemEvent = (event: VerifiedEvent, contentKey: Uint8Array): ItemPayload => {
++	if (!verifyEvent(event)) throw new InvalidEventError('Item event has an invalid signature');
++	const plaintext = nip44.decrypt(event.content, contentKey);
++	return JSON.parse(plaintext) as ItemPayload;
++};
++
++// --- Member directory --------------------------------------------------
++
++const DIRECTORY_D_TAG = 'members';
++
++export interface DirectoryPayload {
++	members: MemberRecord[];
++	settings: string | null;
++}
++
++// Open lists: every member can derive the content key from the shared list
++// key, so the directory is encrypted with it directly and signed by the
++// list's own key (which every member also holds).
++export const buildOpenDirectoryEvent = (listSecretKey: Uint8Array, contentKey: Uint8Array, payload: DirectoryPayload, createdAt: number = nowSeconds()): VerifiedEvent => {
++	const template: EventTemplate = {
++		kind: LIST_EVENT_KIND,
++		tags: [['d', DIRECTORY_D_TAG]],
++		content: nip44.encrypt(JSON.stringify(payload), contentKey),
++		created_at: createdAt,
++	};
++	return finalizeEvent(template, listSecretKey);
++};
++
++export const parseOpenDirectoryEvent = (event: VerifiedEvent, contentKey: Uint8Array): DirectoryPayload => {
++	if (!verifyEvent(event)) throw new InvalidEventError('Directory event has an invalid signature');
++	return JSON.parse(nip44.decrypt(event.content, contentKey)) as DirectoryPayload;
++};
++
++export interface ManagedDirectoryContent {
++	// Member pubkey (hex) -> content key (hex), nip44-encrypted to that member
++	// with the admin device's conversation key. Lets a new member recover the
++	// content key from their own entry alone, without already having it.
++	wrapped: Record<string, string>;
++	// The actual directory (members + settings), nip44-encrypted with the
++	// content key every wrapped entry unlocks.
++	body: string;
++}
++
++// Managed lists: signed by an admin device key. See isDirectoryAcceptable()
++// for how a reader decides whether to trust that signer.
++export const buildManagedDirectoryEvent = (adminSecretKey: Uint8Array, contentKey: Uint8Array, payload: DirectoryPayload, createdAt: number = nowSeconds()): VerifiedEvent => {
++	const wrapped: Record<string, string> = {};
++	for (const member of payload.members) {
++		if (member.removedAt) continue;
++		const convKey = nip44.getConversationKey(adminSecretKey, member.pubkey);
++		wrapped[member.pubkey] = nip44.encrypt(bytesToHex(contentKey), convKey);
++	}
++	const content: ManagedDirectoryContent = {
++		wrapped,
++		body: nip44.encrypt(JSON.stringify(payload), contentKey),
++	};
++	const template: EventTemplate = {
++		kind: LIST_EVENT_KIND,
++		tags: [['d', DIRECTORY_D_TAG]],
++		content: JSON.stringify(content),
++		created_at: createdAt,
++	};
++	return finalizeEvent(template, adminSecretKey);
++};
++
++// Recovers the content key from a managed directory event's wrapped entry for
++// the given member. Requires the member's own device secret key.
++export const unwrapManagedContentKey = (event: VerifiedEvent, memberSecretKey: Uint8Array): Uint8Array => {
++	if (!verifyEvent(event)) throw new InvalidEventError('Directory event has an invalid signature');
++	const content = JSON.parse(event.content) as ManagedDirectoryContent;
++	const memberPubkey = getPublicKey(memberSecretKey);
++	const wrappedHex = content.wrapped[memberPubkey];
++	if (!wrappedHex) throw new Error('No wrapped content key for this device in the directory');
++	const convKey = nip44.getConversationKey(memberSecretKey, event.pubkey);
++	return hexToBytes(nip44.decrypt(wrappedHex, convKey));
++};
++
++export const parseManagedDirectoryEvent = (event: VerifiedEvent, contentKey: Uint8Array): DirectoryPayload => {
++	if (!verifyEvent(event)) throw new InvalidEventError('Directory event has an invalid signature');
++	const content = JSON.parse(event.content) as ManagedDirectoryContent;
++	return JSON.parse(nip44.decrypt(content.body, contentKey)) as DirectoryPayload;
++};
++
++// A reader accepts a new directory only if it is signed by a device that was
++// already an admin in the last directory it accepted, or -- for the very
++// first directory it ever sees for a list -- if it is signed by the list's
++// own key. This is the only place trust in a directory update is decided.
++export const isDirectoryAcceptable = (previouslyAccepted: DirectoryPayload | null, listPubkey: string, signerPubkey: string): boolean => {
++	if (!previouslyAccepted) return signerPubkey === listPubkey;
++	return previouslyAccepted.members.some(m => m.pubkey === signerPubkey && m.role === 'admin' && !m.removedAt);
++};
++
++// --- Join requests -----------------------------------------------------
++
++export const joinRequestDTag = (devicePubkey: string): string => `join:${devicePubkey}`;
++
++export interface JoinRequestPayload {
++	inviteToken: string;
++	deviceName: string;
++}
++
++export const buildJoinRequestEvent = (deviceSecretKey: Uint8Array, adminPubkey: string, payload: JoinRequestPayload, createdAt: number = nowSeconds()): VerifiedEvent => {
++	const devicePubkey = getPublicKey(deviceSecretKey);
++	const convKey = nip44.getConversationKey(deviceSecretKey, adminPubkey);
++	const template: EventTemplate = {
++		kind: LIST_EVENT_KIND,
++		tags: [['d', joinRequestDTag(devicePubkey)], ['p', adminPubkey]],
++		content: nip44.encrypt(JSON.stringify(payload), convKey),
++		created_at: createdAt,
++	};
++	return finalizeEvent(template, deviceSecretKey);
++};
++
++export interface ParsedJoinRequest extends JoinRequestPayload {
++	devicePubkey: string;
++}
++
++export const parseJoinRequestEvent = (event: VerifiedEvent, adminSecretKey: Uint8Array): ParsedJoinRequest => {
++	if (!verifyEvent(event)) throw new InvalidEventError('Join request event has an invalid signature');
++	const convKey = nip44.getConversationKey(adminSecretKey, event.pubkey);
++	const payload = JSON.parse(nip44.decrypt(event.content, convKey)) as JoinRequestPayload;
++	return { ...payload, devicePubkey: event.pubkey };
++};
+diff --git a/packages/app-mobile/lists/core/invite.test.ts b/packages/app-mobile/lists/core/invite.test.ts
+new file mode 100644
+index 0000000..a152d90
+--- /dev/null
++++ b/packages/app-mobile/lists/core/invite.test.ts
+@@ -0,0 +1,84 @@
++import { generateKeyPair, generateListKey } from './crypto';
++import {
++	createManagedInviteToken,
++	decodeInvitePayload,
++	encodeInviteCode,
++	encodeInviteLink,
++	encodeInvitePayload,
++	isInviteExpired,
++	ListInvite,
++	parseInvite,
++	verifyManagedInviteToken,
++} from './invite';
++
++describe('lists/core/invite', () => {
++	const openInvite = (): ListInvite => ({ kind: 'open', listKey: generateListKey() });
++
++	const managedInvite = (): ListInvite => {
++		const admin = generateKeyPair();
++		const token = createManagedInviteToken(admin.secretKey, { role: 'member' });
++		return { kind: 'managed', listPubkey: generateKeyPair().publicKey, adminPubkey: admin.publicKey, token };
++	};
++
++	describe.each([
++		['open', openInvite],
++		['managed', managedInvite],
++	])('%s list invite', (_name, makeInvite) => {
++		test('link and code round-trip to the same invite', () => {
++			const invite = makeInvite();
++
++			const fromLink = parseInvite(encodeInviteLink(invite));
++			const fromCode = parseInvite(encodeInviteCode(invite));
++
++			expect(decodeInvitePayload(encodeInvitePayload(fromLink))).toEqual(decodeInvitePayload(encodeInvitePayload(invite)));
++			expect(fromCode).toEqual(fromLink);
++		});
++
++		test('code is tolerant of lowercase, spaces and dashes', () => {
++			const invite = makeInvite();
++			const code = encodeInviteCode(invite);
++			const messy = code.toLowerCase().replace(/-/g, ' - ');
++
++			expect(parseInvite(messy)).toEqual(parseInvite(code));
++		});
++	});
++
++	test('managed invite token can be verified with the admin pubkey', () => {
++		const admin = generateKeyPair();
++		const token = createManagedInviteToken(admin.secretKey, { role: 'admin' });
++
++		expect(verifyManagedInviteToken(token, admin.publicKey)).toBe(true);
++	});
++
++	test('managed invite token fails verification against the wrong pubkey', () => {
++		const admin = generateKeyPair();
++		const impostor = generateKeyPair();
++		const token = createManagedInviteToken(admin.secretKey, { role: 'admin' });
++
++		expect(verifyManagedInviteToken(token, impostor.publicKey)).toBe(false);
++	});
++
++	test('a token with expires: 0 never expires', () => {
++		const admin = generateKeyPair();
++		const token = createManagedInviteToken(admin.secretKey, { role: 'member', expires: 0 });
++
++		expect(isInviteExpired(token, Number.MAX_SAFE_INTEGER)).toBe(false);
++	});
++
++	test('a token with a past expires is expired', () => {
++		const admin = generateKeyPair();
++		const token = createManagedInviteToken(admin.secretKey, { role: 'member', expires: 1000 });
++
++		expect(isInviteExpired(token, 999)).toBe(false);
++		expect(isInviteExpired(token, 1001)).toBe(true);
++	});
++
++	test('the link carries the payload in the URL fragment, not the path', () => {
++		const link = encodeInviteLink(openInvite());
++		expect(link.startsWith('https://sebberich.github.io/joplin-tile-view/l#')).toBe(true);
++	});
++
++	test('parseInvite rejects garbage input', () => {
++		expect(() => parseInvite('not a valid invite')).toThrow();
++	});
++});
+diff --git a/packages/app-mobile/lists/core/invite.ts b/packages/app-mobile/lists/core/invite.ts
+new file mode 100644
+index 0000000..75a6302
+--- /dev/null
++++ b/packages/app-mobile/lists/core/invite.ts
+@@ -0,0 +1,218 @@
++import { Buffer } from 'buffer';
++import { EventTemplate, finalizeEvent, verifyEvent, VerifiedEvent } from 'nostr-tools';
++import { bytesToHex, hexToBytes, randomBytes } from './crypto';
++import { Role } from './types';
++
++// Kind used for every event this module produces or reconstructs (see events.ts).
++const EVENT_KIND = 30078;
++const INVITE_D_TAG = 'invite';
++
++export interface ManagedInviteToken {
++	role: Role;
++	// Unix seconds, 0 = never expires.
++	expires: number;
++	once: boolean;
++	nonce: string;
++	createdAt: number;
++	id: string;
++	sig: string;
++}
++
++const inviteContent = (role: Role, expires: number, once: boolean, nonce: string): string =>
++	JSON.stringify({ role, expires, once, nonce });
++
++// Signs a fresh managed-list invite with the admin's device key. The token is
++// a detached, self-contained proof: verifyManagedInviteToken() only needs the
++// admin's public key (carried alongside the token in the invite payload) to
++// check it, nothing else from the issuing device.
++export const createManagedInviteToken = (
++	adminSecretKey: Uint8Array,
++	options: { role: Role; expires?: number; once?: boolean },
++	createdAt: number = Math.floor(Date.now() / 1000),
++): ManagedInviteToken => {
++	const expires = options.expires ?? 0;
++	const once = options.once ?? false;
++	const nonce = bytesToHex(randomBytes(8));
++	const template: EventTemplate = {
++		kind: EVENT_KIND,
++		tags: [['d', INVITE_D_TAG]],
++		content: inviteContent(options.role, expires, once, nonce),
++		created_at: createdAt,
++	};
++	const event = finalizeEvent(template, adminSecretKey);
++	return { role: options.role, expires, once, nonce, createdAt, id: event.id, sig: event.sig };
++};
++
++const reconstructInviteEvent = (token: ManagedInviteToken, adminPubkey: string): VerifiedEvent => ({
++	kind: EVENT_KIND,
++	tags: [['d', INVITE_D_TAG]],
++	content: inviteContent(token.role, token.expires, token.once, token.nonce),
++	created_at: token.createdAt,
++	pubkey: adminPubkey,
++	id: token.id,
++	sig: token.sig,
++} as VerifiedEvent);
++
++export const verifyManagedInviteToken = (token: ManagedInviteToken, adminPubkey: string): boolean => {
++	try {
++		return verifyEvent(reconstructInviteEvent(token, adminPubkey));
++	} catch {
++		return false;
++	}
++};
++
++export const isInviteExpired = (token: ManagedInviteToken, nowSeconds: number = Math.floor(Date.now() / 1000)): boolean =>
++	token.expires !== 0 && nowSeconds > token.expires;
++
++export type ListInvite =
++	| { kind: 'open'; listKey: Uint8Array }
++	| { kind: 'managed'; listPubkey: string; adminPubkey: string; token: ManagedInviteToken };
++
++const VERSION = 1;
++const INVITE_KIND_OPEN = 0;
++const INVITE_KIND_MANAGED = 1;
++
++const concatBytes = (...parts: Uint8Array[]): Uint8Array => {
++	const total = parts.reduce((sum, p) => sum + p.length, 0);
++	const output = new Uint8Array(total);
++	let offset = 0;
++	for (const part of parts) {
++		output.set(part, offset);
++		offset += part.length;
++	}
++	return output;
++};
++
++const uint16be = (value: number): Uint8Array => {
++	const bytes = new Uint8Array(2);
++	new DataView(bytes.buffer).setUint16(0, value, false);
++	return bytes;
++};
++
++export const encodeInvitePayload = (invite: ListInvite): Uint8Array => {
++	if (invite.kind === 'open') {
++		if (invite.listKey.length !== 32) throw new Error('List key must be 32 bytes');
++		return concatBytes(Uint8Array.of(VERSION, INVITE_KIND_OPEN), invite.listKey);
++	}
++
++	const tokenJson = JSON.stringify({
++		r: invite.token.role, e: invite.token.expires, o: invite.token.once ? 1 : 0,
++		n: invite.token.nonce, c: invite.token.createdAt, i: invite.token.id, s: invite.token.sig,
++	});
++	const tokenBytes = new TextEncoder().encode(tokenJson);
++	if (tokenBytes.length > 0xffff) throw new Error('Invite token too large to encode');
++
++	return concatBytes(
++		Uint8Array.of(VERSION, INVITE_KIND_MANAGED),
++		hexToBytes(invite.listPubkey),
++		hexToBytes(invite.adminPubkey),
++		uint16be(tokenBytes.length),
++		tokenBytes,
++	);
++};
++
++export const decodeInvitePayload = (bytes: Uint8Array): ListInvite => {
++	if (bytes.length < 2) throw new Error('Invite payload is too short');
++	const [version, inviteKind] = bytes;
++	if (version !== VERSION) throw new Error(`Unsupported invite version: ${version}`);
++
++	if (inviteKind === INVITE_KIND_OPEN) {
++		if (bytes.length !== 34) throw new Error('Invalid open-list invite payload');
++		return { kind: 'open', listKey: bytes.slice(2, 34) };
++	}
++
++	if (inviteKind === INVITE_KIND_MANAGED) {
++		if (bytes.length < 2 + 32 + 32 + 2) throw new Error('Invalid managed-list invite payload');
++		const listPubkey = bytesToHex(bytes.slice(2, 34));
++		const adminPubkey = bytesToHex(bytes.slice(34, 66));
++		const tokenLength = new DataView(bytes.buffer, bytes.byteOffset + 66, 2).getUint16(0, false);
++		const tokenBytes = bytes.slice(68, 68 + tokenLength);
++		if (tokenBytes.length !== tokenLength) throw new Error('Truncated invite token');
++
++		const parsed = JSON.parse(new TextDecoder().decode(tokenBytes));
++		const token: ManagedInviteToken = {
++			role: parsed.r, expires: parsed.e, once: !!parsed.o,
++			nonce: parsed.n, createdAt: parsed.c, id: parsed.i, sig: parsed.s,
++		};
++		return { kind: 'managed', listPubkey, adminPubkey, token };
++	}
++
++	throw new Error(`Unknown invite kind: ${inviteKind}`);
++};
++
++const BASE64URL_PADDING = /=+$/;
++
++const toBase64Url = (bytes: Uint8Array): string =>
++	Buffer.from(bytes).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(BASE64URL_PADDING, '');
++
++const fromBase64Url = (text: string): Uint8Array => {
++	const normalized = text.replace(/-/g, '+').replace(/_/g, '/');
++	const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
++	return new Uint8Array(Buffer.from(padded, 'base64'));
++};
++
++// Crockford base32: excludes I, L, O, U to avoid confusion when typed by hand.
++const CROCKFORD_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
++
++const toCrockfordBase32 = (bytes: Uint8Array): string => {
++	let bits = 0;
++	let value = 0;
++	let output = '';
++	for (const byte of bytes) {
++		value = (value << 8) | byte;
++		bits += 8;
++		while (bits >= 5) {
++			output += CROCKFORD_ALPHABET[(value >>> (bits - 5)) & 31];
++			bits -= 5;
++		}
++	}
++	if (bits > 0) output += CROCKFORD_ALPHABET[(value << (5 - bits)) & 31];
++	return output;
++};
++
++// Tolerant to lowercase, whitespace/dashes and the common look-alike
++// substitutions (O -> 0, I/L -> 1) so a code can be typed by hand.
++const fromCrockfordBase32 = (text: string): Uint8Array => {
++	const cleaned = text.toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
++	let bits = 0;
++	let value = 0;
++	const bytes: number[] = [];
++	for (const char of cleaned) {
++		const digit = CROCKFORD_ALPHABET.indexOf(char);
++		if (digit === -1) throw new Error(`Invalid character in invite code: ${char}`);
++		value = (value << 5) | digit;
++		bits += 5;
++		if (bits >= 8) {
++			bytes.push((value >>> (bits - 8)) & 0xff);
++			bits -= 8;
++		}
++	}
++	return Uint8Array.from(bytes);
++};
++
++const groupInFours = (code: string): string => (code.match(/.{1,4}/g) ?? []).join('-');
++
++export const INVITE_LINK_PREFIX = 'https://sebberich.github.io/joplin-tile-view/l#';
++
++export const encodeInviteLink = (invite: ListInvite): string => INVITE_LINK_PREFIX + toBase64Url(encodeInvitePayload(invite));
++export const encodeInviteCode = (invite: ListInvite): string => groupInFours(toCrockfordBase32(encodeInvitePayload(invite)));
++
++export interface EncodedInvite {
++	link: string;
++	code: string;
++}
++
++export const encodeInvite = (invite: ListInvite): EncodedInvite => ({ link: encodeInviteLink(invite), code: encodeInviteCode(invite) });
++
++// Accepts either an invite link (the payload lives in the URL fragment, which
++// a server never sees) or a manually typed code, and decodes it to the same
++// ListInvite either way.
++export const parseInvite = (text: string): ListInvite => {
++	const trimmed = text.trim();
++	const hashIndex = trimmed.indexOf('#');
++	if (trimmed.includes('://') || hashIndex !== -1) {
++		const fragment = hashIndex !== -1 ? trimmed.slice(hashIndex + 1) : trimmed;
++		return decodeInvitePayload(fromBase64Url(fragment));
++	}
++	return decodeInvitePayload(fromCrockfordBase32(trimmed));
++};
+diff --git a/packages/app-mobile/lists/core/merge.test.ts b/packages/app-mobile/lists/core/merge.test.ts
+new file mode 100644
+index 0000000..158013d
+--- /dev/null
++++ b/packages/app-mobile/lists/core/merge.test.ts
+@@ -0,0 +1,73 @@
++import { clampTime, mergeItem } from './merge';
++import { ItemPayload } from './types';
++
++const base = (): ItemPayload => ({
++	name: 'Milch',
++	open: { v: false, t: 100 },
++	detail: { v: '1 l', t: 100 },
++	device: 'aaaaaaaa',
++});
++
++describe('lists/core/merge', () => {
++	describe('clampTime', () => {
++		test('returns now when it is already ahead of the newest seen timestamp', () => {
++			expect(clampTime(1000, 500)).toBe(1000);
++		});
++
++		test('never returns a timestamp at or behind the newest one already seen', () => {
++			expect(clampTime(500, 1000)).toBe(1001);
++		});
++	});
++
++	describe('mergeItem', () => {
++		test('picks the newer value per field, keeping the older value of untouched fields', () => {
++			const local = base();
++			const remote: ItemPayload = { ...base(), open: { v: true, t: 200 }, device: 'bbbbbbbb' };
++
++			const merged = mergeItem(local, remote);
++
++			expect(merged.open).toEqual({ v: true, t: 200 });
++			expect(merged.detail).toEqual({ v: '1 l', t: 100 });
++		});
++
++		test('breaks an exact timestamp tie by the higher device id', () => {
++			const a: ItemPayload = { ...base(), open: { v: false, t: 200 }, device: 'aaaaaaaa' };
++			const b: ItemPayload = { ...base(), open: { v: true, t: 200 }, device: 'bbbbbbbb' };
++
++			expect(mergeItem(a, b).open).toEqual({ v: true, t: 200 });
++			expect(mergeItem(b, a).open).toEqual({ v: true, t: 200 });
++		});
++
++		test('a deleted tombstone wins over a later local un-delete only if its timestamp is newer', () => {
++			const local: ItemPayload = { ...base(), deleted: { v: false, t: 100 } };
++			const remote: ItemPayload = { ...base(), deleted: { v: true, t: 300 }, device: 'bbbbbbbb' };
++
++			expect(mergeItem(local, remote).deleted).toEqual({ v: true, t: 300 });
++		});
++
++		test('is order-independent: mergeItem(a, b) === mergeItem(b, a)', () => {
++			const a: ItemPayload = { ...base(), open: { v: true, t: 150 }, detail: { v: '2 l', t: 50 } };
++			const b: ItemPayload = { ...base(), open: { v: false, t: 90 }, detail: { v: '3 l', t: 400 }, device: 'zzzzzzzz' };
++
++			expect(mergeItem(a, b)).toEqual(mergeItem(b, a));
++		});
++
++		test('is idempotent: merging the result with either input again changes nothing', () => {
++			const a = base();
++			const b: ItemPayload = { ...base(), open: { v: true, t: 500 }, device: 'cccccccc' };
++
++			const merged = mergeItem(a, b);
++
++			expect(mergeItem(merged, a)).toEqual(merged);
++			expect(mergeItem(merged, b)).toEqual(merged);
++		});
++
++		test('the display name follows whichever record has the most recently changed field', () => {
++			const older: ItemPayload = { ...base(), name: 'Milch', open: { v: false, t: 100 } };
++			const newer: ItemPayload = { ...base(), name: 'MILCH', open: { v: true, t: 900 }, device: 'bbbbbbbb' };
++
++			expect(mergeItem(older, newer).name).toBe('MILCH');
++			expect(mergeItem(newer, older).name).toBe('MILCH');
++		});
++	});
++});
+diff --git a/packages/app-mobile/lists/core/merge.ts b/packages/app-mobile/lists/core/merge.ts
+new file mode 100644
+index 0000000..b7c1e7a
+--- /dev/null
++++ b/packages/app-mobile/lists/core/merge.ts
+@@ -0,0 +1,61 @@
++import { FieldValue, ItemPayload } from './types';
++
++// A device never sets a timestamp behind the newest one it has already seen,
++// protecting against clocks that run slow or backwards (see KONZEPT.md section 2).
++export const clampTime = (now: number, maxSeen: number): number => Math.max(now, maxSeen + 1);
++
++// Order used to break exact timestamp ties deterministically and symmetrically:
++// the field value attached to the higher device id string wins.
++const fieldRank = <T>(field: FieldValue<T> | undefined, device: string): [number, string] =>
++	field ? [field.t, device] : [-Infinity, device];
++
++const isRankHigher = (a: [number, string], b: [number, string]): boolean => {
++	if (a[0] !== b[0]) return a[0] > b[0];
++	return a[1] >= b[1];
++};
++
++const mergeField = <T>(a: FieldValue<T> | undefined, aDevice: string, b: FieldValue<T> | undefined, bDevice: string): FieldValue<T> | undefined => {
++	if (!a) return b;
++	if (!b) return a;
++	return isRankHigher(fieldRank(a, aDevice), fieldRank(b, bDevice)) ? a : b;
++};
++
++// Field-wise last-writer-wins merge of two states of the same item (identified
++// by the same d-tag), as described in KONZEPT.md section 2. Commutative,
++// associative and idempotent: mergeItem(a, b) === mergeItem(b, a), and merging
++// the result with either input again changes nothing.
++export const mergeItem = (a: ItemPayload, b: ItemPayload): ItemPayload => {
++	// "name" itself carries no per-field timestamp: it follows whichever record
++	// has the most recently changed field overall.
++	const ranks: [FieldValue<unknown> | undefined, string][] = [
++		[a.detail, a.device], [a.category, a.device], [a.icon, a.device], [a.deleted, a.device], [a.open, a.device],
++	];
++	const bRanks: [FieldValue<unknown> | undefined, string][] = [
++		[b.detail, b.device], [b.category, b.device], [b.icon, b.device], [b.deleted, b.device], [b.open, b.device],
++	];
++	const maxRank = (entries: [FieldValue<unknown> | undefined, string][]): [number, string] =>
++		entries.reduce((best, [field, device]) => {
++			const rank = fieldRank(field, device);
++			return isRankHigher(rank, best) ? rank : best;
++		}, [-Infinity, entries[0][1]] as [number, string]);
++
++	const aMax = maxRank(ranks);
++	const bMax = maxRank(bRanks);
++	const nameSource = isRankHigher(aMax, bMax) ? a : b;
++
++	const merged: ItemPayload = {
++		name: nameSource.name,
++		open: mergeField(a.open, a.device, b.open, b.device),
++		device: nameSource.device,
++	};
++	const detail = mergeField(a.detail, a.device, b.detail, b.device);
++	if (detail) merged.detail = detail;
++	const category = mergeField(a.category, a.device, b.category, b.device);
++	if (category) merged.category = category;
++	const icon = mergeField(a.icon, a.device, b.icon, b.device);
++	if (icon) merged.icon = icon;
++	const deleted = mergeField(a.deleted, a.device, b.deleted, b.device);
++	if (deleted) merged.deleted = deleted;
++
++	return merged;
++};
+diff --git a/packages/app-mobile/lists/core/normalize.test.ts b/packages/app-mobile/lists/core/normalize.test.ts
+new file mode 100644
+index 0000000..5d60eb7
+--- /dev/null
++++ b/packages/app-mobile/lists/core/normalize.test.ts
+@@ -0,0 +1,39 @@
++import { normalizeName, resolveCatalog } from './normalize';
++
++describe('lists/core/normalize', () => {
++	test.each([
++		['  Milch  ', 'milch'],
++		['MILCH', 'milch'],
++		['Äpfel', 'äpfel'],
++	])('normalizeName trims, lowercases and NFC-normalizes: %s', (input, expected) => {
++		expect(normalizeName(input)).toBe(expected);
++	});
++
++	test('does not rewrite German spelling variants itself', () => {
++		// ß/ss and ä/ae variants are handled by explicit catalog synonyms, not here.
++		expect(normalizeName('Aepfel')).toBe('aepfel');
++		expect(normalizeName('Gruß')).toBe('gruß');
++	});
++
++	test('resolves a synonym to its canonical catalog name', () => {
++		expect(resolveCatalog('H-Milch')).toEqual({ canonical: 'Milch', emoji: '🥛', category: 'kuehlregal' });
++	});
++
++	test('resolves a compound word containing a catalog term as a whole word', () => {
++		expect(resolveCatalog('Bio-Milch')).toEqual({ canonical: 'Milch', emoji: '🥛', category: 'kuehlregal' });
++	});
++
++	test('resolves its own catalog entry rather than a shorter unrelated term', () => {
++		// "Hafermilch" is itself a catalog entry (distinct from "Milch"), and is
++		// longer than "milch", so it must win over the shorter substring match.
++		expect(resolveCatalog('hafermilch')).toEqual({ canonical: 'Hafermilch', emoji: '🥛', category: 'kuehlregal' });
++	});
++
++	test('falls back to the raw input with no icon/category when nothing matches', () => {
++		expect(resolveCatalog('Quietscheentchen')).toEqual({ canonical: 'Quietscheentchen', emoji: null, category: null });
++	});
++
++	test('is case-insensitive and trims the fallback input', () => {
++		expect(resolveCatalog('  ZauberTrank  ')).toEqual({ canonical: 'ZauberTrank', emoji: null, category: null });
++	});
++});
+diff --git a/packages/app-mobile/lists/core/normalize.ts b/packages/app-mobile/lists/core/normalize.ts
+new file mode 100644
+index 0000000..bbae1d4
+--- /dev/null
++++ b/packages/app-mobile/lists/core/normalize.ts
+@@ -0,0 +1,75 @@
++import { CatalogItemDef, CatalogMatch, CategoryDef } from './types';
++
++// eslint-disable-next-line @typescript-eslint/no-var-requires -- plain JSON data files, no resolveJsonModule configured for this package
++const categories: CategoryDef[] = require('../catalog/categories.json');
++// eslint-disable-next-line @typescript-eslint/no-var-requires -- see above
++const catalogItems: CatalogItemDef[] = require('../catalog/items.json');
++
++const FALLBACK_CATEGORY_ID = 'sonstiges';
++
++// Trims, lowercases and Unicode-normalizes (NFC) a name for matching purposes.
++// German spelling variants (ß vs ss, ä vs ae, ...) are intentionally NOT rewritten
++// here -- those are handled by the catalog's explicit synonym lists instead.
++export const normalizeName = (name: string): string => name.trim().toLowerCase().normalize('NFC');
++
++interface CatalogTerm {
++	term: string;
++	item: CatalogItemDef;
++}
++
++let termIndex: CatalogTerm[] | null = null;
++
++const buildTermIndex = (): CatalogTerm[] => {
++	const terms: CatalogTerm[] = [];
++	for (const item of catalogItems) {
++		terms.push({ term: normalizeName(item.name), item });
++		for (const synonym of item.synonyms) {
++			terms.push({ term: normalizeName(synonym), item });
++		}
++	}
++	// Longest term first, so a compound match ("h-milch") is preferred over a
++	// shorter one that happens to be a substring of it.
++	terms.sort((a, b) => b.term.length - a.term.length);
++	return terms;
++};
++
++const getTermIndex = (): CatalogTerm[] => {
++	if (!termIndex) termIndex = buildTermIndex();
++	return termIndex;
++};
++
++const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
++
++const containsWholeTerm = (haystack: string, term: string): boolean => {
++	// \b doesn't work reliably with German umlauts, so match on non-alphanumeric
++	// boundaries (or start/end of string) explicitly instead.
++	const pattern = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(term)}($|[^\\p{L}\\p{N}])`, 'u');
++	return pattern.test(`,${haystack},`);
++};
++
++// Resolves a free-typed item name against the shipped catalog: exact name or
++// synonym match first, then the longest catalog term found as a whole word
++// inside the input (so "Bio-Milch" still resolves to "Milch"). Falls back to
++// the input itself with no icon/category when nothing matches, leaving the
++// first-letter fallback to the UI layer.
++export const resolveCatalog = (name: string): CatalogMatch => {
++	const normalized = normalizeName(name);
++	const terms = getTermIndex();
++
++	const exact = terms.find(t => t.term === normalized);
++	if (exact) return { canonical: exact.item.name, emoji: exact.item.emoji, category: exact.item.category };
++
++	const contained = terms.find(t => containsWholeTerm(normalized, t.term));
++	if (contained) return { canonical: contained.item.name, emoji: contained.item.emoji, category: contained.item.category };
++
++	return { canonical: name.trim(), emoji: null, category: null };
++};
++
++export const categoryEmoji = (categoryId: string): string | null => {
++	const category = categories.find(c => c.id === categoryId);
++	return category ? category.emoji : null;
++};
++
++export const categoryOrder = (): CategoryDef[] => categories;
++
++export const fallbackCategoryId = FALLBACK_CATEGORY_ID;
+diff --git a/packages/app-mobile/lists/core/store.test.ts b/packages/app-mobile/lists/core/store.test.ts
+new file mode 100644
+index 0000000..eebbe65
+--- /dev/null
++++ b/packages/app-mobile/lists/core/store.test.ts
+@@ -0,0 +1,168 @@
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import { ListsDatabase } from './db';
++import { ListsStore } from './store';
++import { parseInvite } from './invite';
++
++const openTestStore = async (): Promise<{ store: ListsStore; path: string }> => {
++	const path = join(tmpdir(), `tiles-lists-store-test-${uuid.createNano()}.sqlite`);
++	const db = new ListsDatabase(new Database(new DatabaseDriverNode()));
++	return { store: new ListsStore(db, path), path };
++};
++
++describe('lists/core/store', () => {
++	let store: ListsStore;
++	let path: string;
++
++	beforeEach(async () => {
++		({ store, path } = await openTestStore());
++	});
++
++	afterEach(async () => {
++		await rm(path, { force: true });
++	});
++
++	test('addItem resolves a catalog synonym and marks the item pending', async () => {
++		const list = await store.createOpenList('Groceries');
++
++		const item = await store.addItem(list.id, 'H-Milch');
++
++		expect(item).toMatchObject({ name: 'Milch', icon: '🥛', open: true, pending: true });
++		expect(await store.items(list.id)).toEqual([item]);
++	});
++
++	test('adding the same item twice reuses the same record instead of duplicating it', async () => {
++		const list = await store.createOpenList('Groceries');
++
++		const first = await store.addItem(list.id, 'Milch');
++		const second = await store.addItem(list.id, 'milch');
++
++		expect(second.dTag).toBe(first.dTag);
++		expect(await store.items(list.id)).toHaveLength(1);
++	});
++
++	test('re-adding a bought (closed) item re-opens it', async () => {
++		const list = await store.createOpenList('Groceries');
++		const item = await store.addItem(list.id, 'Milch');
++		await store.toggleOpen(list.id, item.dTag);
++		expect((await store.items(list.id, { open: true }))).toEqual([]);
++
++		await store.addItem(list.id, 'Milch');
++
++		expect((await store.items(list.id, { open: true }))[0].dTag).toBe(item.dTag);
++	});
++
++	test('re-adding a removed item revives it instead of creating a duplicate', async () => {
++		const list = await store.createOpenList('Groceries');
++		const item = await store.addItem(list.id, 'Milch');
++		await store.removeItem(list.id, item.dTag);
++		expect(await store.items(list.id)).toEqual([]);
++
++		await store.addItem(list.id, 'Milch');
++
++		const items = await store.items(list.id);
++		expect(items).toHaveLength(1);
++		expect(items[0].dTag).toBe(item.dTag);
++	});
++
++	test('toggleOpen flips open and setDetail updates detail, both bumping the timestamp', async () => {
++		const list = await store.createOpenList('Groceries');
++		const item = await store.addItem(list.id, 'Milch');
++
++		await store.toggleOpen(list.id, item.dTag);
++		await store.setDetail(list.id, item.dTag, '2 l');
++
++		const [stored] = await store.items(list.id);
++		expect(stored.open).toBe(false);
++		expect(stored.detail).toBe('2 l');
++		expect(stored.openT).toBeGreaterThan(item.openT);
++	});
++
++	test('an open-list invite round-trips to another store joining the same list', async () => {
++		const list = await store.createOpenList('Groceries');
++		const { link } = await store.inviteFor(list.id);
++
++		const other = await openTestStore();
++		try {
++			const result = await other.store.joinFromInvite(link);
++			expect(result.type).toBe('open');
++			expect(result.list.id).toBe(list.id);
++			expect(result.list.contentKey).toBe(list.contentKey);
++		} finally {
++			await rm(other.path, { force: true });
++		}
++	});
++
++	test('a managed-list invite carries a join request the sync layer can send to the admin', async () => {
++		const list = await store.createManagedList('Household');
++		const { link } = await store.inviteFor(list.id, 'member');
++		expect(parseInvite(link).kind).toBe('managed');
++
++		const other = await openTestStore();
++		try {
++			const result = await other.store.joinFromInvite(link);
++			expect(result.type).toBe('managed');
++			if (result.type === 'managed') {
++				expect(result.joinRequest.kind).toBe(30078);
++				expect(result.list.contentKey).toBeNull();
++			}
++		} finally {
++			await rm(other.path, { force: true });
++		}
++	});
++
++	test('inviteFor refuses a non-admin device on a managed list', async () => {
++		const list = await store.createManagedList('Household');
++		const { link } = await store.inviteFor(list.id);
++
++		const other = await openTestStore();
++		try {
++			await other.store.joinFromInvite(link);
++			await expect(other.store.inviteFor(list.id)).rejects.toThrow();
++		} finally {
++			await rm(other.path, { force: true });
++		}
++	});
++
++	test('applyRemoteItem merges an incoming payload with the local item field-wise', async () => {
++		const list = await store.createOpenList('Groceries');
++		const item = await store.addItem(list.id, 'Milch');
++
++		const merged = await store.applyRemoteItem(list.id, item.dTag, {
++			name: 'Milch',
++			open: { v: false, t: item.openT + 1000 },
++			device: 'ffffffff',
++		});
++
++		expect(merged.open).toBe(false);
++		expect(merged.icon).toBe(item.icon); // untouched field survives the merge
++	});
++
++	test('pendingItems and markPublished track which items still need publishing', async () => {
++		const list = await store.createOpenList('Groceries');
++		const item = await store.addItem(list.id, 'Milch');
++
++		expect((await store.pendingItems(list.id)).map(i => i.dTag)).toEqual([item.dTag]);
++
++		await store.markPublished(list.id, item.dTag);
++
++		expect(await store.pendingItems(list.id)).toEqual([]);
++	});
++
++	test('onChange is notified on local mutations and the unsubscribe function stops further notifications', async () => {
++		const list = await store.createOpenList('Groceries');
++		let calls = 0;
++		const unsubscribe = store.onChange(() => { calls++; });
++
++		await store.addItem(list.id, 'Milch');
++		expect(calls).toBe(1);
++
++		unsubscribe();
++		await store.addItem(list.id, 'Butter');
++		expect(calls).toBe(1);
++	});
++});
+diff --git a/packages/app-mobile/lists/core/store.ts b/packages/app-mobile/lists/core/store.ts
+new file mode 100644
+index 0000000..6b7971e
+--- /dev/null
++++ b/packages/app-mobile/lists/core/store.ts
+@@ -0,0 +1,285 @@
++import { VerifiedEvent } from 'nostr-tools';
++import { ListsDatabase } from './db';
++import { bytesToHex, deriveOpenListKeys, dTag, hexToBytes } from './crypto';
++import { buildJoinRequestEvent } from './events';
++import {
++	createManagedInviteToken,
++	EncodedInvite,
++	encodeInvite,
++	isInviteExpired,
++	ListInvite,
++	parseInvite,
++	verifyManagedInviteToken,
++} from './invite';
++import { clampTime, mergeItem } from './merge';
++import { normalizeName, resolveCatalog } from './normalize';
++import { ItemPayload, ItemRecord, ListRecord, Role } from './types';
++
++export type ChangeListener = ()=> void;
++
++// Tiny pub/sub used to tell the UI something changed, without pulling in a
++// full event emitter dependency.
++class ChangeEmitter {
++	private listeners = new Set<ChangeListener>();
++
++	public on(listener: ChangeListener): ()=> void {
++		this.listeners.add(listener);
++		return () => this.listeners.delete(listener);
++	}
++
++	public emit(): void {
++		for (const listener of this.listeners) listener();
++	}
++}
++
++const deviceTag = (publicKey: string): string => publicKey.slice(0, 8);
++
++const itemRecordToPayload = (item: ItemRecord): ItemPayload => {
++	const payload: ItemPayload = { name: item.name, open: { v: item.open, t: item.openT }, device: item.device };
++	if (item.detail !== null && item.detailT !== null) payload.detail = { v: item.detail, t: item.detailT };
++	if (item.category !== null && item.categoryT !== null) payload.category = { v: item.category, t: item.categoryT };
++	if (item.icon !== null && item.iconT !== null) payload.icon = { v: item.icon, t: item.iconT };
++	if (item.deletedT !== null) payload.deleted = { v: item.deleted, t: item.deletedT };
++	return payload;
++};
++
++const payloadToItemRecord = (listId: string, dTagValue: string, payload: ItemPayload, pending: boolean): ItemRecord => ({
++	listId,
++	dTag: dTagValue,
++	name: payload.name,
++	detail: payload.detail?.v ?? null,
++	detailT: payload.detail?.t ?? null,
++	category: payload.category?.v ?? null,
++	categoryT: payload.category?.t ?? null,
++	icon: payload.icon?.v ?? null,
++	iconT: payload.icon?.t ?? null,
++	open: payload.open.v,
++	openT: payload.open.t,
++	deleted: payload.deleted?.v ?? false,
++	deletedT: payload.deleted?.t ?? null,
++	device: payload.device,
++	pending,
++});
++
++export type JoinResult =
++	| { type: 'open'; list: ListRecord }
++	| { type: 'managed'; list: ListRecord; joinRequest: VerifiedEvent };
++
++// UI-facing façade over ListsDatabase: resolves catalog matches, stamps local
++// changes with a clamped timestamp, and notifies listeners of changes. Holds
++// no network code -- publishing pending items and applying incoming events
++// from relays or Bluetooth is the sync layer's job, built on top of this.
++export class ListsStore {
++	private db: ListsDatabase;
++	private dbName: string;
++	private changes = new ChangeEmitter();
++	private openPromise: Promise<void> | null = null;
++
++	public constructor(db: ListsDatabase, dbName: string) {
++		this.db = db;
++		this.dbName = dbName;
++	}
++
++	// Opens the database on first use (not at construction time), so the app
++	// can create a ListsStore up front and only pay for opening it once the
++	// person actually visits the lists feature.
++	private async ensureOpen() {
++		if (!this.openPromise) this.openPromise = this.db.openOrCreate(this.dbName);
++		await this.openPromise;
++		return this.db.deviceIdentity();
++	}
++
++	public onChange(listener: ChangeListener): ()=> void {
++		return this.changes.on(listener);
++	}
++
++	public async lists(): Promise<ListRecord[]> {
++		await this.ensureOpen();
++		return this.db.lists();
++	}
++
++	public async items(listId: string, options: { open?: boolean } = {}): Promise<ItemRecord[]> {
++		await this.ensureOpen();
++		return this.db.items(listId, options);
++	}
++
++	public async suggestions(prefix: string, limit = 10) {
++		await this.ensureOpen();
++		return this.db.suggestions(prefix, limit);
++	}
++
++	private async requireList(listId: string): Promise<ListRecord> {
++		const list = await this.db.list(listId);
++		if (!list) throw new Error(`Unknown list: ${listId}`);
++		return list;
++	}
++
++	private async nextTimestamp(listId: string): Promise<number> {
++		const maxSeen = await this.db.maxSeenTime(listId);
++		return clampTime(Date.now(), maxSeen);
++	}
++
++	public async createOpenList(name: string): Promise<ListRecord> {
++		const identity = await this.ensureOpen();
++		const list = await this.db.createList('open', name);
++		await this.db.upsertMember({ listId: list.id, pubkey: identity.publicKey, name: identity.name, role: 'member', since: Date.now(), removedAt: null });
++		this.changes.emit();
++		return list;
++	}
++
++	public async createManagedList(name: string): Promise<ListRecord> {
++		const identity = await this.ensureOpen();
++		const list = await this.db.createList('managed', name);
++		await this.db.upsertMember({ listId: list.id, pubkey: identity.publicKey, name: identity.name, role: 'admin', since: Date.now(), removedAt: null });
++		this.changes.emit();
++		return list;
++	}
++
++	// Decodes an invite (link or code) and creates the local list record for
++	// it. For an open list, the device can start using it immediately. For a
++	// managed list, the caller still needs to send the returned join request
++	// to the admin (over relays or Bluetooth) and wait to be added -- nothing
++	// here does that, see the class doc comment.
++	public async joinFromInvite(text: string, deviceName?: string): Promise<JoinResult> {
++		const identity = await this.ensureOpen();
++		const invite: ListInvite = parseInvite(text);
++
++		if (invite.kind === 'open') {
++			const derived = deriveOpenListKeys(invite.listKey);
++			const list: ListRecord = {
++				id: derived.listPubkey, kind: 'open', listKey: bytesToHex(invite.listKey),
++				contentKey: bytesToHex(derived.contentKey), name: 'Shared list', settings: null, relays: null, sortOrder: 0,
++			};
++			await this.db.importList(list);
++			await this.db.upsertMember({ listId: list.id, pubkey: identity.publicKey, name: deviceName ?? identity.name, role: 'member', since: Date.now(), removedAt: null });
++			this.changes.emit();
++			return { type: 'open', list };
++		}
++
++		if (!verifyManagedInviteToken(invite.token, invite.adminPubkey)) throw new Error('Invite signature is invalid');
++		if (isInviteExpired(invite.token)) throw new Error('Invite has expired');
++
++		const list: ListRecord = {
++			id: invite.listPubkey, kind: 'managed', listKey: null, contentKey: null,
++			name: 'Shared list', settings: null, relays: null, sortOrder: 0,
++		};
++		await this.db.importList(list);
++		const joinRequest = buildJoinRequestEvent(identity.secretKey, invite.adminPubkey, {
++			inviteToken: encodeInvite(invite).code,
++			deviceName: deviceName ?? identity.name,
++		});
++		this.changes.emit();
++		return { type: 'managed', list, joinRequest };
++	}
++
++	// Builds an invite for the given list. For an open list any member may
++	// call this (the invite carries the list key itself); for a managed list
++	// only a local admin may, since the invite is signed with this device's
++	// key. `role` only applies to managed lists.
++	public async inviteFor(listId: string, role: Role = 'member'): Promise<EncodedInvite> {
++		const identity = await this.ensureOpen();
++		const list = await this.requireList(listId);
++
++		if (list.kind === 'open') {
++			if (!list.listKey) throw new Error('Open list is missing its list key');
++			return encodeInvite({ kind: 'open', listKey: hexToBytes(list.listKey) });
++		}
++
++		const members = await this.db.members(listId);
++		const self = members.find(m => m.pubkey === identity.publicKey && !m.removedAt);
++		if (!self || self.role !== 'admin') throw new Error('Only an admin can create an invite for this list');
++
++		const token = createManagedInviteToken(identity.secretKey, { role });
++		return encodeInvite({ kind: 'managed', listPubkey: list.id, adminPubkey: identity.publicKey, token });
++	}
++
++	// Adds an item by free-typed name, resolving it against the catalog and
++	// re-opening an existing (bought or deleted) item instead of duplicating
++	// it, so two people adding "Milch" independently land on the same record.
++	public async addItem(listId: string, text: string): Promise<ItemRecord> {
++		const identity = await this.ensureOpen();
++		const list = await this.requireList(listId);
++		if (!list.contentKey) throw new Error('List is not ready yet: no content key');
++		const contentKey = hexToBytes(list.contentKey);
++
++		const match = resolveCatalog(text);
++		const tag = dTag(contentKey, normalizeName(match.canonical));
++		const device = deviceTag(identity.publicKey);
++		const t = await this.nextTimestamp(listId);
++
++		const existing = await this.db.item(listId, tag);
++		if (existing) {
++			if (existing.deleted) {
++				await this.db.undeleteItem(listId, tag, t, device);
++			} else if (!existing.open) {
++				await this.db.setOpen(listId, tag, true, t, device);
++			}
++			this.changes.emit();
++			return (await this.db.item(listId, tag)) as ItemRecord;
++		}
++
++		const record: ItemRecord = {
++			listId, dTag: tag, name: match.canonical,
++			detail: null, detailT: null,
++			category: match.category, categoryT: match.category ? t : null,
++			icon: match.emoji, iconT: match.emoji ? t : null,
++			open: true, openT: t,
++			deleted: false, deletedT: null,
++			device, pending: true,
++		};
++		await this.db.upsertItem(record);
++		this.changes.emit();
++		return record;
++	}
++
++	public async toggleOpen(listId: string, itemDTag: string): Promise<void> {
++		const identity = await this.ensureOpen();
++		const item = await this.db.item(listId, itemDTag);
++		if (!item) throw new Error(`Unknown item: ${itemDTag}`);
++		const t = await this.nextTimestamp(listId);
++		await this.db.setOpen(listId, itemDTag, !item.open, t, deviceTag(identity.publicKey));
++		this.changes.emit();
++	}
++
++	public async setDetail(listId: string, itemDTag: string, detail: string | null): Promise<void> {
++		const identity = await this.ensureOpen();
++		const t = await this.nextTimestamp(listId);
++		await this.db.setDetail(listId, itemDTag, detail, t, deviceTag(identity.publicKey));
++		this.changes.emit();
++	}
++
++	public async removeItem(listId: string, itemDTag: string): Promise<void> {
++		const identity = await this.ensureOpen();
++		const t = await this.nextTimestamp(listId);
++		await this.db.deleteItem(listId, itemDTag, t, deviceTag(identity.publicKey));
++		this.changes.emit();
++	}
++
++	// Merges an incoming (already decrypted) item payload into local state.
++	// Field-wise LWW via mergeItem(), so it doesn't matter whether the remote
++	// or the local record is newer, or which one calls this first.
++	public async applyRemoteItem(listId: string, itemDTag: string, remote: ItemPayload): Promise<ItemRecord> {
++		await this.ensureOpen();
++		const existing = await this.db.item(listId, itemDTag);
++		const merged = existing ? mergeItem(itemRecordToPayload(existing), remote) : remote;
++		const record = payloadToItemRecord(listId, itemDTag, merged, existing?.pending ?? false);
++		await this.db.upsertItem(record);
++		this.changes.emit();
++		return record;
++	}
++
++	public async pendingItems(listId?: string): Promise<ItemRecord[]> {
++		await this.ensureOpen();
++		return this.db.pendingItems(listId);
++	}
++
++	public async markPublished(listId: string, itemDTag: string): Promise<void> {
++		await this.ensureOpen();
++		await this.db.markPublished(listId, itemDTag);
++	}
++}
++
++// Re-exported so the sync layer can build the same payload shape this store
++// uses internally, e.g. before calling applyRemoteItem() with a freshly
++// decrypted event.
++export { itemRecordToPayload, payloadToItemRecord };
+diff --git a/packages/app-mobile/lists/core/types.ts b/packages/app-mobile/lists/core/types.ts
+new file mode 100644
+index 0000000..4a4d61a
+--- /dev/null
++++ b/packages/app-mobile/lists/core/types.ts
+@@ -0,0 +1,98 @@
++// Pure data types shared by the shopping-list core. No UI, no networking.
++
++// Whether a list's member directory is controlled by every member equally ('open')
++// or only by admins ('managed'). See docs/KONZEPT.md section 3.
++export type ListKind = 'open' | 'managed';
++
++export type Role = 'admin' | 'member';
++
++// A single field in a merged record: its current value and the device time at
++// which it was set. Used for last-writer-wins merging, see merge.ts.
++export interface FieldValue<T> {
++	v: T;
++	t: number;
++}
++
++export interface ListRecord {
++	// Hex-encoded list public key (Nostr pubkey), also the list's identifier on relays.
++	id: string;
++	kind: ListKind;
++	// Hex-encoded 32-byte list key, only present for 'open' lists (source of the
++	// derived list key pair and content key). Null for 'managed' lists.
++	listKey: string | null;
++	// Hex-encoded 32-byte symmetric content key, used to derive item d-tags and
++	// to encrypt/decrypt item and directory events. Null while joining a
++	// managed list, until the admin's directory event has been received and
++	// this device's wrapped entry in it has been unwrapped.
++	contentKey: string | null;
++	name: string;
++	// Arbitrary JSON, synced as part of the list (category order, custom synonyms).
++	settings: string | null;
++	// JSON array of relay URLs; null/empty means "use the app defaults".
++	relays: string[] | null;
++	sortOrder: number;
++}
++
++export interface MemberRecord {
++	listId: string;
++	// Hex-encoded device public key of the member.
++	pubkey: string;
++	name: string | null;
++	role: Role;
++	since: number;
++	// Set when the member was removed (tombstone); null while active.
++	removedAt: number | null;
++}
++
++export interface ItemRecord {
++	listId: string;
++	// HMAC(contentKey, 'item:' + normalizedName), see crypto.ts#dTag.
++	dTag: string;
++	// Display name, following the field with the latest timestamp among the
++	// contributing records (name itself carries no per-field timestamp).
++	name: string;
++	detail: string | null;
++	detailT: number | null;
++	category: string | null;
++	categoryT: number | null;
++	icon: string | null;
++	iconT: number | null;
++	open: boolean;
++	openT: number;
++	deleted: boolean;
++	deletedT: number | null;
++	// Hex prefix (8 chars) of the device pubkey that produced the current state.
++	device: string;
++	// True while this item has local changes not yet confirmed published.
++	pending: boolean;
++}
++
++// The decrypted payload carried by an item event (see events.ts).
++export interface ItemPayload {
++	name: string;
++	detail?: FieldValue<string>;
++	category?: FieldValue<string>;
++	open: FieldValue<boolean>;
++	deleted?: FieldValue<boolean>;
++	icon?: FieldValue<string>;
++	device: string;
++}
++
++export interface CategoryDef {
++	id: string;
++	name: string;
++	emoji: string;
++}
++
++export interface CatalogItemDef {
++	name: string;
++	emoji: string;
++	category: string;
++	synonyms: string[];
++}
++
++export interface CatalogMatch {
++	canonical: string;
++	emoji: string | null;
++	category: string | null;
++}
+diff --git a/packages/app-mobile/package.json b/packages/app-mobile/package.json
+index 2a3496f..b3757e1 100644
+--- a/packages/app-mobile/package.json
++++ b/packages/app-mobile/package.json
+@@ -32,6 +32,7 @@
+     "@joplin/utils": "~3.7",
+     "@joplin/whisper-voice-typing": "~3.7",
+     "@js-draw/material-icons": "1.33.0",
++    "@noble/hashes": "1.8.0",
+     "@react-native-clipboard/clipboard": "1.16.3",
+     "@react-native-community/datetimepicker": "8.6.0",
+     "@react-native-community/geolocation": "3.4.0",
+@@ -59,6 +60,7 @@
+     "js-draw": "1.33.0",
+     "lodash": "4.18.1",
+     "md5": "2.3.0",
++    "nostr-tools": "2.25.2",
+     "path-browserify": "1.0.1",
+     "prop-types": "15.8.1",
+     "punycode": "2.3.1",
+diff --git a/packages/tools/cspell/dictionary4.txt b/packages/tools/cspell/dictionary4.txt
+index 45851bc..6ae0204 100644
+--- a/packages/tools/cspell/dictionary4.txt
++++ b/packages/tools/cspell/dictionary4.txt
+@@ -350,3 +350,19 @@ jsdiff
+ unmerged
+ unspaced
+ selfsigned
++upsert
++upserted
++nostr
++konzept
++kuehlregal
++zauber
++zauberkeks
++quietscheentchen
++hafermilch
++äpfel
++aepfel
++sonstiges
++gruß
++milc
++abcdefghjkmnpqrstvwxyz
++relays
+diff --git a/yarn.lock b/yarn.lock
+index 54b291f..8b8c70d 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -12597,6 +12597,7 @@ __metadata:
+     "@joplin/utils": "npm:~3.7"
+     "@joplin/whisper-voice-typing": "npm:~3.7"
+     "@js-draw/material-icons": "npm:1.33.0"
++    "@noble/hashes": "npm:1.8.0"
+     "@pmmmwh/react-refresh-webpack-plugin": "npm:^0.6.0"
+     "@react-native-clipboard/clipboard": "npm:1.16.3"
+     "@react-native-community/cli": "npm:20.0.0"
+@@ -12653,6 +12654,7 @@ __metadata:
+     lodash: "npm:4.18.1"
+     md5: "npm:2.3.0"
+     nodemon: "npm:3.1.14"
++    nostr-tools: "npm:2.25.2"
+     path-browserify: "npm:1.0.1"
+     prop-types: "npm:15.8.1"
+     punycode: "npm:2.3.1"
+@@ -14685,6 +14687,22 @@ __metadata:
+   languageName: node
+   linkType: hard
+ 
++"@noble/ciphers@npm:2.1.1":
++  version: 2.1.1
++  resolution: "@noble/ciphers@npm:2.1.1"
++  checksum: 10/efca189b2719ed7309616a6824328d713bd37156e1bcead453725e51fc93311fb2f54e4d46bef0391fa17ce18bd9c2364511290774504a8600264b572f6a1db5
++  languageName: node
++  linkType: hard
++
++"@noble/curves@npm:2.0.1":
++  version: 2.0.1
++  resolution: "@noble/curves@npm:2.0.1"
++  dependencies:
++    "@noble/hashes": "npm:2.0.1"
++  checksum: 10/e826af523f40a671601a6d07f98df16c3afe1cbd0349c3ba4d7b31f6dba7dc743822719f260bd291716b6b42b8dc327f94a76b4852359aa85f79df461eb22bfc
++  languageName: node
++  linkType: hard
++
+ "@noble/hashes@npm:1.4.0":
+   version: 1.4.0
+   resolution: "@noble/hashes@npm:1.4.0"
+@@ -14692,6 +14710,20 @@ __metadata:
+   languageName: node
+   linkType: hard
+ 
++"@noble/hashes@npm:1.8.0":
++  version: 1.8.0
++  resolution: "@noble/hashes@npm:1.8.0"
++  checksum: 10/474b7f56bc6fb2d5b3a42132561e221b0ea4f91e590f4655312ca13667840896b34195e2b53b7f097ec080a1fdd3b58d902c2a8d0fbdf51d2e238b53808a177e
++  languageName: node
++  linkType: hard
++
++"@noble/hashes@npm:2.0.1":
++  version: 2.0.1
++  resolution: "@noble/hashes@npm:2.0.1"
++  checksum: 10/f4d00e7564eb4ff4e6d16be151dd0e404aede35f91e4372b0a8a6ec888379c1dd1e02c721b480af8e7853bea9637185b5cb9533970c5b77d60c254ead0cfd8f7
++  languageName: node
++  linkType: hard
++
+ "@noble/hashes@npm:^2.2.0":
+   version: 2.2.0
+   resolution: "@noble/hashes@npm:2.2.0"
+@@ -16730,6 +16762,34 @@ __metadata:
+   languageName: node
+   linkType: hard
+ 
++"@scure/base@npm:2.0.0":
++  version: 2.0.0
++  resolution: "@scure/base@npm:2.0.0"
++  checksum: 10/8fb86024f22e9c532d513b8df8a672252e58bd5695920ce646162287f0accd38e89cab58722a738b3d247b5dcf7760362ae2d82d502be7e62a555f5d98f8a110
++  languageName: node
++  linkType: hard
++
++"@scure/bip32@npm:2.0.1":
++  version: 2.0.1
++  resolution: "@scure/bip32@npm:2.0.1"
++  dependencies:
++    "@noble/curves": "npm:2.0.1"
++    "@noble/hashes": "npm:2.0.1"
++    "@scure/base": "npm:2.0.0"
++  checksum: 10/d1248fdc45a3f45ede5bd049669d336eff008d0bb9693dea99ac401c5750f881f50ea727459959e116c8eb7f4b9f8325f6ab740396ed4baa9b095b109b6709d5
++  languageName: node
++  linkType: hard
++
++"@scure/bip39@npm:2.0.1":
++  version: 2.0.1
++  resolution: "@scure/bip39@npm:2.0.1"
++  dependencies:
++    "@noble/hashes": "npm:2.0.1"
++    "@scure/base": "npm:2.0.0"
++  checksum: 10/d05271c3a339447802e87c921b3630d5477ce1e137340bb31692c2936dea382f2f73ecb60100e22a96632d70b67d32f7e10b7f36e7395c879f7ff0efadcd1ad0
++  languageName: node
++  linkType: hard
++
+ "@seiyab/eslint-plugin-react-hooks@npm:4.5.1-beta.0":
+   version: 4.5.1-beta.0
+   resolution: "@seiyab/eslint-plugin-react-hooks@npm:4.5.1-beta.0"
+@@ -44558,6 +44618,33 @@ __metadata:
+   languageName: node
+   linkType: hard
+ 
++"nostr-tools@npm:2.25.2":
++  version: 2.25.2
++  resolution: "nostr-tools@npm:2.25.2"
++  dependencies:
++    "@noble/ciphers": "npm:2.1.1"
++    "@noble/curves": "npm:2.0.1"
++    "@noble/hashes": "npm:2.0.1"
++    "@scure/base": "npm:2.0.0"
++    "@scure/bip32": "npm:2.0.1"
++    "@scure/bip39": "npm:2.0.1"
++    nostr-wasm: "npm:0.1.0"
++  peerDependencies:
++    typescript: ">=5.0.0"
++  peerDependenciesMeta:
++    typescript:
++      optional: true
++  checksum: 10/222144dbcf9b69275865bca89e3016ce0edd8f177f08a7b0b02ea45bfc376e68c3d5acd161364fea13ed2a273d2662ed12f77faed0c4095fb13512e506d16285
++  languageName: node
++  linkType: hard
++
++"nostr-wasm@npm:0.1.0":
++  version: 0.1.0
++  resolution: "nostr-wasm@npm:0.1.0"
++  checksum: 10/d783ae8de024752b5b7b0b65f64a458484e5ca8facd8801d26b21f662b93ae7c1eb0a8e6b6c7ae99719cf09a51c2b8ec3afd77b7a1a8dfe6e640d600bae9c8ca
++  languageName: node
++  linkType: hard
++
+ "not@npm:^0.1.0":
+   version: 0.1.0
+   resolution: "not@npm:0.1.0"

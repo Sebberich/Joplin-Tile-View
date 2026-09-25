@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 14:47:42 +0000
-Subject: [PATCH 04/18] Mobile: Add layout toggle button
+Subject: [PATCH 04/29] Mobile: Add layout toggle button
 
 Adds a button to switch between the tile and list note layouts without
 going through Settings: NoteTileToolbar (added in the previous commit)

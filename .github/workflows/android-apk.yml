@@ -21,9 +21,35 @@ permissions:
   contents: write
 
 jobs:
+  # Formel-Tabellen-Plugin (plugins/formula-tables): Tests, Build der .jpl, hängt am Release.
+  plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: plugins/formula-tables
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: plugins/formula-tables/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run lint
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formula-tables-plugin
+          path: plugins/formula-tables/publish/*.jpl
+          if-no-files-found: error
+          retention-days: 30
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    needs: plugin
     steps:
       - name: Linux-Abhängigkeiten
         run: |
@@ -140,6 +166,12 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: formula-tables-plugin
+          path: plugin-release
+
       - name: GitHub-Release anlegen (Quelle für Obtainium)
         if: github.event_name == 'push'
         env:
@@ -152,8 +184,9 @@ jobs:
           VERSION="${BASE}-tiles.${{ github.run_number }}"
           cp "$APK" "joplin-tiles-${VERSION}.apk"
           DISCLAIMER="Vibe-coded: the code is mostly written by an AI assistant (Claude Code) and has not been reviewed line by line by hand. Private hobby project in the test phase, no warranty and no liability. Back up your data before using this with real notes (JEX export)."
-          NOTES="$(printf '%s\n\n%s\n' "Build #${{ github.run_number }} from ${GITHUB_SHA::7}. Signature: ${SIG}. Installable as an update over builds with the same signature." "⚠️ **${DISCLAIMER}**")"
-          gh release create "v${VERSION}" "joplin-tiles-${VERSION}.apk" \
+          PLUGIN="$(ls plugin-release/*.jpl | head -n1)"
+          NOTES="$(printf '%s\n\n%s\n\n%s\n' "Build #${{ github.run_number }} from ${GITHUB_SHA::7}. Signature: ${SIG}. Installable as an update over builds with the same signature." "Also attached: the Formula Tables plugin (\`$(basename "$PLUGIN")\`) – install it in Joplin via Settings → Plugins → Install from file. See plugins/formula-tables/README.md." "⚠️ **${DISCLAIMER}**")"
+          gh release create "v${VERSION}" "joplin-tiles-${VERSION}.apk" "$PLUGIN" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Joplin Tiles Beta ${VERSION}" \
             --notes "$NOTES"

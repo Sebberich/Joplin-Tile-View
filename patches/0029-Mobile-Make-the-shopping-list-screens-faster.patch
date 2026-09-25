@@ -1,0 +1,898 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 02:03:56 +0000
+Subject: [PATCH 29/29] Mobile: Make the shopping list screens faster
+
+Tiles are memoized and only re-render when their item changes; changes
+to other lists no longer reload the open one; sync status updates are
+batched; taps and new items update the screen immediately. A warm-up
+shortly after app start opens the lists database, builds the catalog
+index and primes the signing code, so the first use is no longer slow.
+Member names now also travel over Bluetooth. Timing entries in the test
+log; the Bluetooth manager tests no longer depend on sleeps.
+
+diff --git a/.gitignore b/.gitignore
+index 02451cb..a09d3cd 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1068,6 +1068,7 @@ packages/app-mobile/lists/ui/ShareScreen.test.js
+ packages/app-mobile/lists/ui/ShareScreen.js
+ packages/app-mobile/lists/ui/components/CreateListModal.js
+ packages/app-mobile/lists/ui/components/ItemEditModal.js
++packages/app-mobile/lists/ui/components/ItemTile.js
+ packages/app-mobile/lists/ui/components/NearbyPeersModal.js
+ packages/app-mobile/lists/ui/components/NearbyStatusCircle.js
+ packages/app-mobile/lists/ui/components/PromptModal.js
+@@ -1082,6 +1083,7 @@ packages/app-mobile/lists/ui/listsRuntime.js
+ packages/app-mobile/lists/ui/parseItemInput.test.js
+ packages/app-mobile/lists/ui/parseItemInput.js
+ packages/app-mobile/lists/ui/syncApi.js
++packages/app-mobile/lists/ui/warmup.js
+ packages/app-mobile/root.js
+ packages/app-mobile/services/AlarmServiceDriver.android.js
+ packages/app-mobile/services/AlarmServiceDriver.ios.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index 96cb782..ae74d81 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -1094,6 +1094,7 @@ packages/app-mobile/lists/ui/ShareScreen.test.js
+ packages/app-mobile/lists/ui/ShareScreen.js
+ packages/app-mobile/lists/ui/components/CreateListModal.js
+ packages/app-mobile/lists/ui/components/ItemEditModal.js
++packages/app-mobile/lists/ui/components/ItemTile.js
+ packages/app-mobile/lists/ui/components/NearbyPeersModal.js
+ packages/app-mobile/lists/ui/components/NearbyStatusCircle.js
+ packages/app-mobile/lists/ui/components/PromptModal.js
+@@ -1108,6 +1109,7 @@ packages/app-mobile/lists/ui/listsRuntime.js
+ packages/app-mobile/lists/ui/parseItemInput.test.js
+ packages/app-mobile/lists/ui/parseItemInput.js
+ packages/app-mobile/lists/ui/syncApi.js
++packages/app-mobile/lists/ui/warmup.js
+ packages/app-mobile/root.js
+ packages/app-mobile/services/AlarmServiceDriver.android.js
+ packages/app-mobile/services/AlarmServiceDriver.ios.js
+diff --git a/packages/app-mobile/lists/core/normalize.ts b/packages/app-mobile/lists/core/normalize.ts
+index bbae1d4..75004fa 100644
+--- a/packages/app-mobile/lists/core/normalize.ts
++++ b/packages/app-mobile/lists/core/normalize.ts
+@@ -38,6 +38,14 @@ const getTermIndex = (): CatalogTerm[] => {
+ 	return termIndex;
+ };
+ 
++// Forces the catalog's term index to be built now rather than on the first
++// resolveCatalog()/suggestions() call -- see lists/ui/warmup.ts, which calls
++// this a few seconds after app start so the first real lookup isn't the one
++// paying for it.
++export const warmCatalogIndex = (): void => {
++	getTermIndex();
++};
++
+ const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+ 
+ const containsWholeTerm = (haystack: string, term: string): boolean => {
+diff --git a/packages/app-mobile/lists/core/store.ts b/packages/app-mobile/lists/core/store.ts
+index 9b220ab..016af9c 100644
+--- a/packages/app-mobile/lists/core/store.ts
++++ b/packages/app-mobile/lists/core/store.ts
+@@ -20,7 +20,14 @@ import { debugLog } from '../../utils/debugLog';
+ 
+ const log = debugLog('lists.store');
+ 
+-export type ChangeListener = ()=> void;
++// `listId` is the list the change belongs to, when known -- callers that only
++// care about one list (see ListScreen.tsx) can skip reloading (and
++// re-rendering) entirely for a change to a different one, instead of
++// re-querying and re-rendering the whole screen on every store change
++// regardless of which list it touched. Omitted (rather than assumed
++// "everything") only for the rare case a caller genuinely can't attribute
++// the change to a single list.
++export type ChangeListener = (listId?: string)=> void;
+ 
+ // Tiny pub/sub used to tell the UI something changed, without pulling in a
+ // full event emitter dependency.
+@@ -32,8 +39,8 @@ class ChangeEmitter {
+ 		return () => this.listeners.delete(listener);
+ 	}
+ 
+-	public emit(): void {
+-		for (const listener of this.listeners) listener();
++	public emit(listId?: string): void {
++		for (const listener of this.listeners) listener(listId);
+ 	}
+ }
+ 
+@@ -147,7 +154,7 @@ export class ListsStore {
+ 		const identity = await this.ensureOpen();
+ 		const list = await this.db.createList('open', name);
+ 		await this.db.upsertMember({ listId: list.id, pubkey: identity.publicKey, name: identity.name, role: 'member', since: Date.now(), removedAt: null });
+-		this.changes.emit();
++		this.changes.emit(list.id);
+ 		return list;
+ 	}
+ 
+@@ -155,7 +162,7 @@ export class ListsStore {
+ 		const identity = await this.ensureOpen();
+ 		const list = await this.db.createList('managed', name);
+ 		await this.db.upsertMember({ listId: list.id, pubkey: identity.publicKey, name: identity.name, role: 'admin', since: Date.now(), removedAt: null });
+-		this.changes.emit();
++		this.changes.emit(list.id);
+ 		return list;
+ 	}
+ 
+@@ -176,7 +183,7 @@ export class ListsStore {
+ 			};
+ 			await this.db.importList(list);
+ 			await this.db.upsertMember({ listId: list.id, pubkey: identity.publicKey, name: deviceName ?? identity.name, role: 'member', since: Date.now(), removedAt: null });
+-			this.changes.emit();
++			this.changes.emit(list.id);
+ 			return { type: 'open', list };
+ 		}
+ 
+@@ -192,7 +199,7 @@ export class ListsStore {
+ 			inviteToken: encodeInvite(invite).code,
+ 			deviceName: deviceName ?? identity.name,
+ 		});
+-		this.changes.emit();
++		this.changes.emit(list.id);
+ 		return { type: 'managed', list, joinRequest };
+ 	}
+ 
+@@ -279,7 +286,7 @@ export class ListsStore {
+ 					log.info('Quantity reached zero, item marked bought', { dTag: tag });
+ 				}
+ 			}
+-			this.changes.emit();
++			this.changes.emit(listId);
+ 			return (await this.db.item(listId, tag)) as ItemRecord;
+ 		}
+ 
+@@ -296,7 +303,7 @@ export class ListsStore {
+ 		};
+ 		await this.db.upsertItem(record);
+ 		log.info('Item added', { dTag: tag, hasQuantity: !!quantity, startsOpen: record.open });
+-		this.changes.emit();
++		this.changes.emit(listId);
+ 		return record;
+ 	}
+ 
+@@ -311,7 +318,7 @@ export class ListsStore {
+ 		} else {
+ 			await this.reopenItem(listId, item, t, device);
+ 		}
+-		this.changes.emit();
++		this.changes.emit(listId);
+ 	}
+ 
+ 	// Sets one unit's total for an item to `total` (clamped to >= 0), by
+@@ -337,7 +344,7 @@ export class ListsStore {
+ 			await this.db.setOpen(listId, itemDTag, false, t, device);
+ 			log.info('Quantity reached zero, item marked bought', { dTag: itemDTag });
+ 		}
+-		this.changes.emit();
++		this.changes.emit(listId);
+ 		return (await this.db.item(listId, itemDTag)) as ItemRecord;
+ 	}
+ 
+@@ -345,21 +352,21 @@ export class ListsStore {
+ 		const identity = await this.ensureOpen();
+ 		const t = await this.nextTimestamp(listId);
+ 		await this.db.setDetail(listId, itemDTag, detail, t, deviceTag(identity.publicKey));
+-		this.changes.emit();
++		this.changes.emit(listId);
+ 	}
+ 
+ 	public async setCategory(listId: string, itemDTag: string, category: string | null): Promise<void> {
+ 		const identity = await this.ensureOpen();
+ 		const t = await this.nextTimestamp(listId);
+ 		await this.db.setCategory(listId, itemDTag, category, t, deviceTag(identity.publicKey));
+-		this.changes.emit();
++		this.changes.emit(listId);
+ 	}
+ 
+ 	public async removeItem(listId: string, itemDTag: string): Promise<void> {
+ 		const identity = await this.ensureOpen();
+ 		const t = await this.nextTimestamp(listId);
+ 		await this.db.deleteItem(listId, itemDTag, t, deviceTag(identity.publicKey));
+-		this.changes.emit();
++		this.changes.emit(listId);
+ 	}
+ 
+ 	// Merges an incoming (already decrypted) item payload into local state.
+@@ -371,7 +378,7 @@ export class ListsStore {
+ 		const merged = existing ? mergeItem(itemRecordToPayload(existing), remote) : remote;
+ 		const record = payloadToItemRecord(listId, itemDTag, merged, existing?.pending ?? false);
+ 		await this.db.upsertItem(record);
+-		this.changes.emit();
++		this.changes.emit(listId);
+ 		emitRemoteChange(listId, itemDTag, existing, remote, record, identity.publicKey);
+ 		return record;
+ 	}
+@@ -392,7 +399,7 @@ export class ListsStore {
+ 	public async leaveList(listId: string): Promise<void> {
+ 		await this.ensureOpen();
+ 		await this.db.deleteList(listId);
+-		this.changes.emit();
++		this.changes.emit(listId);
+ 	}
+ }
+ 
+diff --git a/packages/app-mobile/lists/nearby/nearbyManager.test.ts b/packages/app-mobile/lists/nearby/nearbyManager.test.ts
+index b5ef4ab..95e74e0 100644
+--- a/packages/app-mobile/lists/nearby/nearbyManager.test.ts
++++ b/packages/app-mobile/lists/nearby/nearbyManager.test.ts
+@@ -1,12 +1,9 @@
+-import { rm } from 'fs-extra';
+-import { join } from 'path';
+-import { tmpdir } from 'os';
+ import Database from '@joplin/lib/database';
+ import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
+-import uuid from '@joplin/lib/uuid';
+ import { ListsDatabase } from '../core/db';
+ import { ListsStore } from '../core/store';
+ import { ListRecord } from '../core/types';
++import { NearbyState } from '../sync/nearby';
+ import { NearbyManager } from './nearbyManager';
+ import { FakeBleDevice, FakeBleNetwork, createFakeBle } from './testing/fakeBle';
+ 
+@@ -19,34 +16,54 @@ interface Device {
+ 	store: ListsStore;
+ 	manager: NearbyManager;
+ 	ble: FakeBleDevice;
+-	path: string;
+ }
+ 
++// In-memory (no temp file on disk): each `new Database(...)` below gets its
++// own isolated store, same as a per-file tmp path would, but without the
++// filesystem contention -- 20+ suites all doing sqlite disk I/O at once under
++// `yarn test lists` was a real, measured contributor to this suite's
++// flakiness (see waitFor() below for the rest of that fix).
++const IN_MEMORY_DB = ':memory:';
++
+ const openDevice = async (id: string, network: FakeBleNetwork): Promise<Device> => {
+-	const path = join(tmpdir(), `tiles-nearby-test-${uuid.createNano()}.sqlite`);
+ 	const db = new ListsDatabase(new Database(new DatabaseDriverNode()));
+-	await db.openOrCreate(path);
+-	const store = new ListsStore(db, path);
++	await db.openOrCreate(IN_MEMORY_DB);
++	const store = new ListsStore(db, IN_MEMORY_DB);
+ 	const ble = createFakeBle(id, network);
+ 	const manager = new NearbyManager(db, store, { ble });
+-	return { db, store, manager, ble, path };
++	return { db, store, manager, ble };
+ };
+ 
+ const closeDevice = async (device: Device): Promise<void> => {
+ 	await device.manager.stop();
+ 	await device.db.close();
+-	await rm(device.path, { force: true });
+ };
+ 
+-// Runs pending async work (frame delivery, handshake steps, sqlite I/O
+-// callbacks) until it's all settled, without needing real BLE latency.
+-// setImmediate alone isn't enough here: the node sqlite driver delivers
+-// query results via libuv's thread pool, which needs real event-loop turns
+-// (not just drained microtasks/immediates) to catch up -- so this yields
+-// with a short real setTimeout instead. See useFakeTimers() below for how
+-// this stays compatible with tests that also need fake timers.
+-const settle = async (rounds = 40, delayMs = 25): Promise<void> => {
+-	for (let i = 0; i < rounds; i++) await new Promise(resolve => setTimeout(resolve, delayMs));
++// Polls `predicate` until it's true, instead of sleeping a fixed number of
++// rounds -- a fixed-round sleep either wastes time or (under slow/parallel
++// CI load) isn't long enough, which is what made this suite flaky. A short
++// real setTimeout between checks is still needed (not just drained
++// microtasks/immediates): the node sqlite driver delivers query results via
++// libuv's thread pool, which needs real event-loop turns to catch up. See
++// useFakeTimers() below for how this stays compatible with tests that also
++// need fake timers.
++const waitFor = async (predicate: ()=> Promise<boolean> | boolean, timeoutMs = 45000, intervalMs = 25): Promise<void> => {
++	const deadline = Date.now() + timeoutMs;
++	for (;;) {
++		if (await predicate()) return;
++		if (Date.now() >= deadline) throw new Error('waitFor: condition was not met before the timeout');
++		await new Promise(resolve => setTimeout(resolve, intervalMs));
++	}
++};
++
++// Reads a manager's current NearbyState synchronously: onState() always
++// invokes the listener once with the current value before returning its
++// unsubscribe function, so subscribing and immediately unsubscribing again
++// is a plain (non-flaky) read, not a wait.
++const currentNearbyState = (manager: NearbyManager): NearbyState => {
++	let state!: NearbyState;
++	manager.onState(s => { state = s; })();
++	return state;
+ };
+ 
+ // advanceTimers keeps the fake clock auto-ticking at (roughly) real speed,
+@@ -57,6 +74,10 @@ const useFakeTimers = (): void => {
+ };
+ 
+ describe('lists/nearby/nearbyManager', () => {
++	// waitFor() above can legitimately need well over jest's 5s default under
++	// slow/parallel CI load (sqlite I/O goes through real event-loop turns).
++	jest.setTimeout(60000);
++
+ 	let network: FakeBleNetwork;
+ 	let devices: Device[];
+ 
+@@ -92,14 +113,12 @@ describe('lists/nearby/nearbyManager', () => {
+ 
+ 		await a.manager.start(list.id);
+ 		await b.manager.start(list.id);
+-		await settle();
++		await waitFor(async () => (await b.store.items(list.id)).some(i => i.name === 'Milch'));
+ 
+ 		const bItems = await b.store.items(list.id);
+ 		expect(bItems.map(i => i.name)).toContain('Milch');
+ 
+-		let aState: { mode: string; found: number } | null = null;
+-		a.manager.onState(s => { aState = s; })();
+-		expect(aState).not.toBeNull();
++		expect(currentNearbyState(a.manager)).not.toBeNull();
+ 	});
+ 
+ 	test('found/total are reported once devices are connected', async () => {
+@@ -107,12 +126,12 @@ describe('lists/nearby/nearbyManager', () => {
+ 		const b = await addDevice('b');
+ 		const list = await createSharedOpenList(a, b);
+ 
+-		const states: { mode: string; found: number }[] = [];
++		const states: NearbyState[] = [];
+ 		a.manager.onState(s => states.push(s));
+ 
+ 		await a.manager.start(list.id);
+ 		await b.manager.start(list.id);
+-		await settle();
++		await waitFor(() => states.some(s => s.mode === 'found' && s.found >= 1));
+ 
+ 		expect(states.some(s => s.mode === 'found' && s.found >= 1)).toBe(true);
+ 	});
+@@ -126,15 +145,33 @@ describe('lists/nearby/nearbyManager', () => {
+ 		await a.manager.start(list.id);
+ 		await b.manager.start(list.id);
+ 		await c.manager.start(list.id);
+-		await settle();
++		// Doesn't require the full mesh (all three pairwise links) to be up --
++		// only that each device has found at least one peer, which is enough
++		// for the item below to eventually hop from a to c via b.
++		await waitFor(() => [a, b, c].every(d => currentNearbyState(d.manager).found >= 1));
+ 
+ 		await a.store.addItem(list.id, 'Kaffee');
+-		await settle();
++		await waitFor(async () => (await c.store.items(list.id)).some(i => i.name === 'Kaffee'));
+ 
+ 		const cItems = await c.store.items(list.id);
+ 		expect(cItems.map(i => i.name)).toContain('Kaffee');
+ 	});
+ 
++	test('a device name change reaches another device over nearby, alongside the item sync', async () => {
++		const a = await addDevice('a');
++		const b = await addDevice('b');
++		const list = await createSharedOpenList(a, b);
++		const aIdentity = await a.db.deviceIdentity();
++		await a.db.setDeviceName('Sebastians Handy');
++
++		await a.manager.start(list.id);
++		await b.manager.start(list.id);
++		await waitFor(async () => (await b.db.profileName(list.id, aIdentity.publicKey))?.name === 'Sebastians Handy');
++
++		const profile = await b.db.profileName(list.id, aIdentity.publicKey);
++		expect(profile?.name).toBe('Sebastians Handy');
++	});
++
+ 	test('auto-off stops nearby after the configured number of minutes of inactivity', async () => {
+ 		mockSetting.value.mockReturnValue(5); // lists.nearbyAutoOffMinutes
+ 
+@@ -160,9 +197,9 @@ describe('lists/nearby/nearbyManager', () => {
+ 		useFakeTimers();
+ 		await a.manager.start(list.id);
+ 		await b.manager.start(list.id);
+-		await settle();
++		await waitFor(() => currentNearbyState(a.manager).found >= 1);
+ 
+-		const states: { mode: string; found: number }[] = [];
++		const states: NearbyState[] = [];
+ 		a.manager.onState(s => states.push(s));
+ 		expect(states[states.length - 1].found).toBeGreaterThanOrEqual(1);
+ 
+diff --git a/packages/app-mobile/lists/nearby/nearbyManager.ts b/packages/app-mobile/lists/nearby/nearbyManager.ts
+index 8d58673..272faa8 100644
+--- a/packages/app-mobile/lists/nearby/nearbyManager.ts
++++ b/packages/app-mobile/lists/nearby/nearbyManager.ts
+@@ -9,6 +9,7 @@ import { VerifiedEvent } from 'nostr-tools';
+ import { ListsDatabase } from '../core/db';
+ import { ListsStore, itemEventCreatedAt, itemMaxFieldTime, itemRecordToPayload } from '../core/store';
+ import { buildItemEvent, parseItemEvent } from '../core/events';
++import { buildProfileEvent, parseProfileEvent } from '../core/profile';
+ import { hexToBytes } from '../core/crypto';
+ import { ItemRecord, ListRecord } from '../core/types';
+ import { NearbyPeerInfo, NearbyState, NearbyStateListener, NearbyTransport } from '../sync/nearby';
+@@ -359,6 +360,28 @@ export class NearbyManager implements NearbyTransport {
+ 				}
+ 			},
+ 			localDirectoryEvent: async () => this.latestDirectoryEvent(),
++			// Mirrors ListsSync#publishOwnProfile: only sent once this device's
++			// name has actually been changed locally, same as the relay path --
++			// see core/profile.ts.
++			localProfileEvent: async (): Promise<VerifiedEvent | null> => {
++				if (!this.contentKey || !this.localSecretKey || !this.listId) return null;
++				const changedAt = await this.db.deviceNameChangedAt();
++				if (!changedAt) return null;
++				return buildProfileEvent(this.localSecretKey, this.listId, this.contentKey, this.localDeviceName ?? '', changedAt, Math.floor(changedAt / 1000));
++			},
++			applyRemoteProfileEvent: async (event: VerifiedEvent): Promise<boolean> => {
++				if (!this.contentKey || !this.listId) return false;
++				const members = await this.db.members(this.listId);
++				if (!members.some(m => m.pubkey === event.pubkey && !m.removedAt)) return false;
++				try {
++					const parsed = parseProfileEvent(event, this.contentKey);
++					const applied = await this.db.upsertProfileName(this.listId, parsed.devicePubkey, parsed.name, parsed.t);
++					if (applied) log.info('Nearby: applied profile event', { list: this.listId.slice(0, 8), member: parsed.devicePubkey.slice(0, 8) });
++					return applied;
++				} catch (error) {
++					return false;
++				}
++			},
+ 			applyRemoteDirectoryEvent: async (event: VerifiedEvent): Promise<boolean> => {
+ 				try {
+ 					return await ListsSync.instance().applyIncomingDirectoryEvent(this.listId as string, event);
+diff --git a/packages/app-mobile/lists/ui/ListScreen.tsx b/packages/app-mobile/lists/ui/ListScreen.tsx
+index b440c90..0687b25 100644
+--- a/packages/app-mobile/lists/ui/ListScreen.tsx
++++ b/packages/app-mobile/lists/ui/ListScreen.tsx
+@@ -15,15 +15,35 @@ import PromptModal from './components/PromptModal';
+ import { getListsSync } from './syncApi';
+ import { parseItemInput } from './parseItemInput';
+ import { groupOpenItems, sortRecentlyBought } from './groupItems';
+-import { formatQty, parseQuantityToken, REOPEN_UNDO_WINDOW_MS } from '../core/qty';
++import { parseQuantityToken } from '../core/qty';
+ import { clampTileColumns, tileZoomStep, DEFAULT_TILE_COLUMNS } from './listTileZoom';
+ import NearbyStatusCircle from './components/NearbyStatusCircle';
+ import { isListNotifyEnabled, setListNotifyEnabled } from '../notify/listSettings';
+ import ItemEditModal from './components/ItemEditModal';
++import ItemTile from './components/ItemTile';
+ import { ItemRecord, ListRecord, CatalogMatch } from '../core/types';
+ 
+ const log = debugLog('lists.ui');
+ 
++const now = (): number => (typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now());
++
++// Marks a timing log's first occurrence per app start with "(cold)" -- see
++// device-test feedback: "first use is slow, then gets faster". Module-level
++// (not per-screen-instance) so re-opening the same list a second time isn't
++// reported as cold again.
++const coldMarkers = { mount: false, tap: false, addItem: false, menu: false };
++const markCold = (key: keyof typeof coldMarkers): boolean => {
++	const wasCold = !coldMarkers[key];
++	coldMarkers[key] = true;
++	return wasCold;
++};
++
++// How long status updates (sync line, online/offline) are batched before
++// being applied to state -- avoids re-rendering the screen (and, via
++// ScreenHeader's menuOptions/rightElement props, more than just the sync
++// line) once per individual status tick. See device-test feedback point 2.
++const STATUS_DEBOUNCE_MS = 300;
++
+ // Persisted in the lists DB's own meta table (see ListsDatabase.getMeta/setMeta in
+ // core/db.ts) rather than a Joplin setting, since this screen's files aren't allowed to
+ // touch built-in settings this round.
+@@ -195,6 +215,10 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 	const [notifyEnabled, setNotifyEnabled] = useState(true);
+ 	const tileStyles = useTileMetrics(props.themeId, tileColumns);
+ 	const pinchStateRef = useRef<{ lastDistance: number } | null>(null);
++	const mountStartRef = useRef(now());
++	const firstRenderLoggedRef = useRef(false);
++	const statusFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
++	const pendingStatusRef = useRef<{ lastSyncedAt: number | null; online: boolean } | null>(null);
+ 
+ 	const reload = useCallback(async () => {
+ 		const [lists, open, bought] = await Promise.all([
+@@ -205,18 +229,41 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		setList(lists.find(l => l.id === listId) ?? null);
+ 		setOpenItems(open);
+ 		setBoughtItems(bought);
++		if (!firstRenderLoggedRef.current) {
++			firstRenderLoggedRef.current = true;
++			const cold = markCold('mount');
++			log.info(`Screen mount -> first render with items${cold ? ' (cold)' : ''}`, {
++				listId: listId.slice(0, 8), ms: Math.round(now() - mountStartRef.current), items: open.length + bought.length,
++			});
++		}
+ 	}, [store, listId]);
+ 
+ 	useEffect(() => {
+ 		void reload();
+-		const unsubscribeChange = store.onChange(() => { void reload(); });
++		// Skips the reload (and the re-render it causes) for a change that
++		// belongs to a different list -- e.g. another list's items syncing in
++		// the background while this screen is open. See core/store.ts#ChangeListener.
++		const unsubscribeChange = store.onChange(changedListId => {
++			if (changedListId && changedListId !== listId) return;
++			void reload();
++		});
+ 
+ 		sync.subscribe(listId);
+ 		void sync.syncList(listId);
++		// Batched: a burst of status ticks (e.g. several relays reporting in
++		// quick succession) applies to state at most once every
++		// STATUS_DEBOUNCE_MS, instead of re-rendering the screen once per tick.
+ 		const unsubscribeStatus = sync.onStatus(status => {
+ 			if (status.listId !== listId) return;
+-			setLastSyncedAt(status.lastSyncedAt);
+-			setOnline(status.online);
++			pendingStatusRef.current = { lastSyncedAt: status.lastSyncedAt, online: status.online };
++			if (statusFlushRef.current) return;
++			statusFlushRef.current = setTimeout(() => {
++				statusFlushRef.current = null;
++				const pending = pendingStatusRef.current;
++				if (!pending) return;
++				setLastSyncedAt(prev => (prev === pending.lastSyncedAt ? prev : pending.lastSyncedAt));
++				setOnline(prev => (prev === pending.online ? prev : pending.online));
++			}, STATUS_DEBOUNCE_MS);
+ 		});
+ 
+ 		const appStateSub = RNAppState.addEventListener('change', state => {
+@@ -228,6 +275,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 			sync.unsubscribe(listId);
+ 			unsubscribeStatus();
+ 			appStateSub.remove();
++			if (statusFlushRef.current) clearTimeout(statusFlushRef.current);
+ 		};
+ 	}, [store, sync, listId, reload]);
+ 
+@@ -274,22 +322,59 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		log.info('List notifications toggled', { listId: listId.slice(0, 8), enabled: next });
+ 	}, [listId, notifyEnabled]);
+ 
++	// Puts a just-written record straight into the relevant array, so it shows
++	// up without waiting for the full reload() the store's onChange -> reload
++	// path below triggers a moment later (which still runs, and is what
++	// reconciles this with the authoritative state, e.g. if a concurrent
++	// remote change landed in between).
++	const applyOptimisticRecord = useCallback((record: ItemRecord) => {
++		const replace = (items: ItemRecord[]) => [...items.filter(i => i.dTag !== record.dTag), record];
++		if (record.deleted) {
++			setOpenItems(items => items.filter(i => i.dTag !== record.dTag));
++			setBoughtItems(items => items.filter(i => i.dTag !== record.dTag));
++		} else if (record.open) {
++			setOpenItems(replace);
++			setBoughtItems(items => items.filter(i => i.dTag !== record.dTag));
++		} else {
++			setBoughtItems(replace);
++			setOpenItems(items => items.filter(i => i.dTag !== record.dTag));
++		}
++	}, []);
++
+ 	const addItemByName = useCallback(async (rawText: string, source: 'typed' | 'chip') => {
+ 		const trimmed = rawText.trim();
+ 		if (!trimmed) return;
+ 		const parsed = parseItemInput(trimmed);
+ 		if (!parsed.name) return;
+-		await store.addItem(listId, parsed.name, parsed.quantity ?? undefined);
++		const start = now();
++		const record = await store.addItem(listId, parsed.name, parsed.quantity ?? undefined);
++		applyOptimisticRecord(record);
++		const cold = markCold('addItem');
++		log.info(`Add item -> visible${cold ? ' (cold)' : ''}`, { ms: Math.round(now() - start) });
+ 		log.info('Item added', { source, name: parsed.name, hasQuantity: !!parsed.quantity });
+ 		// Cleared but the keyboard is left open (no Keyboard.dismiss()/blur here) so several
+ 		// items can be typed in quick succession.
+ 		setInputText('');
+-	}, [store, listId]);
+-
++	}, [store, listId, applyOptimisticRecord]);
++
++	// Optimistic: flips the item locally (and moves it between the open/bought
++	// arrays) immediately, rather than waiting for the DB round trip and the
++	// subsequent onChange -> reload() to update the UI -- see device-test
++	// feedback: "the tap on a tile must update the UI immediately". The local
++	// DB write (store.toggleOpen) is fire-and-forget here; nothing about
++	// signing, encrypting or publishing the change happens on this path at
++	// all (that only happens from the periodic sync pass, see syncApi.ts).
+ 	const onToggleItem = useCallback((item: ItemRecord) => {
++		const start = now();
+ 		log.info('Item toggled', { dTag: item.dTag, open: !item.open });
++		const optimistic: ItemRecord = { ...item, open: !item.open, openT: Date.now() };
++		applyOptimisticRecord(optimistic);
++		const cold = markCold('tap');
++		log.debug(`Tap -> state updated${cold ? ' (cold)' : ''}`, { dTag: item.dTag, ms: Math.round(now() - start) });
+ 		void store.toggleOpen(listId, item.dTag);
+-	}, [store, listId]);
++	}, [store, listId, applyOptimisticRecord]);
++
++	const onEditItem = useCallback((item: ItemRecord) => setEditingItem(item), []);
+ 
+ 	const setTileColumnsPersisted = useCallback((columns: number) => {
+ 		setTileColumns(previous => {
+@@ -303,8 +388,13 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		});
+ 	}, []);
+ 
++	// Claims the responder only for an actual pinch (2+ touches) -- never for a
++	// single touch -- so a plain tap on a tile is never captured/delayed by
++	// this gesture. Attached only to the tile ScrollView's wrapping View below
++	// (not the header or the input row), same scope as NoteTileList.tsx's
++	// identical gesture. See device-test feedback point 1.
+ 	const onStartShouldSetResponderCapture = useCallback((event: GestureResponderEvent) => {
+-		return event.nativeEvent.touches.length === 2;
++		return event.nativeEvent.touches.length >= 2;
+ 	}, []);
+ 
+ 	const onResponderGrant = useCallback((event: GestureResponderEvent) => {
+@@ -312,7 +402,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 	}, []);
+ 
+ 	const onResponderMove = useCallback((event: GestureResponderEvent) => {
+-		if (event.nativeEvent.touches.length !== 2 || !pinchStateRef.current) return;
++		if (event.nativeEvent.touches.length < 2 || !pinchStateRef.current) return;
+ 
+ 		const distance = touchDistance(event.nativeEvent.touches);
+ 		const delta = distance - pinchStateRef.current.lastDistance;
+@@ -354,13 +444,27 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		props.dispatch({ type: 'NAV_GO', routeName, listId } as never);
+ 	}, [props, listId]);
+ 
+-	const menuOptions: MenuOption[] = [
+-		{ title: _('Share'), onPress: (): void => goTo('ListsShare') },
+-		{ title: _('Members'), onPress: (): void => goTo('ListsMembers') },
+-		{ title: _('Rename'), onPress: (): void => setRenaming(true) },
+-		{ title: _('Clean up bought items'), onPress: (): void => { void onCleanUpBought(); }, style: MenuOptionStyle.Normal },
+-		{ title: notifyEnabled ? _('Notifications: on') : _('Notifications: off'), onPress: (): void => { void onToggleNotifications(); } },
+-	];
++	// Times each overflow-menu action's own handler (device-test feedback: the
++	// "⋮" menu itself is a shared component this package doesn't own -- see
++	// components/ScreenHeader -- so its open animation can't be instrumented
++	// from here; this is the closest proxy available, and still signals
++	// whether the JS thread was free to respond promptly).
++	const logMenuAction = useCallback((label: string, action: ()=> void) => {
++		const start = now();
++		action();
++		const cold = markCold('menu');
++		log.info(`Menu open handler${cold ? ' (cold)' : ''}`, { action: label, ms: Math.round(now() - start) });
++	}, []);
++
++	// Memoized so ScreenHeader (a PureComponent) doesn't see a new array (and
++	// re-render) on every unrelated state change, e.g. a sync status tick.
++	const menuOptions: MenuOption[] = useMemo(() => [
++		{ title: _('Share'), onPress: (): void => logMenuAction('Share', () => goTo('ListsShare')) },
++		{ title: _('Members'), onPress: (): void => logMenuAction('Members', () => goTo('ListsMembers')) },
++		{ title: _('Rename'), onPress: (): void => logMenuAction('Rename', () => setRenaming(true)) },
++		{ title: _('Clean up bought items'), onPress: (): void => logMenuAction('Clean up bought items', () => { void onCleanUpBought(); }), style: MenuOptionStyle.Normal },
++		{ title: notifyEnabled ? _('Notifications: on') : _('Notifications: off'), onPress: (): void => logMenuAction('Notifications', () => { void onToggleNotifications(); }) },
++	], [goTo, onCleanUpBought, onToggleNotifications, notifyEnabled, logMenuAction]);
+ 
+ 	const syncLine = !online
+ 		? _('Offline – changes will be sent later')
+@@ -368,34 +472,6 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 			? _('Last synced %s', time.formatMsToLocal(lastSyncedAt))
+ 			: _('Not synced yet');
+ 
+-	const renderTile = (item: ItemRecord, bought: boolean) => {
+-		const qtyText = formatQty(item.qty);
+-		// Once bought, the quantity is only shown while still inside the
+-		// undo window (see core/qty.ts#epochForReopen) -- past it, re-opening
+-		// the item would start a fresh (empty) quantity anyway, so showing the
+-		// stale one here would be misleading.
+-		const showQty = !!qtyText && (!bought || Date.now() - item.openT <= REOPEN_UNDO_WINDOW_MS);
+-		return (
+-			<TouchableOpacity
+-				key={item.dTag}
+-				style={[tileStyles.tile, bought ? styles.tileBought : null]}
+-				onPress={() => onToggleItem(item)}
+-				onLongPress={() => setEditingItem(item)}
+-			>
+-				{item.icon ? (
+-					<Text style={tileStyles.tileEmoji}>{item.icon}</Text>
+-				) : (
+-					<View style={[styles.letterCircle, tileStyles.letterCircle]}>
+-						<Text style={[styles.letterCircleText, tileStyles.letterCircleText]}>{item.name.charAt(0).toUpperCase()}</Text>
+-					</View>
+-				)}
+-				<Text style={tileStyles.tileName} numberOfLines={2} ellipsizeMode='tail'>{item.name}</Text>
+-				{showQty && <Text style={tileStyles.tileQty} numberOfLines={1}>{qtyText}</Text>}
+-				{!!item.detail && <Text style={tileStyles.tileDetail} numberOfLines={1}>{item.detail}</Text>}
+-			</TouchableOpacity>
+-		);
+-	};
+-
+ 	const isEmpty = !openItems.length && !boughtItems.length;
+ 
+ 	return (
+@@ -456,7 +532,9 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 						<View key={group.categoryId}>
+ 							<Text style={styles.sectionHeader}>{group.emoji} {group.categoryName}</Text>
+ 							<View style={styles.tileGrid}>
+-								{group.items.map(item => renderTile(item, false))}
++								{group.items.map(item => (
++									<ItemTile key={item.dTag} item={item} bought={false} styles={styles} tileStyles={tileStyles} onPress={onToggleItem} onLongPress={onEditItem} />
++								))}
+ 							</View>
+ 						</View>
+ 					))}
+@@ -465,7 +543,9 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 						<View>
+ 							<Text style={styles.sectionHeader}>{_('Recently bought')}</Text>
+ 							<View style={styles.tileGrid}>
+-								{recentlyBought.map(item => renderTile(item, true))}
++								{recentlyBought.map(item => (
++									<ItemTile key={item.dTag} item={item} bought={true} styles={styles} tileStyles={tileStyles} onPress={onToggleItem} onLongPress={onEditItem} />
++								))}
+ 							</View>
+ 						</View>
+ 					)}
+diff --git a/packages/app-mobile/lists/ui/components/ItemTile.tsx b/packages/app-mobile/lists/ui/components/ItemTile.tsx
+new file mode 100644
+index 0000000..351fa86
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/components/ItemTile.tsx
+@@ -0,0 +1,70 @@
++// One shopping-list tile, split out from ListScreen.tsx and wrapped in
++// React.memo (with a field-by-field comparator, see areEqual below) so that
++// re-rendering the grid after a store change only actually re-renders the
++// tiles whose own fields changed -- not all of them. See device-test
++// feedback: "re-rendering: store.onChange probably reloads all items ... and
++// re-renders every tile on each change".
++//
++// A plain identity comparator wouldn't be enough here: reload() in
++// ListScreen.tsx re-queries the DB and gets back fresh ItemRecord objects
++// (new references) for every item on every change, whether or not that
++// item's own fields actually changed.
++import * as React from 'react';
++import { Text, TouchableOpacity, View } from 'react-native';
++import { formatQty, REOPEN_UNDO_WINDOW_MS } from '../../core/qty';
++import { ItemRecord } from '../../core/types';
++
++type TileStylesheet = ReturnType<typeof import('react-native').StyleSheet.create>;
++
++interface ItemTileProps {
++	item: ItemRecord;
++	bought: boolean;
++	// Both come from useMemo() in ListScreen.tsx (see useStyles/useTileMetrics
++	// there), so they're stable references across re-renders that don't
++	// actually change the theme, window size or column count.
++	styles: TileStylesheet;
++	tileStyles: TileStylesheet;
++	onPress: (item: ItemRecord)=> void;
++	onLongPress: (item: ItemRecord)=> void;
++}
++
++const ItemTileComponent: React.FC<ItemTileProps> = ({ item, bought, styles, tileStyles, onPress, onLongPress }) => {
++	const qtyText = formatQty(item.qty);
++	// Once bought, the quantity is only shown while still inside the
++	// undo window (see core/qty.ts#epochForReopen) -- past it, re-opening
++	// the item would start a fresh (empty) quantity anyway, so showing the
++	// stale one here would be misleading.
++	const showQty = !!qtyText && (!bought || Date.now() - item.openT <= REOPEN_UNDO_WINDOW_MS);
++	return (
++		<TouchableOpacity
++			style={[tileStyles.tile, bought ? styles.tileBought : null]}
++			onPress={() => onPress(item)}
++			onLongPress={() => onLongPress(item)}
++		>
++			{item.icon ? (
++				<Text style={tileStyles.tileEmoji}>{item.icon}</Text>
++			) : (
++				<View style={[styles.letterCircle, tileStyles.letterCircle]}>
++					<Text style={[styles.letterCircleText, tileStyles.letterCircleText]}>{item.name.charAt(0).toUpperCase()}</Text>
++				</View>
++			)}
++			<Text style={tileStyles.tileName} numberOfLines={2} ellipsizeMode='tail'>{item.name}</Text>
++			{showQty && <Text style={tileStyles.tileQty} numberOfLines={1}>{qtyText}</Text>}
++			{!!item.detail && <Text style={tileStyles.tileDetail} numberOfLines={1}>{item.detail}</Text>}
++		</TouchableOpacity>
++	);
++};
++
++const areEqual = (prev: ItemTileProps, next: ItemTileProps): boolean => {
++	if (prev.bought !== next.bought) return false;
++	if (prev.styles !== next.styles || prev.tileStyles !== next.tileStyles) return false;
++	if (prev.onPress !== next.onPress || prev.onLongPress !== next.onLongPress) return false;
++	const a = prev.item, b = next.item;
++	if (a === b) return true;
++	return a.dTag === b.dTag && a.name === b.name && a.icon === b.icon && a.detail === b.detail
++		&& a.open === b.open && a.openT === b.openT && a.deleted === b.deleted
++		&& formatQty(a.qty) === formatQty(b.qty);
++};
++
++const ItemTile = React.memo(ItemTileComponent, areEqual);
++export default ItemTile;
+diff --git a/packages/app-mobile/lists/ui/warmup.ts b/packages/app-mobile/lists/ui/warmup.ts
+new file mode 100644
+index 0000000..6960b92
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/warmup.ts
+@@ -0,0 +1,59 @@
++// Warms up the shopping-list feature's cold paths a few seconds after app
++// start, so the first time someone actually opens a list, taps a suggestion
++// or adds an item isn't also the first time the lists DB opens, the catalog
++// index gets built or the signing library precomputes its tables -- see
++// device-test feedback: "first use is slow, then gets faster". Called once
++// from root.tsx, via InteractionManager.runAfterInteractions() plus a short
++// delay so it never competes with the app's own startup work.
++import { finalizeEvent, EventTemplate } from 'nostr-tools';
++import { generateKeyPair } from '../core/crypto';
++import { warmCatalogIndex } from '../core/normalize';
++import { getListsDatabase } from './listsRuntime';
++import { debugLog } from '../../utils/debugLog';
++
++const log = debugLog('lists.ui');
++
++const now = (): number => (typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now());
++
++// A tick back to the JS event loop between steps, so a slow step here never
++// blocks the UI thread for one long chunk -- see the module doc comment.
++const yieldToUi = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
++
++// Signs one throwaway event with a freshly generated key, which is enough to
++// make noble-secp256k1 do its one-time precomputation (see
++// @noble/curves/secp256k1's schnorr signer) -- the actual event and key are
++// discarded immediately.
++const warmSigning = (): void => {
++	const key = generateKeyPair();
++	const template: EventTemplate = { kind: 1, tags: [], content: '', created_at: Math.floor(Date.now() / 1000) };
++	finalizeEvent(template, key.secretKey);
++};
++
++// Opens the lists DB and builds the catalog index unconditionally (both
++// cheap), but only warms signing if at least one list already exists --
++// nothing needs to sign an event yet for someone who has never used the
++// feature.
++const warmUpLists = async (): Promise<void> => {
++	const start = now();
++	try {
++		const db = await getListsDatabase();
++		await yieldToUi();
++
++		warmCatalogIndex();
++		await yieldToUi();
++
++		const lists = await db.lists();
++		let signedWarmup = false;
++		if (lists.length > 0) {
++			await yieldToUi();
++			warmSigning();
++			signedWarmup = true;
++		}
++
++		log.info('Warm-up finished', { ms: Math.round(now() - start), listCount: lists.length, signedWarmup });
++	} catch (error) {
++		log.warn('Warm-up failed', { error: String(error) });
++	}
++};
++
++export default warmUpLists;
+diff --git a/packages/app-mobile/root.tsx b/packages/app-mobile/root.tsx
+index 4d463a9..83b7842 100644
+--- a/packages/app-mobile/root.tsx
++++ b/packages/app-mobile/root.tsx
+@@ -18,7 +18,7 @@ import { _, setLocale } from '@joplin/lib/locale';
+ import SyncTargetJoplinServer from '@joplin/lib/SyncTargetJoplinServer';
+ import SyncTargetJoplinCloud from '@joplin/lib/SyncTargetJoplinCloud';
+ import SyncTargetOneDrive from '@joplin/lib/SyncTargetOneDrive';
+-import { Keyboard, BackHandler, Animated, StatusBar, Platform, Dimensions } from 'react-native';
++import { Keyboard, BackHandler, Animated, StatusBar, Platform, Dimensions, InteractionManager } from 'react-native';
+ import { AppState as RNAppState, EmitterSubscription, View, Text, Linking, NativeEventSubscription, Appearance, ActivityIndicator } from 'react-native';
+ import getResponsiveValue from './components/getResponsiveValue';
+ import NetInfo, { NetInfoSubscription } from '@react-native-community/netinfo';
+@@ -123,6 +123,7 @@ import ListsMembersScreen from './lists/ui/MembersScreen';
+ import { startListsSyncLifecycle } from './lists/ui/syncApi';
+ import { getListsDatabaseInstance } from './lists/ui/listsRuntime';
+ import { startNotifyManager } from './lists/notify/notifyManager';
++import warmUpLists from './lists/ui/warmup';
+ import { INVITE_LINK_PREFIX } from './lists/core/invite';
+ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+ import appReducer from './utils/appReducer';
+@@ -510,6 +511,12 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 			// screen to be open, only the sync passes startListsSyncLifecycle()
+ 			// above already triggers.
+ 			startNotifyManager(getListsDatabaseInstance());
++			// Warms up the lists feature's cold paths (DB open, catalog index,
++			// signing) once the app is idle, so the first real use of the feature
++			// isn't also the slowest one -- see lists/ui/warmup.ts.
++			InteractionManager.runAfterInteractions(() => {
++				PoorManIntervals.setTimeout(() => { void warmUpLists(); }, 3000);
++			});
+ 
+ 			// https://reactnative.dev/docs/linking#handling-deep-links
+ 			//

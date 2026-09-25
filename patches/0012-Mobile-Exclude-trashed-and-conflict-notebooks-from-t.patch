@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tile-view <tile-view@localhost>
 Date: Mon, 14 Sep 2026 04:46:42 +0000
-Subject: [PATCH 12/18] Mobile: Exclude trashed and conflict notebooks from the
+Subject: [PATCH 12/29] Mobile: Exclude trashed and conflict notebooks from the
  tile view notebook filter
 
 Deleted (trashed) notebooks and the virtual Trash/Conflicts entries were

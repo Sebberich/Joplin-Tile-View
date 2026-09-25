@@ -1,0 +1,6 @@
+/* Formula Tables - editor styles (fallback for anything not covered by the
+   inline baseTheme() extension registered in codeMirror.ts). */
+
+.cm-ft-result {
+	pointer-events: none;
+}

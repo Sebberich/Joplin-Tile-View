@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Sun, 13 Sep 2026 14:47:07 +0000
-Subject: [PATCH 03/18] Mobile: Add multi-notebook filter to tile view
+Subject: [PATCH 03/29] Mobile: Add multi-notebook filter to tile view
 
 Adds `notes.tileFolderIds` so the tile view can be limited to one or more
 notebooks, selected from a checkbox tree dialog (NoteTileFolderDialog)

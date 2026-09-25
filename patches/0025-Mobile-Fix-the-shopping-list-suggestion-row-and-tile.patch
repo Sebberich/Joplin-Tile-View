@@ -1,0 +1,542 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:11:44 +0000
+Subject: [PATCH 25/29] Mobile: Fix the shopping list suggestion row and tile
+ size
+
+The suggestion chips keep their natural height (they were squeezed away
+by the keyboard and blown up on empty lists), taps work while the
+keyboard is open, and tiles default to four columns with pinch zoom
+between three and six. Catalog fixes: "Hafer", nuts and dried fruit.
+
+diff --git a/packages/app-mobile/lists/catalog/items.json b/packages/app-mobile/lists/catalog/items.json
+index 4edbd3f..096de42 100644
+--- a/packages/app-mobile/lists/catalog/items.json
++++ b/packages/app-mobile/lists/catalog/items.json
+@@ -240,7 +240,7 @@
+   {
+     "name": "Rosinen",
+     "emoji": "🍇",
+-    "category": "obst_gemuese",
++    "category": "suesses_snacks",
+     "synonyms": [
+       "rosine",
+       "raisins"
+@@ -249,7 +249,7 @@
+   {
+     "name": "Nüsse",
+     "emoji": "🥜",
+-    "category": "obst_gemuese",
++    "category": "suesses_snacks",
+     "synonyms": [
+       "nuss",
+       "nuts"
+@@ -258,7 +258,7 @@
+   {
+     "name": "Walnüsse",
+     "emoji": "🥜",
+-    "category": "obst_gemuese",
++    "category": "suesses_snacks",
+     "synonyms": [
+       "walnuss",
+       "walnut"
+@@ -267,7 +267,7 @@
+   {
+     "name": "Haselnüsse",
+     "emoji": "🥜",
+-    "category": "obst_gemuese",
++    "category": "suesses_snacks",
+     "synonyms": [
+       "haselnuss",
+       "hazelnut"
+@@ -276,7 +276,7 @@
+   {
+     "name": "Mandeln",
+     "emoji": "🥜",
+-    "category": "obst_gemuese",
++    "category": "suesses_snacks",
+     "synonyms": [
+       "mandel",
+       "almonds"
+@@ -1984,6 +1984,7 @@
+     "emoji": "🥣",
+     "category": "fruehstueck",
+     "synonyms": [
++      "hafer",
+       "oatmeal",
+       "porridge"
+     ]
+diff --git a/packages/app-mobile/lists/core/normalize.test.ts b/packages/app-mobile/lists/core/normalize.test.ts
+index 5d60eb7..51291cb 100644
+--- a/packages/app-mobile/lists/core/normalize.test.ts
++++ b/packages/app-mobile/lists/core/normalize.test.ts
+@@ -1,4 +1,10 @@
+ import { normalizeName, resolveCatalog } from './normalize';
++import { CatalogItemDef, CategoryDef } from './types';
++
++// eslint-disable-next-line @typescript-eslint/no-var-requires -- plain JSON data files, no resolveJsonModule configured for this package
++const catalogItems: CatalogItemDef[] = require('../catalog/items.json');
++// eslint-disable-next-line @typescript-eslint/no-var-requires -- see above
++const catalogCategories: CategoryDef[] = require('../catalog/categories.json');
+ 
+ describe('lists/core/normalize', () => {
+ 	test.each([
+@@ -36,4 +42,33 @@ describe('lists/core/normalize', () => {
+ 	test('is case-insensitive and trims the fallback input', () => {
+ 		expect(resolveCatalog('  ZauberTrank  ')).toEqual({ canonical: 'ZauberTrank', emoji: null, category: null });
+ 	});
++
++	test('resolves "Hafer" to Haferflocken instead of falling back', () => {
++		expect(resolveCatalog('Hafer')).toEqual({ canonical: 'Haferflocken', emoji: '🥣', category: 'fruehstueck' });
++	});
++
++	test('files nuts and dried fruit under sweets/snacks, not produce', () => {
++		for (const name of ['Nüsse', 'Walnüsse', 'Haselnüsse', 'Mandeln', 'Rosinen']) {
++			const item = catalogItems.find(i => i.name === name);
++			expect(item?.category).toBe('suesses_snacks');
++		}
++	});
++
++	test('every catalog name/synonym is unique across the whole catalog', () => {
++		const owners = new Map<string, string>();
++		const duplicates: string[] = [];
++		for (const item of catalogItems) {
++			for (const term of [item.name, ...item.synonyms].map(t => normalizeName(t))) {
++				const owner = owners.get(term);
++				if (owner && owner !== item.name) duplicates.push(`"${term}" (${owner} vs ${item.name})`);
++				owners.set(term, item.name);
++			}
++		}
++		expect(duplicates).toEqual([]);
++	});
++
++	test('every catalog item references an existing category id', () => {
++		const knownIds = new Set(catalogCategories.map(c => c.id));
++		for (const item of catalogItems) expect(knownIds.has(item.category)).toBe(true);
++	});
+ });
+diff --git a/packages/app-mobile/lists/ui/ListScreen.tsx b/packages/app-mobile/lists/ui/ListScreen.tsx
+index cf66029..68838dc 100644
+--- a/packages/app-mobile/lists/ui/ListScreen.tsx
++++ b/packages/app-mobile/lists/ui/ListScreen.tsx
+@@ -1,6 +1,6 @@
+ import * as React from 'react';
+-import { useCallback, useEffect, useMemo, useState } from 'react';
+-import { AppState as RNAppState, FlatList, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
++import { AppState as RNAppState, FlatList, GestureResponderEvent, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+ import { Dispatch } from 'redux';
+ import { _ } from '@joplin/lib/locale';
+ import shim from '@joplin/lib/shim';
+@@ -9,15 +9,34 @@ import { ScreenHeader, MenuOption } from '../../components/ScreenHeader';
+ import { MenuOptionStyle } from '../../components/BottomDrawerMenu';
+ import { BaseScreenComponent } from '../../components/base-screen';
+ import { themeStyle } from '../../components/global-style';
++import { debugLog } from '../../utils/debugLog';
+ import { getListsDatabase, getListsStore } from './listsRuntime';
+ import PromptModal from './components/PromptModal';
+ import { getListsSync } from './syncApi';
+ import { parseItemInput } from './parseItemInput';
+ import { groupOpenItems, sortRecentlyBought } from './groupItems';
++import { clampTileColumns, tileZoomStep, DEFAULT_TILE_COLUMNS } from './listTileZoom';
+ import NearbyStatusCircle from './components/NearbyStatusCircle';
+ import ItemEditModal from './components/ItemEditModal';
+ import { ItemRecord, ListRecord, CatalogMatch } from '../core/types';
+ 
++const log = debugLog('lists.ui');
++
++// Persisted in the lists DB's own meta table (see ListsDatabase.getMeta/setMeta in
++// core/db.ts) rather than a Joplin setting, since this screen's files aren't allowed to
++// touch built-in settings this round.
++const TILE_COLUMNS_META_KEY = 'lists.tileColumns';
++
++// Two-finger distance, used by the pinch-to-zoom gesture below (same approach as
++// components/NoteTileList.tsx, but with the small columns-only ladder in ./listTileZoom).
++const touchDistance = (touches: { pageX: number; pageY: number }[]) => {
++	const dx = touches[0].pageX - touches[1].pageX;
++	const dy = touches[0].pageY - touches[1].pageY;
++	return Math.sqrt(dx * dx + dy * dy);
++};
++
++const pinchZoomThreshold = 60;
++
+ interface Props {
+ 	navigation: { state: { listId: string } };
+ 	themeId: number;
+@@ -26,9 +45,16 @@ interface Props {
+ 
+ const RECENTLY_BOUGHT_LIMIT = 20;
+ 
++// Gap kept between tiles in the grid (half of it as each tile's own horizontal margin) --
++// shared with useTileMetrics() below so the pixel math for tileWidth lines up with what's
++// actually rendered.
++const tileGap = 8;
++
+ const useStyles = (themeId: number) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
++		// Horizontal padding of the tile grid itself.
++		const tileOuterPaddingValue = theme.margin - 4;
+ 		return StyleSheet.create({
+ 			container: { flex: 1 },
+ 			syncLine: {
+@@ -50,8 +76,17 @@ const useStyles = (themeId: number) => {
+ 				fontSize: theme.fontSize,
+ 				color: theme.color,
+ 			},
++			// Fixed height (natural content height, never stretched or squeezed by the
++			// keyboard opening/closing) -- see the FlatList's own style/contentContainerStyle
++			// props below, which is what actually keeps it from growing or shrinking.
+ 			suggestionsRow: {
++				flexGrow: 0,
++				flexShrink: 0,
++			},
++			suggestionsContent: {
++				alignItems: 'center',
+ 				paddingVertical: 8,
++				paddingRight: theme.margin,
+ 			},
+ 			chip: {
+ 				flexDirection: 'row',
+@@ -75,22 +110,20 @@ const useStyles = (themeId: number) => {
+ 			tileGrid: {
+ 				flexDirection: 'row',
+ 				flexWrap: 'wrap',
+-				paddingHorizontal: theme.margin - 4,
+-			},
+-			tile: {
+-				width: '31%',
+-				margin: '1.16%',
+-				backgroundColor: theme.backgroundColor2,
+-				borderRadius: 10,
+-				paddingVertical: 10,
+-				alignItems: 'center',
++				paddingHorizontal: tileOuterPaddingValue,
+ 			},
+ 			tileBought: {
+ 				opacity: 0.5,
+ 			},
+-			tileEmoji: { fontSize: 28 },
+-			tileName: { fontSize: theme.fontSize * 0.85, color: theme.color, textAlign: 'center', marginTop: 4 },
+-			tileDetail: { fontSize: theme.fontSize * 0.75, color: theme.colorFaded, textAlign: 'center' },
++			letterCircle: {
++				alignItems: 'center',
++				justifyContent: 'center',
++				backgroundColor: theme.dividerColor,
++			},
++			letterCircleText: {
++				color: theme.colorFaded,
++				fontWeight: 'bold',
++			},
+ 			emptyState: {
+ 				padding: theme.margin,
+ 				alignItems: 'center',
+@@ -100,6 +133,46 @@ const useStyles = (themeId: number) => {
+ 	}, [themeId]);
+ };
+ 
++// Tile width, and the emoji/name/detail font sizes derived from it, for the current column
++// count and screen width. Tile width comes from the actual screen width minus margins (not a
++// percentage) so the grid's spacing is exact regardless of column count or device size.
++const useTileMetrics = (themeId: number, columns: number) => {
++	const { width: windowWidth } = useWindowDimensions();
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++		const outerPadding = theme.margin - 4;
++		const rowWidth = windowWidth - outerPadding * 2;
++		const tileWidth = Math.max(1, Math.floor(rowWidth / columns) - tileGap);
++		const emojiSize = Math.round(tileWidth * 0.35);
++		// theme.fontSize * 0.8 at the default 4 columns, scaling with the column count so text
++		// stays legible as the grid zooms in and out.
++		const nameFontSize = Math.max(10, Math.round(theme.fontSize * 0.8 * (DEFAULT_TILE_COLUMNS / columns)));
++		const detailFontSize = Math.max(9, Math.round(theme.fontSize * 0.7 * (DEFAULT_TILE_COLUMNS / columns)));
++		return StyleSheet.create({
++			tile: {
++				width: tileWidth,
++				marginHorizontal: tileGap / 2,
++				marginBottom: tileGap,
++				backgroundColor: theme.backgroundColor2,
++				borderRadius: 10,
++				paddingVertical: 10,
++				alignItems: 'center',
++			},
++			letterCircle: {
++				width: emojiSize + 8,
++				height: emojiSize + 8,
++				borderRadius: (emojiSize + 8) / 2,
++			},
++			letterCircleText: {
++				fontSize: Math.round(emojiSize * 0.55),
++			},
++			tileEmoji: { fontSize: emojiSize },
++			tileName: { fontSize: nameFontSize, color: theme.color, textAlign: 'center', marginTop: 4 },
++			tileDetail: { fontSize: detailFontSize, color: theme.colorFaded, textAlign: 'center' },
++		});
++	}, [themeId, windowWidth, columns]);
++};
++
+ const ListScreenComponent: React.FC<Props> = props => {
+ 	const listId = props.navigation.state.listId;
+ 	const styles = useStyles(props.themeId);
+@@ -115,6 +188,9 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 	const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+ 	const [online, setOnline] = useState(true);
+ 	const [renaming, setRenaming] = useState(false);
++	const [tileColumns, setTileColumns] = useState(DEFAULT_TILE_COLUMNS);
++	const tileStyles = useTileMetrics(props.themeId, tileColumns);
++	const pinchStateRef = useRef<{ lastDistance: number } | null>(null);
+ 
+ 	const reload = useCallback(async () => {
+ 		const [lists, open, bought] = await Promise.all([
+@@ -155,21 +231,79 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		let cancelled = false;
+ 		void (async () => {
+ 			const results = await store.suggestions(inputText);
+-			if (!cancelled) setSuggestions(results);
++			if (!cancelled) {
++				setSuggestions(results);
++				log.debug('Suggestions computed', { prefix: inputText, count: results.length });
++			}
+ 		})();
+ 		return () => { cancelled = true; };
+ 	}, [store, inputText]);
+ 
+-	const addItemByName = useCallback(async (rawText: string) => {
++	// Loads the persisted column count once on mount (see ListsDatabase.getMeta/setMeta).
++	useEffect(() => {
++		let cancelled = false;
++		void (async () => {
++			const db = await getListsDatabase();
++			const saved = await db.getMeta(TILE_COLUMNS_META_KEY);
++			if (!cancelled && saved) setTileColumns(clampTileColumns(Number(saved)));
++		})();
++		return () => { cancelled = true; };
++	}, []);
++
++	const addItemByName = useCallback(async (rawText: string, source: 'typed' | 'chip') => {
+ 		const trimmed = rawText.trim();
+ 		if (!trimmed) return;
+ 		const parsed = parseItemInput(trimmed);
+ 		if (!parsed.name) return;
+ 		const record = await store.addItem(listId, parsed.name);
+ 		if (parsed.detail) await store.setDetail(listId, record.dTag, parsed.detail);
++		log.info('Item added', { source, name: parsed.name, hasDetail: !!parsed.detail });
++		// Cleared but the keyboard is left open (no Keyboard.dismiss()/blur here) so several
++		// items can be typed in quick succession.
+ 		setInputText('');
+ 	}, [store, listId]);
+ 
++	const onToggleItem = useCallback((item: ItemRecord) => {
++		log.info('Item toggled', { dTag: item.dTag, open: !item.open });
++		void store.toggleOpen(listId, item.dTag);
++	}, [store, listId]);
++
++	const setTileColumnsPersisted = useCallback((columns: number) => {
++		setTileColumns(previous => {
++			if (columns === previous) return previous;
++			log.info('Tile zoom changed', { from: previous, to: columns });
++			void (async () => {
++				const db = await getListsDatabase();
++				await db.setMeta(TILE_COLUMNS_META_KEY, String(columns));
++			})();
++			return columns;
++		});
++	}, []);
++
++	const onStartShouldSetResponderCapture = useCallback((event: GestureResponderEvent) => {
++		return event.nativeEvent.touches.length === 2;
++	}, []);
++
++	const onResponderGrant = useCallback((event: GestureResponderEvent) => {
++		pinchStateRef.current = { lastDistance: touchDistance(event.nativeEvent.touches) };
++	}, []);
++
++	const onResponderMove = useCallback((event: GestureResponderEvent) => {
++		if (event.nativeEvent.touches.length !== 2 || !pinchStateRef.current) return;
++
++		const distance = touchDistance(event.nativeEvent.touches);
++		const delta = distance - pinchStateRef.current.lastDistance;
++		// Only one zoom step per threshold crossing, see NoteTileList.tsx's identical guard.
++		if (Math.abs(delta) > pinchZoomThreshold) {
++			setTileColumnsPersisted(tileZoomStep(tileColumns, delta > 0 ? 1 : -1));
++			pinchStateRef.current.lastDistance = distance;
++		}
++	}, [tileColumns, setTileColumnsPersisted]);
++
++	const onResponderEnd = useCallback(() => {
++		pinchStateRef.current = null;
++	}, []);
++
+ 	const openGroups = useMemo(() => groupOpenItems(openItems), [openItems]);
+ 	const recentlyBought = useMemo(() => sortRecentlyBought(boughtItems).slice(0, RECENTLY_BOUGHT_LIMIT), [boughtItems]);
+ 
+@@ -213,13 +347,19 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 	const renderTile = (item: ItemRecord, bought: boolean) => (
+ 		<TouchableOpacity
+ 			key={item.dTag}
+-			style={[styles.tile, bought ? styles.tileBought : null]}
+-			onPress={() => void store.toggleOpen(listId, item.dTag)}
++			style={[tileStyles.tile, bought ? styles.tileBought : null]}
++			onPress={() => onToggleItem(item)}
+ 			onLongPress={() => setEditingItem(item)}
+ 		>
+-			<Text style={styles.tileEmoji}>{item.icon ?? item.name.charAt(0).toUpperCase()}</Text>
+-			<Text style={styles.tileName} numberOfLines={2}>{item.name}</Text>
+-			{!!item.detail && <Text style={styles.tileDetail} numberOfLines={1}>{item.detail}</Text>}
++			{item.icon ? (
++				<Text style={tileStyles.tileEmoji}>{item.icon}</Text>
++			) : (
++				<View style={[styles.letterCircle, tileStyles.letterCircle]}>
++					<Text style={[styles.letterCircleText, tileStyles.letterCircleText]}>{item.name.charAt(0).toUpperCase()}</Text>
++				</View>
++			)}
++			<Text style={tileStyles.tileName} numberOfLines={2} ellipsizeMode='tail'>{item.name}</Text>
++			{!!item.detail && <Text style={tileStyles.tileDetail} numberOfLines={1}>{item.detail}</Text>}
+ 		</TouchableOpacity>
+ 	);
+ 
+@@ -241,7 +381,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 					placeholder={_('Add an item…')}
+ 					value={inputText}
+ 					onChangeText={setInputText}
+-					onSubmitEditing={() => void addItemByName(inputText)}
++					onSubmitEditing={() => void addItemByName(inputText, 'typed')}
+ 					returnKeyType='done'
+ 				/>
+ 			</View>
+@@ -252,9 +392,11 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 					data={suggestions}
+ 					keyExtractor={s => s.canonical}
+ 					style={styles.suggestionsRow}
++					contentContainerStyle={styles.suggestionsContent}
+ 					showsHorizontalScrollIndicator={false}
++					keyboardShouldPersistTaps='handled'
+ 					renderItem={({ item }) => (
+-						<TouchableOpacity style={styles.chip} onPress={() => void addItemByName(item.canonical)}>
++						<TouchableOpacity style={styles.chip} onPress={() => void addItemByName(item.canonical, 'chip')}>
+ 							{!!item.emoji && <Text>{item.emoji}</Text>}
+ 							<Text style={styles.chipText}>{item.canonical}</Text>
+ 						</TouchableOpacity>
+@@ -262,31 +404,40 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 				/>
+ 			)}
+ 
+-			<ScrollView>
+-				{isEmpty && (
+-					<View style={styles.emptyState}>
+-						<Text style={styles.emptyText}>{_('No items yet. Type above to add the first one.')}</Text>
+-					</View>
+-				)}
+-
+-				{openGroups.map(group => (
+-					<View key={group.categoryId}>
+-						<Text style={styles.sectionHeader}>{group.emoji} {group.categoryName}</Text>
+-						<View style={styles.tileGrid}>
+-							{group.items.map(item => renderTile(item, false))}
++			<View
++				style={styles.container}
++				onStartShouldSetResponderCapture={onStartShouldSetResponderCapture}
++				onResponderGrant={onResponderGrant}
++				onResponderMove={onResponderMove}
++				onResponderRelease={onResponderEnd}
++				onResponderTerminate={onResponderEnd}
++			>
++				<ScrollView keyboardShouldPersistTaps='handled'>
++					{isEmpty && (
++						<View style={styles.emptyState}>
++							<Text style={styles.emptyText}>{_('No items yet. Type above to add the first one.')}</Text>
+ 						</View>
+-					</View>
+-				))}
+-
+-				{!!recentlyBought.length && (
+-					<View>
+-						<Text style={styles.sectionHeader}>{_('Recently bought')}</Text>
+-						<View style={styles.tileGrid}>
+-							{recentlyBought.map(item => renderTile(item, true))}
++					)}
++
++					{openGroups.map(group => (
++						<View key={group.categoryId}>
++							<Text style={styles.sectionHeader}>{group.emoji} {group.categoryName}</Text>
++							<View style={styles.tileGrid}>
++								{group.items.map(item => renderTile(item, false))}
++							</View>
++						</View>
++					))}
++
++					{!!recentlyBought.length && (
++						<View>
++							<Text style={styles.sectionHeader}>{_('Recently bought')}</Text>
++							<View style={styles.tileGrid}>
++								{recentlyBought.map(item => renderTile(item, true))}
++							</View>
+ 						</View>
+-					</View>
+-				)}
+-			</ScrollView>
++					)}
++				</ScrollView>
++			</View>
+ 
+ 			<PromptModal
+ 				visible={renaming}
+diff --git a/packages/app-mobile/lists/ui/listTileZoom.test.ts b/packages/app-mobile/lists/ui/listTileZoom.test.ts
+new file mode 100644
+index 0000000..e3d35f2
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/listTileZoom.test.ts
+@@ -0,0 +1,27 @@
++import { clampTileColumns, tileZoomStep, DEFAULT_TILE_COLUMNS, MIN_TILE_COLUMNS, MAX_TILE_COLUMNS } from './listTileZoom';
++
++describe('lists/ui/listTileZoom', () => {
++	test.each([
++		[2, MIN_TILE_COLUMNS],
++		[3, 3],
++		[4.4, 4],
++		[6, MAX_TILE_COLUMNS],
++		[9, MAX_TILE_COLUMNS],
++	])('clampTileColumns(%s) -> %s', (input, expected) => {
++		expect(clampTileColumns(input)).toBe(expected);
++	});
++
++	test('clampTileColumns falls back to the default for a non-finite value', () => {
++		expect(clampTileColumns(NaN)).toBe(DEFAULT_TILE_COLUMNS);
++	});
++
++	test('zooming in (spreading fingers) decreases the column count, down to the minimum', () => {
++		expect(tileZoomStep(DEFAULT_TILE_COLUMNS, 1)).toBe(3);
++		expect(tileZoomStep(MIN_TILE_COLUMNS, 1)).toBe(MIN_TILE_COLUMNS);
++	});
++
++	test('zooming out (pinching together) increases the column count, up to the maximum', () => {
++		expect(tileZoomStep(DEFAULT_TILE_COLUMNS, -1)).toBe(5);
++		expect(tileZoomStep(MAX_TILE_COLUMNS, -1)).toBe(MAX_TILE_COLUMNS);
++	});
++});
+diff --git a/packages/app-mobile/lists/ui/listTileZoom.ts b/packages/app-mobile/lists/ui/listTileZoom.ts
+new file mode 100644
+index 0000000..07851fb
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/listTileZoom.ts
+@@ -0,0 +1,20 @@
++// Pinch-to-zoom column ladder for the shopping-list tile grid. Deliberately separate from
++// utils/tileZoom.ts (used by the note tile view, which also scales a font percentage) -- lists
++// only ever change the column count, and emoji/text size are derived from the resulting tile
++// width in ListScreen.tsx itself, not stored as a separate setting.
++
++export const MIN_TILE_COLUMNS = 3;
++export const MAX_TILE_COLUMNS = 6;
++export const DEFAULT_TILE_COLUMNS = 4;
++
++export const clampTileColumns = (columns: number): number => {
++	if (!Number.isFinite(columns)) return DEFAULT_TILE_COLUMNS;
++	return Math.min(MAX_TILE_COLUMNS, Math.max(MIN_TILE_COLUMNS, Math.round(columns)));
++};
++
++// One step along the ladder, clamped to its ends. `direction` follows utils/tileZoom.ts's
++// convention: 1 means zooming in (fingers spreading apart -- fewer, bigger tiles), -1 means
++// zooming out (fingers pinching together -- more, smaller tiles).
++export const tileZoomStep = (columns: number, direction: 1 | -1): number => {
++	return clampTileColumns(clampTileColumns(columns) - direction);
++};

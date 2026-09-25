@@ -1,0 +1,694 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 16:23:06 +0000
+Subject: [PATCH 19/29] Mobile: Move the tile view controls into the screen
+ header
+
+The bar below the header (notebook filter, zoom buttons, layout toggle)
+took too much vertical space. The notebook filter is now a header icon
+next to the sort button (highlighted while a filter narrows the scope),
+zoom and the list/tile toggle live in the header's overflow menu, and the
+extra "Tiles" bar in the list layout is gone as well. Pinch zoom and the
+notebook filter dialog are unchanged.
+
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+index f37d752..a234856 100644
+--- a/packages/app-mobile/components/NoteTileList.tsx
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -14,9 +14,8 @@ import useAsyncEffect from '@joplin/lib/hooks/useAsyncEffect';
+ 
+ import { _ } from '@joplin/lib/locale';
+ import NoteTile from './NoteTile';
+-import NoteTileToolbar from './NoteTileToolbar';
+ import { themeStyle } from './global-style';
+-import { zoomStep } from '../utils/tileZoom';
++import { zoomIn, zoomOut } from '../utils/tileZoom';
+ import { getScopeFolderIds, workingSetFromStoredValue } from '../utils/tileFolderSelection';
+ 
+ interface Props {
+@@ -182,21 +181,6 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 		return result;
+ 	}, [items, numColumns]);
+ 
+-	// Zoom steps move along a fixed ladder of (columns, fontScale) pairs (see utils/tileZoom.ts) so
+-	// that the same column count always looks the same, regardless of the zoom history that led to
+-	// it.
+-	const zoomIn = useCallback(() => {
+-		const next = zoomStep(Setting.value('notes.tileColumns'), Setting.value('notes.tileFontScale'), 1);
+-		Setting.setValue('notes.tileColumns', next.columns);
+-		Setting.setValue('notes.tileFontScale', next.fontScale);
+-	}, []);
+-
+-	const zoomOut = useCallback(() => {
+-		const next = zoomStep(Setting.value('notes.tileColumns'), Setting.value('notes.tileFontScale'), -1);
+-		Setting.setValue('notes.tileColumns', next.columns);
+-		Setting.setValue('notes.tileFontScale', next.fontScale);
+-	}, []);
+-
+ 	const pinchStateRef = useRef<{ lastDistance: number }|null>(null);
+ 
+ 	const onStartShouldSetResponderCapture = useCallback((event: GestureResponderEvent) => {
+@@ -223,14 +207,12 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 			}
+ 			pinchStateRef.current.lastDistance = distance;
+ 		}
+-	}, [zoomIn, zoomOut]);
++	}, []);
+ 
+ 	const onResponderEnd = useCallback(() => {
+ 		pinchStateRef.current = null;
+ 	}, []);
+ 
+-	const toolbar = <NoteTileToolbar onZoomIn={zoomIn} onZoomOut={zoomOut}/>;
+-
+ 	if (items.length) {
+ 		return <View
+ 			style={styles.root}
+@@ -240,7 +222,6 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 			onResponderRelease={onResponderEnd}
+ 			onResponderTerminate={onResponderEnd}
+ 		>
+-			{toolbar}
+ 			<ScrollView
+ 				ref={rootRef}
+ 				style={styles.list}
+@@ -258,14 +239,12 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 	} else {
+ 		if (scopeFolderIds !== null) {
+ 			return <View style={styles.root}>
+-				{toolbar}
+ 				<Text style={styles.noItemMessage}>{_('There are currently no notes in the selected notebooks.')}</Text>
+ 			</View>;
+ 		} else if (!Folder.atLeastOneRealFolderExists(props.folders)) {
+ 			const noItemMessage = _('You currently have no notebooks.');
+ 			return (
+ 				<View style={styles.root}>
+-					{toolbar}
+ 					<View style={styles.noNotebookView}>
+ 						<Text style={styles.noItemMessage}>{noItemMessage}</Text>
+ 						<Button title={_('Create a notebook')} onPress={() => props.dispatch({ type: 'NAV_GO', routeName: 'Folder', folderId: null })} />
+@@ -274,7 +253,6 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 			);
+ 		} else {
+ 			return <View style={styles.root}>
+-				{toolbar}
+ 				<Text style={styles.noItemMessage}>
+ 					{getEmptyFolderMessage(props.folders, props.selectedFolderId)}
+ 				</Text>
+diff --git a/packages/app-mobile/components/NoteTileToolbar.tsx b/packages/app-mobile/components/NoteTileToolbar.tsx
+deleted file mode 100644
+index 0f11258..0000000
+--- a/packages/app-mobile/components/NoteTileToolbar.tsx
++++ /dev/null
+@@ -1,157 +0,0 @@
+-import * as React from 'react';
+-import { useMemo, useState } from 'react';
+-import { connect } from 'react-redux';
+-import { Text, StyleSheet, TouchableHighlight, View, ViewStyle, TextStyle } from 'react-native';
+-import Setting from '@joplin/lib/models/Setting';
+-import Folder from '@joplin/lib/models/Folder';
+-import { FolderEntity } from '@joplin/lib/services/database/types';
+-import { AppState } from '../utils/types';
+-import { _ } from '@joplin/lib/locale';
+-import IconButton from './IconButton';
+-import NoteTileFolderDialog from './NoteTileFolderDialog';
+-import { themeStyle } from './global-style';
+-import { getScopeFolderIds, workingSetFromStoredValue } from '../utils/tileFolderSelection';
+-
+-interface Props {
+-	themeId: number;
+-	folders: FolderEntity[];
+-	notesParentType: string;
+-	selectedFolderId: string|null;
+-	tileFolderIds: string;
+-	tileColumns: number;
+-	onZoomIn: ()=> void;
+-	onZoomOut: ()=> void;
+-}
+-
+-const useStyles = (themeId: number) => {
+-	return useMemo(() => {
+-		const theme = themeStyle(themeId);
+-
+-		const root: ViewStyle = {
+-			flexDirection: 'row',
+-			alignItems: 'center',
+-			paddingHorizontal: theme.marginLeft / 2,
+-			paddingVertical: 4,
+-			borderBottomWidth: 1,
+-			borderBottomColor: theme.dividerColor,
+-		};
+-
+-		const folderButton: ViewStyle = {
+-			flexDirection: 'row',
+-			alignItems: 'center',
+-			flexShrink: 1,
+-			paddingVertical: 6,
+-			paddingHorizontal: 8,
+-		};
+-
+-		const folderButtonLabel: TextStyle = {
+-			color: theme.color,
+-			fontSize: theme.fontSize,
+-			marginLeft: 6,
+-		};
+-
+-		const spacer: ViewStyle = { flexGrow: 1 };
+-
+-		const icon: TextStyle = {
+-			color: theme.color,
+-			fontSize: theme.fontSizeLarger,
+-			width: 32,
+-			textAlign: 'center',
+-		};
+-
+-		return StyleSheet.create({
+-			root,
+-			folderButton,
+-			folderButtonLabel,
+-			spacer,
+-			icon,
+-		});
+-	}, [themeId]);
+-};
+-
+-const NoteTileToolbarComponent: React.FC<Props> = props => {
+-	const styles = useStyles(props.themeId);
+-	const [folderDialogVisible, setFolderDialogVisible] = useState(false);
+-
+-	// The notebook filter only applies when the sidebar is on a real notebook or "All notes" --
+-	// for a tag, a search, or nothing selected, getScopeFolderIds returns null and the filter
+-	// button is hidden (see NoteTileList, which then shows `state.notes` unfiltered).
+-	const scopeFolderIds = useMemo(() => getScopeFolderIds(props.folders, props.notesParentType, props.selectedFolderId), [props.folders, props.notesParentType, props.selectedFolderId]);
+-
+-	const folderLabel = useMemo(() => {
+-		if (scopeFolderIds === null) return '';
+-
+-		const scopeFolders = props.folders.filter(folder => scopeFolderIds.includes(folder.id));
+-		const selectedIds = workingSetFromStoredValue(props.tileFolderIds, scopeFolders);
+-
+-		if (selectedIds.length < scopeFolderIds.length) return _('%d notebooks', selectedIds.length);
+-		if (props.notesParentType === 'SmartFilter') return _('All notebooks');
+-
+-		const scopeFolder = props.folders.find(folder => folder.id === props.selectedFolderId);
+-		return scopeFolder ? Folder.displayTitle(scopeFolder) : _('All notebooks');
+-	}, [scopeFolderIds, props.folders, props.tileFolderIds, props.notesParentType, props.selectedFolderId]);
+-
+-	const onSwitchToListPress = () => {
+-		Setting.setValue('notes.mobileLayout', 'list');
+-	};
+-
+-	const folderButton = scopeFolderIds === null ? null : (
+-		<TouchableHighlight onPress={() => setFolderDialogVisible(true)} accessibilityRole='button'>
+-			<View style={styles.folderButton}>
+-				<IconButton
+-					iconName='fas fa-folder'
+-					onPress={() => setFolderDialogVisible(true)}
+-					description={_('Filter by notebook')}
+-					iconStyle={styles.icon}
+-					themeId={props.themeId}
+-				/>
+-				<Text style={styles.folderButtonLabel} numberOfLines={1}>{folderLabel}</Text>
+-			</View>
+-		</TouchableHighlight>
+-	);
+-
+-	return (
+-		<View style={styles.root}>
+-			{folderButton}
+-			<View style={styles.spacer}/>
+-			<IconButton
+-				iconName='fas fa-minus'
+-				onPress={props.onZoomOut}
+-				description={_('Smaller')}
+-				iconStyle={styles.icon}
+-				themeId={props.themeId}
+-			/>
+-			<IconButton
+-				iconName='fas fa-plus'
+-				onPress={props.onZoomIn}
+-				description={_('Larger')}
+-				iconStyle={styles.icon}
+-				themeId={props.themeId}
+-			/>
+-			<IconButton
+-				iconName='fas fa-list'
+-				onPress={onSwitchToListPress}
+-				description={_('Switch to list view')}
+-				iconStyle={styles.icon}
+-				themeId={props.themeId}
+-			/>
+-			<NoteTileFolderDialog
+-				visible={scopeFolderIds !== null && folderDialogVisible}
+-				onClose={() => setFolderDialogVisible(false)}
+-			/>
+-		</View>
+-	);
+-};
+-
+-const NoteTileToolbar = connect((state: AppState) => {
+-	return {
+-		themeId: state.settings.theme,
+-		folders: state.folders,
+-		notesParentType: state.notesParentType,
+-		selectedFolderId: state.selectedFolderId,
+-		tileFolderIds: (state.settings['notes.tileFolderIds'] as string) ?? '',
+-		tileColumns: state.settings['notes.tileColumns'],
+-	};
+-})(NoteTileToolbarComponent);
+-
+-export default NoteTileToolbar;
+diff --git a/packages/app-mobile/components/ScreenHeader/index.tsx b/packages/app-mobile/components/ScreenHeader/index.tsx
+index 9fafcb5..ea8138d 100644
+--- a/packages/app-mobile/components/ScreenHeader/index.tsx
++++ b/packages/app-mobile/components/ScreenHeader/index.tsx
+@@ -51,6 +51,18 @@ export enum ViewToggleButtonMode {
+ 	ShowEditor = 'show-editor',
+ }
+ 
++// A single icon button shown next to the sort button, for a screen-specific filter (for example,
++// the note tile view's notebook filter). Kept generic (rather than tile-view-specific) so that
++// ScreenHeader stays reusable by other screens.
++export interface FilterButtonOptions {
++	onPress: OnPressCallback;
++	description: string;
++	iconName?: string;
++	// Shown in the theme's highlight color when true, to signal that the filter is narrowing the
++	// results.
++	active: boolean;
++}
++
+ interface ScreenHeaderProps {
+ 	selectedNoteIds: string[];
+ 	selectedFolderId: string;
+@@ -70,6 +82,7 @@ interface ScreenHeaderProps {
+ 	onRedoButtonPress: OnPressCallback;
+ 	onSaveButtonPress: OnPressCallback;
+ 	sortButton_press?: OnPressCallback;
++	filterButton?: FilterButtonOptions;
+ 	onSearchButtonPress?: OnPressCallback;
+ 	onDeleteButtonPress?: OnPressCallback;
+ 
+@@ -209,6 +222,9 @@ class ScreenHeaderComponent extends PureComponent<ScreenHeaderProps, ScreenHeade
+ 
+ 		const topIcon: TextStyle = { ...theme.icon, flex: 1, textAlignVertical: 'center', color: theme.colorBright2 };
+ 		styleObject.topIcon = topIcon;
++		// Used for a top-bar icon that should stand out as active/on, such as the tile view's
++		// notebook filter when it's narrowing the results.
++		styleObject.topIconActive = { ...topIcon, color: theme.colorWarn2 };
+ 
+ 		styleObject.backButton = { ...styleObject.iconButton };
+ 		styleObject.backButton.marginRight = 1;
+@@ -546,6 +562,20 @@ class ScreenHeaderComponent extends PureComponent<ScreenHeaderProps, ScreenHeade
+ 			);
+ 		}
+ 
++		function filterButton(styles: ScreenHeaderStyles, options: FilterButtonOptions) {
++			return (
++				<IconButton
++					onPress={options.onPress}
++					themeId={themeId}
++
++					description={options.description}
++					iconName={options.iconName ?? 'fas fa-filter'}
++					contentWrapperStyle={styles.iconButton}
++					iconStyle={options.active ? styles.topIconActive : styles.topIcon}
++				/>
++			);
++		}
++
+ 		function sortButton(styles: ScreenHeaderStyles, onPress: OnPressCallback) {
+ 			return (
+ 				<IconButton
+@@ -668,6 +698,7 @@ class ScreenHeaderComponent extends PureComponent<ScreenHeaderProps, ScreenHeade
+ 		const restoreButtonComp = selectedFolderInTrash && this.props.noteSelectionEnabled ? restoreButton(this.styles(), () => this.restoreButton_press(), headerItemDisabled) : null;
+ 		const duplicateButtonComp = !selectedFolderInTrash && this.props.noteSelectionEnabled ? duplicateButton(this.styles(), () => this.duplicateButton_press(), headerItemDisabled) : null;
+ 		const sortButtonComp = !this.props.noteSelectionEnabled && this.props.sortButton_press ? sortButton(this.styles(), () => this.props.sortButton_press()) : null;
++		const filterButtonComp = !this.props.noteSelectionEnabled && this.props.filterButton ? filterButton(this.styles(), this.props.filterButton) : null;
+ 		const togglePluginEditorButton = renderTogglePluginEditorButton(this.styles(), () => CommandService.instance().execute('toggleEditorPlugin'), false);
+ 
+ 		// To allow the notebook dropdown (and perhaps other components) to have sufficient
+@@ -727,6 +758,7 @@ class ScreenHeaderComponent extends PureComponent<ScreenHeaderProps, ScreenHeade
+ 					{titleComp}
+ 					{restoreButtonComp}
+ 					{duplicateButtonComp}
++					{filterButtonComp}
+ 					{sortButtonComp}
+ 					{menuComp}
+ 				</View>
+diff --git a/packages/app-mobile/components/screens/Notes/NoteListLayoutBar.tsx b/packages/app-mobile/components/screens/Notes/NoteListLayoutBar.tsx
+deleted file mode 100644
+index eb51859..0000000
+--- a/packages/app-mobile/components/screens/Notes/NoteListLayoutBar.tsx
++++ /dev/null
+@@ -1,70 +0,0 @@
+-import * as React from 'react';
+-import { useMemo } from 'react';
+-import { Text, StyleSheet, TouchableHighlight, View, ViewStyle, TextStyle } from 'react-native';
+-import Setting from '@joplin/lib/models/Setting';
+-import { _ } from '@joplin/lib/locale';
+-import Icon from '../../Icon';
+-import { themeStyle } from '../../global-style';
+-
+-interface Props {
+-	themeId: number;
+-}
+-
+-const useStyles = (themeId: number) => {
+-	return useMemo(() => {
+-		const theme = themeStyle(themeId);
+-
+-		const root: ViewStyle = {
+-			flexDirection: 'row',
+-			justifyContent: 'flex-end',
+-			alignItems: 'center',
+-			paddingHorizontal: theme.marginLeft / 2,
+-			paddingVertical: 4,
+-			borderBottomWidth: 1,
+-			borderBottomColor: theme.dividerColor,
+-		};
+-
+-		const button: ViewStyle = {
+-			flexDirection: 'row',
+-			alignItems: 'center',
+-			paddingVertical: 6,
+-			paddingHorizontal: 8,
+-		};
+-
+-		const label: TextStyle = {
+-			color: theme.color,
+-			fontSize: theme.fontSize,
+-			marginLeft: 6,
+-		};
+-
+-		const icon: TextStyle = {
+-			color: theme.color,
+-			fontSize: theme.fontSizeLarger,
+-		};
+-
+-		return StyleSheet.create({ root, button, label, icon });
+-	}, [themeId]);
+-};
+-
+-// Shown above NoteList when `notes.mobileLayout` is 'list', to switch back to the tile view. The
+-// equivalent button for switching from tiles to list lives in NoteTileToolbar.
+-const NoteListLayoutBar: React.FC<Props> = props => {
+-	const styles = useStyles(props.themeId);
+-
+-	const onSwitchToTilesPress = () => {
+-		Setting.setValue('notes.mobileLayout', 'tiles');
+-	};
+-
+-	return (
+-		<View style={styles.root}>
+-			<TouchableHighlight onPress={onSwitchToTilesPress} accessibilityRole='button' accessibilityLabel={_('Switch to tile view')}>
+-				<View style={styles.button}>
+-					<Icon name='fas fa-th-large' style={styles.icon} accessibilityLabel={null} />
+-					<Text style={styles.label}>{_('Tiles')}</Text>
+-				</View>
+-			</TouchableHighlight>
+-		</View>
+-	);
+-};
+-
+-export default NoteListLayoutBar;
+diff --git a/packages/app-mobile/components/screens/Notes/Notes.test.tsx b/packages/app-mobile/components/screens/Notes/Notes.test.tsx
+new file mode 100644
+index 0000000..42fef6b
+--- /dev/null
++++ b/packages/app-mobile/components/screens/Notes/Notes.test.tsx
+@@ -0,0 +1,92 @@
++import * as React from 'react';
++import { Store } from 'redux';
++import { AppState } from '../../../utils/types';
++import TestProviderStack from '../../testing/TestProviderStack';
++import NotesScreen from './Notes';
++import createMockReduxStore from '../../../utils/testing/createMockReduxStore';
++import setupGlobalStore from '../../../utils/testing/setupGlobalStore';
++import { fireEvent, render, screen, waitFor } from '../../../utils/testing/testingLibrary';
++import { setupDatabaseAndSynchronizer } from '@joplin/lib/testing/test-utils';
++import Folder from '@joplin/lib/models/Folder';
++import Setting from '@joplin/lib/models/Setting';
++
++let testStore: Store<AppState>;
++
++const WrappedNotesScreen: React.FC = () => {
++	return <TestProviderStack store={testStore}>
++		<NotesScreen visible={true}/>
++	</TestProviderStack>;
++};
++
++describe('Notes', () => {
++	beforeEach(async () => {
++		await setupDatabaseAndSynchronizer(0);
++		testStore = createMockReduxStore();
++		setupGlobalStore(testStore);
++
++		const folder = await Folder.save({ title: 'Test folder' });
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder] });
++		testStore.dispatch({ type: 'NAV_GO', routeName: 'Notes', folderId: folder.id });
++	});
++
++	test('should show a notebook filter button in the header when the tile layout is active', async () => {
++		Setting.setValue('notes.mobileLayout', 'tiles');
++		render(<WrappedNotesScreen/>);
++
++		await waitFor(() => {
++			expect(screen.getByLabelText('Filter by notebook')).toBeTruthy();
++		});
++	});
++
++	test('should not show a notebook filter button in the header when the list layout is active', async () => {
++		Setting.setValue('notes.mobileLayout', 'list');
++		render(<WrappedNotesScreen/>);
++
++		await waitFor(() => {
++			expect(screen.getByLabelText('Actions')).toBeTruthy();
++		});
++		expect(screen.queryByLabelText('Filter by notebook')).toBeFalsy();
++	});
++
++	test('should offer zoom and layout-switch entries in the header overflow menu when tiled', async () => {
++		Setting.setValue('notes.mobileLayout', 'tiles');
++		render(<WrappedNotesScreen/>);
++
++		const menuTrigger = await screen.findByTestId('screen-header-menu-trigger');
++		fireEvent.press(menuTrigger);
++
++		await waitFor(() => {
++			expect(screen.getByText('Smaller')).toBeTruthy();
++			expect(screen.getByText('Larger')).toBeTruthy();
++			expect(screen.getByText('Switch to list view')).toBeTruthy();
++		});
++	});
++
++	test('pressing "Switch to list view" should change notes.mobileLayout to list', async () => {
++		Setting.setValue('notes.mobileLayout', 'tiles');
++		render(<WrappedNotesScreen/>);
++
++		const menuTrigger = await screen.findByTestId('screen-header-menu-trigger');
++		fireEvent.press(menuTrigger);
++
++		const switchToListOption = await screen.findByText('Switch to list view');
++		fireEvent.press(switchToListOption);
++
++		await waitFor(() => {
++			expect(Setting.value('notes.mobileLayout')).toBe('list');
++		});
++	});
++
++	test('should offer a "Switch to tile view" entry in the header overflow menu when in list layout', async () => {
++		Setting.setValue('notes.mobileLayout', 'list');
++		render(<WrappedNotesScreen/>);
++
++		const menuTrigger = await screen.findByTestId('screen-header-menu-trigger');
++		fireEvent.press(menuTrigger);
++
++		await waitFor(() => {
++			expect(screen.getByText('Switch to tile view')).toBeTruthy();
++			expect(screen.queryByText('Smaller')).toBeFalsy();
++		});
++	});
++});
+diff --git a/packages/app-mobile/components/screens/Notes/Notes.tsx b/packages/app-mobile/components/screens/Notes/Notes.tsx
+index 8ffc476..e98eb2f 100644
+--- a/packages/app-mobile/components/screens/Notes/Notes.tsx
++++ b/packages/app-mobile/components/screens/Notes/Notes.tsx
+@@ -9,7 +9,7 @@ import Tag from '@joplin/lib/models/Tag';
+ import Note, { PreviewsOrder } from '@joplin/lib/models/Note';
+ import Setting from '@joplin/lib/models/Setting';
+ import { themeStyle } from '../../global-style';
+-import { FolderPickerOptions, ScreenHeader } from '../../ScreenHeader';
++import { FolderPickerOptions, MenuOption, ScreenHeader } from '../../ScreenHeader';
+ import { _ } from '@joplin/lib/locale';
+ import { BaseScreenComponent } from '../../base-screen';
+ import { AppState } from '../../../utils/types';
+@@ -21,7 +21,9 @@ import { DialogContext, DialogControl } from '../../DialogManager';
+ import { useContext } from 'react';
+ import { MenuChoice } from '../../DialogManager/types';
+ import NewNoteButton from './NewNoteButton';
+-import NoteListLayoutBar from './NoteListLayoutBar';
++import NoteTileFolderDialog from '../../NoteTileFolderDialog';
++import { getScopeFolderIds, workingSetFromStoredValue } from '../../../utils/tileFolderSelection';
++import { zoomIn, zoomOut } from '../../../utils/tileZoom';
+ import PerFolderSortOrderService from '@joplin/lib/services/sortOrder/PerFolderSortOrderService';
+ import { ALL_NOTES_FILTER_ID } from '@joplin/lib/reserved-ids';
+ 
+@@ -46,10 +48,11 @@ interface Props {
+ 	selectedSmartFilterId: string;
+ 	notesParentType: string;
+ 	mobileLayout: string;
++	tileFolderIds: string;
+ }
+ 
+ interface State {
+-
++	folderDialogVisible: boolean;
+ }
+ 
+ interface ComponentProps extends Props {
+@@ -65,6 +68,7 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 
+ 	public constructor(props: ComponentProps) {
+ 		super(props);
++		this.state = { folderDialogVisible: false };
+ 	}
+ 
+ 	private onAppStateChange_ = async () => {
+@@ -158,6 +162,51 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 		return '';
+ 	}
+ 
++	// The notebook filter only applies when the sidebar is on a real notebook or "All notes" (see
++	// getScopeFolderIds) -- for a tag, a search, or nothing selected, this returns null and the
++	// header's filter button is hidden (the tile view then shows `state.notes` unfiltered).
++	private scopeFolderIds(): string[]|null {
++		return getScopeFolderIds(this.props.folders, this.props.notesParentType, this.props.selectedFolderId);
++	}
++
++	private filterButtonOptions() {
++		if (this.props.mobileLayout !== 'tiles') return undefined;
++
++		const scopeFolderIds = this.scopeFolderIds();
++		if (scopeFolderIds === null) return undefined;
++
++		const scopeFolders = this.props.folders.filter(folder => scopeFolderIds.includes(folder.id));
++		const selectedIds = workingSetFromStoredValue(this.props.tileFolderIds, scopeFolders);
++
++		return {
++			onPress: () => this.setState({ folderDialogVisible: true }),
++			description: _('Filter by notebook'),
++			active: selectedIds.length < scopeFolderIds.length,
++		};
++	}
++
++	private menuOptions(): MenuOption[] {
++		const options: MenuOption[] = [];
++
++		if (this.props.mobileLayout === 'tiles') {
++			options.push({
++				title: _('Smaller'),
++				onPress: () => zoomOut(),
++			});
++			options.push({
++				title: _('Larger'),
++				onPress: () => zoomIn(),
++			});
++		}
++
++		options.push({
++			title: this.props.mobileLayout === 'tiles' ? _('Switch to list view') : _('Switch to tile view'),
++			onPress: () => Setting.setValue('notes.mobileLayout', this.props.mobileLayout === 'tiles' ? 'list' : 'tiles'),
++		});
++
++		return options;
++	}
++
+ 	public styles() {
+ 		if (!this.styles_) this.styles_ = {};
+ 		const themeId = this.props.themeId;
+@@ -322,14 +371,17 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 					title={iconString + title}
+ 					showBackButton={false}
+ 					sortButton_press={this.sortButton_press}
++					filterButton={this.filterButtonOptions()}
+ 					folderPickerOptions={this.folderPickerOptions()}
+ 					showSearchButton={true}
+ 					showSideMenuButton={true}
++					menuOptions={this.menuOptions()}
++				/>
++				{this.props.mobileLayout === 'tiles' ? <NoteTileList /> : <NoteList />}
++				<NoteTileFolderDialog
++					visible={this.state.folderDialogVisible}
++					onClose={() => this.setState({ folderDialogVisible: false })}
+ 				/>
+-				{this.props.mobileLayout === 'tiles' ? <NoteTileList /> : <>
+-					<NoteListLayoutBar themeId={this.props.themeId} />
+-					<NoteList />
+-				</>}
+ 				{actionButtonComp}
+ 			</AccessibleView>
+ 		);
+@@ -359,6 +411,7 @@ const NotesScreen = connect((state: AppState) => {
+ 		noteSelectionEnabled: state.noteSelectionEnabled,
+ 		notesOrder: stateUtils.notesOrder(state.settings),
+ 		mobileLayout: state.settings['notes.mobileLayout'],
++		tileFolderIds: (state.settings['notes.tileFolderIds'] as string) ?? '',
+ 	};
+ })(NotesScreenWrapper);
+ 
+diff --git a/packages/app-mobile/utils/tileZoom.ts b/packages/app-mobile/utils/tileZoom.ts
+index c03a850..36ada26 100644
+--- a/packages/app-mobile/utils/tileZoom.ts
++++ b/packages/app-mobile/utils/tileZoom.ts
+@@ -1,3 +1,5 @@
++import Setting from '@joplin/lib/models/Setting';
++
+ interface ZoomLevel {
+ 	columns: number;
+ 	fontScale: number;
+@@ -69,3 +71,15 @@ export const zoomStep = (columns: number, fontScale: number, direction: 1|-1): Z
+ 	const nextIndex = Math.min(zoomLevels.length - 1, Math.max(0, currentIndex + direction));
+ 	return zoomLevels[nextIndex];
+ };
++
++// Moves the stored tile settings one step along the zoom ladder, in the given direction. Shared
++// by the pinch-to-zoom gesture (NoteTileList.tsx) and the "Smaller"/"Larger" entries in the
++// Notes screen's overflow menu, so that both ways of zooming always land on the same ladder step.
++const applyZoomStep = (direction: 1|-1) => {
++	const next = zoomStep(Setting.value('notes.tileColumns'), Setting.value('notes.tileFontScale'), direction);
++	Setting.setValue('notes.tileColumns', next.columns);
++	Setting.setValue('notes.tileFontScale', next.fontScale);
++};
++
++export const zoomIn = () => applyZoomStep(1);
++export const zoomOut = () => applyZoomStep(-1);
+diff --git a/packages/lib/locales/de_DE.json b/packages/lib/locales/de_DE.json
+index 0452a4f..2f2b20b 100644
+--- a/packages/lib/locales/de_DE.json
++++ b/packages/lib/locales/de_DE.json
+@@ -44,9 +44,6 @@
+ 		"%d Notiz wird dauerhaft gelöscht. Fortfahren?",
+ 		"%d Notizen werden dauerhaft gelöscht. Fortfahren?"
+ 	],
+-	"%d notebooks": [
+-		"%d Notizbücher"
+-	],
+ 	"%d photo(s) taken": [
+ 		"%d Foto(s) aufgenommen"
+ 	],
+diff --git a/packages/tools/locales/de_DE.po b/packages/tools/locales/de_DE.po
+index 26ba526..86809b3 100644
+--- a/packages/tools/locales/de_DE.po
++++ b/packages/tools/locales/de_DE.po
+@@ -9478,10 +9478,6 @@ msgstr "Hineinzoomen"
+ msgid "Zoom Out"
+ msgstr "Herauszoomen"
+ 
+-#: packages/app-mobile/components/NoteTileToolbar.tsx:87
+-msgid "%d notebooks"
+-msgstr "%d Notizbücher"
+-
+ #: packages/app-mobile/components/NoteTileFolderDialog.tsx:215
+ msgid "%d selected"
+ msgstr "%d ausgewählt"

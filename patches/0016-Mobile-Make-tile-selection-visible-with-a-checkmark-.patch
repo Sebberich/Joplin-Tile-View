@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tile-view <tile-view@localhost>
 Date: Mon, 14 Sep 2026 06:35:27 +0000
-Subject: [PATCH 16/18] Mobile: Make tile selection visible with a
+Subject: [PATCH 16/29] Mobile: Make tile selection visible with a
  checkmark/checkbox overlay
 
 Long-pressing a tile to enter selection mode, and tapping further

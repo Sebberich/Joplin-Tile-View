@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tile-view <tile-view@localhost>
 Date: Mon, 14 Sep 2026 06:36:44 +0000
-Subject: [PATCH 17/18] Mobile: Make the tile notebook filter follow the
+Subject: [PATCH 17/29] Mobile: Make the tile notebook filter follow the
  sidebar selection
 
 Previously the notebook filter dialog always offered every notebook,
