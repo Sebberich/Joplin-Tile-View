@@ -1,0 +1,489 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:11:45 +0000
+Subject: [PATCH 27/27] Mobile: Add German translations for test logging and
+ nearby sync
+
+
+diff --git a/.gitignore b/.gitignore
+index 1362830..a1578ce 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -928,6 +928,8 @@ packages/app-mobile/components/screens/ConfigScreen/plugins/utils/usePluginItem.
+ packages/app-mobile/components/screens/ConfigScreen/plugins/utils/useRepoApi.js
+ packages/app-mobile/components/screens/ConfigScreen/plugins/utils/useUpdateState.js
+ packages/app-mobile/components/screens/ConfigScreen/types.js
++packages/app-mobile/components/screens/DebugLogScreen.test.js
++packages/app-mobile/components/screens/DebugLogScreen.js
+ packages/app-mobile/components/screens/DocumentScanner/DocumentScanner.js
+ packages/app-mobile/components/screens/DocumentScanner/NotePreview.js
+ packages/app-mobile/components/screens/JoplinCloudLoginScreen.js
+@@ -1028,6 +1030,14 @@ packages/app-mobile/lists/core/normalize.js
+ packages/app-mobile/lists/core/store.test.js
+ packages/app-mobile/lists/core/store.js
+ packages/app-mobile/lists/core/types.js
++packages/app-mobile/lists/nearby/nativeBle.js
++packages/app-mobile/lists/nearby/nearbyManager.test.js
++packages/app-mobile/lists/nearby/nearbyManager.js
++packages/app-mobile/lists/nearby/protocol.test.js
++packages/app-mobile/lists/nearby/protocol.js
++packages/app-mobile/lists/nearby/session.test.js
++packages/app-mobile/lists/nearby/session.js
++packages/app-mobile/lists/nearby/testing/fakeBle.js
+ packages/app-mobile/lists/sync/defaultRelays.js
+ packages/app-mobile/lists/sync/index.js
+ packages/app-mobile/lists/sync/listSync.test.js
+@@ -1044,11 +1054,14 @@ packages/app-mobile/lists/ui/MembersScreen.js
+ packages/app-mobile/lists/ui/ShareScreen.js
+ packages/app-mobile/lists/ui/components/CreateListModal.js
+ packages/app-mobile/lists/ui/components/ItemEditModal.js
++packages/app-mobile/lists/ui/components/NearbyPeersModal.js
+ packages/app-mobile/lists/ui/components/NearbyStatusCircle.js
+ packages/app-mobile/lists/ui/components/PromptModal.js
+ packages/app-mobile/lists/ui/components/QrCode.js
+ packages/app-mobile/lists/ui/groupItems.test.js
+ packages/app-mobile/lists/ui/groupItems.js
++packages/app-mobile/lists/ui/listTileZoom.test.js
++packages/app-mobile/lists/ui/listTileZoom.js
+ packages/app-mobile/lists/ui/listsRuntime.js
+ packages/app-mobile/lists/ui/parseItemInput.test.js
+ packages/app-mobile/lists/ui/parseItemInput.js
+@@ -1090,6 +1103,10 @@ packages/app-mobile/utils/createRootStyle.js
+ packages/app-mobile/utils/database-driver-react-native.js
+ packages/app-mobile/utils/database-driver-react-native.web.js
+ packages/app-mobile/utils/debounce.js
++packages/app-mobile/utils/debugLog.test.js
++packages/app-mobile/utils/debugLog.js
++packages/app-mobile/utils/debugLogSettings.test.js
++packages/app-mobile/utils/debugLogSettings.js
+ packages/app-mobile/utils/focusView.js
+ packages/app-mobile/utils/fs-driver/constants.js
+ packages/app-mobile/utils/fs-driver/fs-driver-rn.test.js
+@@ -1130,6 +1147,7 @@ packages/app-mobile/utils/polyfills/index.web.js
+ packages/app-mobile/utils/polyfills/textEncoding.test.js
+ packages/app-mobile/utils/polyfills/textEncoding.js
+ packages/app-mobile/utils/setupNotifications.js
++packages/app-mobile/utils/shareDebugLog.js
+ packages/app-mobile/utils/shareFile.js
+ packages/app-mobile/utils/shareHandler.js
+ packages/app-mobile/utils/shim-init-react/index.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index 588db00..9db0ee6 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -954,6 +954,8 @@ packages/app-mobile/components/screens/ConfigScreen/plugins/utils/usePluginItem.
+ packages/app-mobile/components/screens/ConfigScreen/plugins/utils/useRepoApi.js
+ packages/app-mobile/components/screens/ConfigScreen/plugins/utils/useUpdateState.js
+ packages/app-mobile/components/screens/ConfigScreen/types.js
++packages/app-mobile/components/screens/DebugLogScreen.test.js
++packages/app-mobile/components/screens/DebugLogScreen.js
+ packages/app-mobile/components/screens/DocumentScanner/DocumentScanner.js
+ packages/app-mobile/components/screens/DocumentScanner/NotePreview.js
+ packages/app-mobile/components/screens/JoplinCloudLoginScreen.js
+@@ -1054,6 +1056,14 @@ packages/app-mobile/lists/core/normalize.js
+ packages/app-mobile/lists/core/store.test.js
+ packages/app-mobile/lists/core/store.js
+ packages/app-mobile/lists/core/types.js
++packages/app-mobile/lists/nearby/nativeBle.js
++packages/app-mobile/lists/nearby/nearbyManager.test.js
++packages/app-mobile/lists/nearby/nearbyManager.js
++packages/app-mobile/lists/nearby/protocol.test.js
++packages/app-mobile/lists/nearby/protocol.js
++packages/app-mobile/lists/nearby/session.test.js
++packages/app-mobile/lists/nearby/session.js
++packages/app-mobile/lists/nearby/testing/fakeBle.js
+ packages/app-mobile/lists/sync/defaultRelays.js
+ packages/app-mobile/lists/sync/index.js
+ packages/app-mobile/lists/sync/listSync.test.js
+@@ -1070,11 +1080,14 @@ packages/app-mobile/lists/ui/MembersScreen.js
+ packages/app-mobile/lists/ui/ShareScreen.js
+ packages/app-mobile/lists/ui/components/CreateListModal.js
+ packages/app-mobile/lists/ui/components/ItemEditModal.js
++packages/app-mobile/lists/ui/components/NearbyPeersModal.js
+ packages/app-mobile/lists/ui/components/NearbyStatusCircle.js
+ packages/app-mobile/lists/ui/components/PromptModal.js
+ packages/app-mobile/lists/ui/components/QrCode.js
+ packages/app-mobile/lists/ui/groupItems.test.js
+ packages/app-mobile/lists/ui/groupItems.js
++packages/app-mobile/lists/ui/listTileZoom.test.js
++packages/app-mobile/lists/ui/listTileZoom.js
+ packages/app-mobile/lists/ui/listsRuntime.js
+ packages/app-mobile/lists/ui/parseItemInput.test.js
+ packages/app-mobile/lists/ui/parseItemInput.js
+@@ -1116,6 +1129,10 @@ packages/app-mobile/utils/createRootStyle.js
+ packages/app-mobile/utils/database-driver-react-native.js
+ packages/app-mobile/utils/database-driver-react-native.web.js
+ packages/app-mobile/utils/debounce.js
++packages/app-mobile/utils/debugLog.test.js
++packages/app-mobile/utils/debugLog.js
++packages/app-mobile/utils/debugLogSettings.test.js
++packages/app-mobile/utils/debugLogSettings.js
+ packages/app-mobile/utils/focusView.js
+ packages/app-mobile/utils/fs-driver/constants.js
+ packages/app-mobile/utils/fs-driver/fs-driver-rn.test.js
+@@ -1156,6 +1173,7 @@ packages/app-mobile/utils/polyfills/index.web.js
+ packages/app-mobile/utils/polyfills/textEncoding.test.js
+ packages/app-mobile/utils/polyfills/textEncoding.js
+ packages/app-mobile/utils/setupNotifications.js
++packages/app-mobile/utils/shareDebugLog.js
+ packages/app-mobile/utils/shareFile.js
+ packages/app-mobile/utils/shareHandler.js
+ packages/app-mobile/utils/shim-init-react/index.js
+diff --git a/packages/lib/locales/de_DE.json b/packages/lib/locales/de_DE.json
+index ec9457f..cd6f79d 100644
+--- a/packages/lib/locales/de_DE.json
++++ b/packages/lib/locales/de_DE.json
+@@ -32,6 +32,9 @@
+ 	"%d MB per note or attachment": [
+ 		"%d MB pro Notiz oder Anhang"
+ 	],
++	"%d min": [
++		"%d Min."
++	],
+ 	"%d minute": [
+ 		"%d Minute",
+ 		"%d Minuten"
+@@ -53,6 +56,9 @@
+ 	"%d photo(s) taken": [
+ 		"%d Foto(s) aufgenommen"
+ 	],
++	"%d s": [
++		"%d s"
++	],
+ 	"%d sections found": [
+ 		""
+ 	],
+@@ -607,6 +613,12 @@
+ 	"Block code": [
+ 		"Blockcode"
+ 	],
++	"Bluetooth": [
++		"Bluetooth"
++	],
++	"Bluetooth and location permissions are needed to find nearby devices.": [
++		"Bluetooth- und Standortberechtigungen werden benötigt, um Geräte in der Nähe zu finden."
++	],
+ 	"Bluetooth sync will come in a later version.": [
+ 		"Der Bluetooth-Abgleich folgt in einer späteren Version."
+ 	],
+@@ -787,6 +799,9 @@
+ 	"Clear search": [
+ 		"Suche löschen"
+ 	],
++	"Clear test log": [
++		"Testprotokoll löschen"
++	],
+ 	"Clears the console output.": [
+ 		""
+ 	],
+@@ -952,6 +967,9 @@
+ 	"Connect using your organisation account": [
+ 		"Verbinde dich über dein Organisationskonto"
+ 	],
++	"Connected for %s": [
++		"Verbunden seit %s"
++	],
+ 	"Consolidated billing": [
+ 		"Konsolidierte Rechnung"
+ 	],
+@@ -1668,6 +1686,9 @@
+ 	"Enable table of contents extension": [
+ 		"Inhaltsverzeichnis-Erweiterung aktivieren"
+ 	],
++	"Enable test logging": [
++		"Testprotokollierung aktivieren"
++	],
+ 	"Enable the Markdown toolbar": [
+ 		"Markdown-Werkzeugleiste aktivieren"
+ 	],
+@@ -1683,6 +1704,9 @@
+ 	"Enable ~sub~ syntax": [
+ 		"Syntax ~sub~ aktivieren"
+ 	],
++	"Enable, view or share the test log": [
++		"Testprotokoll aktivieren, ansehen oder teilen"
++	],
+ 	"Enabled": [
+ 		"Aktiviert"
+ 	],
+@@ -2269,6 +2293,9 @@
+ 	"Invalid password. Please try again. If you have forgotten your password you will need to reset it.": [
+ 		""
+ 	],
++	"Invites and links": [
++		"Einladungen und Links"
++	],
+ 	"iOS version: %s": [
+ 		"iOS-Version: %s"
+ 	],
+@@ -2511,6 +2538,9 @@
+ 	"Loading...": [
+ 		"Lade..."
+ 	],
++	"Local database": [
++		"Lokale Datenbank"
++	],
+ 	"Location": [
+ 		"Standort"
+ 	],
+@@ -2755,6 +2785,9 @@
+ 	"Nearby (Bluetooth) sync automatically turns off after this many minutes, to save battery.": [
+ 		"Der Nahbereichs-Abgleich (Bluetooth) schaltet sich nach dieser Anzahl Minuten automatisch aus, um Akku zu sparen."
+ 	],
++	"Nearby devices": [
++		"Geräte in der Nähe"
++	],
+ 	"Nearby sync": [
+ 		"Nahbereichs-Abgleich"
+ 	],
+@@ -2854,12 +2887,18 @@
+ 	"No colour": [
+ 		""
+ 	],
++	"No devices connected yet.": [
++		"Noch keine Geräte verbunden."
++	],
+ 	"No embedding model is installed. It is downloaded automatically on first use — check Settings → AI for progress.": [
+ 		""
+ 	],
+ 	"No items yet. Type above to add the first one.": [
+ 		"Noch keine Artikel. Oben eintippen, um den ersten hinzuzufügen."
+ 	],
++	"No log entries yet. Enable test logging in the settings and use the feature you want to test.": [
++		"Noch keine Protokolleinträge. Aktiviere die Testprotokollierung in den Einstellungen und nutze die Funktion, die du testen möchtest."
++	],
+ 	"No new invitations": [
+ 		"Keine neuen Einladungen"
+ 	],
+@@ -3007,6 +3046,9 @@
+ 	"Note properties": [
+ 		"Notiz-Eigenschaften"
+ 	],
++	"Note tiles": [
++		"Notizkacheln"
++	],
+ 	"Note title": [
+ 		"Notiz-Titel"
+ 	],
+@@ -3575,6 +3617,12 @@
+ 	"Recording...": [
+ 		"Aufnahme läuft..."
+ 	],
++	"Records detailed logs for features that are still under test. The log stays on this device until you clear it, and you can view or share it from here.": [
++		"Zeichnet detaillierte Protokolle für Funktionen auf, die noch getestet werden. Das Protokoll bleibt auf diesem Gerät, bis du es löschst; du kannst es hier ansehen oder teilen."
++	],
++	"Records detailed logs of features under test (shopping lists, note tiles). The log is kept on this device only -- use the buttons below to view, share or clear it.": [
++		"Zeichnet detaillierte Protokolle von Funktionen auf, die getestet werden (Einkaufslisten, Notizkacheln). Das Protokoll wird nur auf diesem Gerät gespeichert -- über die Schaltflächen unten kannst du es ansehen, teilen oder löschen."
++	],
+ 	"Redo": [
+ 		"Wiederholen"
+ 	],
+@@ -3593,6 +3641,9 @@
+ 	"Relay servers": [
+ 		"Relay-Server"
+ 	],
++	"Relays": [
++		"Relays"
++	],
+ 	"Remove": [
+ 		"Entfernen"
+ 	],
+@@ -3761,6 +3812,9 @@
+ 	"Rich Text editor. Press Escape then Tab to escape focus.": [
+ 		"Rich Text-Editor. Drücke Escape, dann Tabulator um den Fokus aufzuheben."
+ 	],
++	"RSSI: %d dBm · connected for %s": [
++		"RSSI: %d dBm · verbunden seit %s"
++	],
+ 	"Run OCR": [
+ 		""
+ 	],
+@@ -3821,6 +3875,9 @@
+ 	"Scanned code": [
+ 		"Eingescannter Code"
+ 	],
++	"Screens": [
++		"Bildschirme"
++	],
+ 	"Scrollbar size": [
+ 		"Bildlaufleistengröße"
+ 	],
+@@ -3968,6 +4025,9 @@
+ 	"Share permissions": [
+ 		"Berechtigungen freigeben"
+ 	],
++	"Share test log": [
++		"Testprotokoll teilen"
++	],
+ 	"Shared": [
+ 		"Freigegeben"
+ 	],
+@@ -3983,6 +4043,24 @@
+ 	"Shopping lists": [
+ 		"Einkaufslisten"
+ 	],
++	"Shopping lists: Bluetooth": [
++		"Einkaufslisten: Bluetooth"
++	],
++	"Shopping lists: invites and links": [
++		"Einkaufslisten: Einladungen und Links"
++	],
++	"Shopping lists: local database": [
++		"Einkaufslisten: lokale Datenbank"
++	],
++	"Shopping lists: relays": [
++		"Einkaufslisten: Relays"
++	],
++	"Shopping lists: screens": [
++		"Einkaufslisten: Bildschirme"
++	],
++	"Shopping lists: sync": [
++		"Einkaufslisten: Synchronisierung"
++	],
+ 	"Shortcuts are not available in CLI mode.": [
+ 		"Tastenkürzel sind im CLI-Modus nicht verfügbar."
+ 	],
+@@ -4274,6 +4352,9 @@
+ 	"Switches to [notebook] - all further operations will happen within this notebook.": [
+ 		"Wechselt zu [notebook] - alle weiteren Aktionen werden in diesem Notizbuch ausgeführt."
+ 	],
++	"Sync": [
++		"Synchronisierung"
++	],
+ 	"Sync as many devices as you want": [
+ 		"Synchronisiere mit beliebig vielen Geräten"
+ 	],
+@@ -4379,6 +4460,12 @@
+ 	"Teams": [
+ 		"Teams"
+ 	],
++	"Test log": [
++		"Testprotokoll"
++	],
++	"Test logging": [
++		"Testprotokollierung"
++	],
+ 	"Text document": [
+ 		"Textdokument"
+ 	],
+@@ -4866,6 +4953,9 @@
+ 	"Unable to share note data. Reason: %s": [
+ 		"Notizdaten können nicht geteilt werden. Grund: %s"
+ 	],
++	"Unable to share the test log. Reason: %s": [
++		"Testprotokoll konnte nicht geteilt werden. Grund: %s"
++	],
+ 	"Unavailable on this platform": [
+ 		""
+ 	],
+@@ -5061,6 +5151,9 @@
+ 	"View on map": [
+ 		"Auf der Karte anzeigen"
+ 	],
++	"View test log": [
++		"Testprotokoll ansehen"
++	],
+ 	"View them now": [
+ 		"Zeige sie jetzt an"
+ 	],
+diff --git a/packages/tools/locales/de_DE.po b/packages/tools/locales/de_DE.po
+index 3ea8daf..1e6ee9b 100644
+--- a/packages/tools/locales/de_DE.po
++++ b/packages/tools/locales/de_DE.po
+@@ -10495,3 +10495,96 @@ msgstr "Kacheln"
+ 
+ #~ msgid "Set or clear alarm:"
+ #~ msgstr "Alarm einstellen oder löschen:"
++
++msgid "Test logging"
++msgstr "Testprotokollierung"
++
++msgid "Records detailed logs for features that are still under test. The log stays on this device until you clear it, and you can view or share it from here."
++msgstr "Zeichnet detaillierte Protokolle für Funktionen auf, die noch getestet werden. Das Protokoll bleibt auf diesem Gerät, bis du es löschst; du kannst es hier ansehen oder teilen."
++
++msgid "Enable, view or share the test log"
++msgstr "Testprotokoll aktivieren, ansehen oder teilen"
++
++msgid "Enable test logging"
++msgstr "Testprotokollierung aktivieren"
++
++msgid "Records detailed logs of features under test (shopping lists, note tiles). The log is kept on this device only -- use the buttons below to view, share or clear it."
++msgstr "Zeichnet detaillierte Protokolle von Funktionen auf, die getestet werden (Einkaufslisten, Notizkacheln). Das Protokoll wird nur auf diesem Gerät gespeichert -- über die Schaltflächen unten kannst du es ansehen, teilen oder löschen."
++
++msgid "Shopping lists: local database"
++msgstr "Einkaufslisten: lokale Datenbank"
++
++msgid "Shopping lists: relays"
++msgstr "Einkaufslisten: Relays"
++
++msgid "Shopping lists: sync"
++msgstr "Einkaufslisten: Synchronisierung"
++
++msgid "Shopping lists: Bluetooth"
++msgstr "Einkaufslisten: Bluetooth"
++
++msgid "Shopping lists: invites and links"
++msgstr "Einkaufslisten: Einladungen und Links"
++
++msgid "Shopping lists: screens"
++msgstr "Einkaufslisten: Bildschirme"
++
++msgid "Note tiles"
++msgstr "Notizkacheln"
++
++msgid "View test log"
++msgstr "Testprotokoll ansehen"
++
++msgid "Share test log"
++msgstr "Testprotokoll teilen"
++
++msgid "Clear test log"
++msgstr "Testprotokoll löschen"
++
++msgid "Local database"
++msgstr "Lokale Datenbank"
++
++msgid "Relays"
++msgstr "Relays"
++
++msgid "Sync"
++msgstr "Synchronisierung"
++
++msgid "Bluetooth"
++msgstr "Bluetooth"
++
++msgid "Invites and links"
++msgstr "Einladungen und Links"
++
++msgid "Screens"
++msgstr "Bildschirme"
++
++msgid "Test log"
++msgstr "Testprotokoll"
++
++msgid "No log entries yet. Enable test logging in the settings and use the feature you want to test."
++msgstr "Noch keine Protokolleinträge. Aktiviere die Testprotokollierung in den Einstellungen und nutze die Funktion, die du testen möchtest."
++
++msgid "Unable to share the test log. Reason: %s"
++msgstr "Testprotokoll konnte nicht geteilt werden. Grund: %s"
++
++msgid "Bluetooth and location permissions are needed to find nearby devices."
++msgstr "Bluetooth- und Standortberechtigungen werden benötigt, um Geräte in der Nähe zu finden."
++
++msgid "%d s"
++msgstr "%d s"
++
++msgid "%d min"
++msgstr "%d Min."
++
++msgid "Nearby devices"
++msgstr "Geräte in der Nähe"
++
++msgid "No devices connected yet."
++msgstr "Noch keine Geräte verbunden."
++
++msgid "RSSI: %d dBm · connected for %s"
++msgstr "RSSI: %d dBm · verbunden seit %s"
++
++msgid "Connected for %s"
++msgstr "Verbunden seit %s"

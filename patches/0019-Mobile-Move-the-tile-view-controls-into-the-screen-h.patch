@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Wed, 23 Sep 2026 16:23:06 +0000
-Subject: [PATCH 19/23] Mobile: Move the tile view controls into the screen
+Subject: [PATCH 19/27] Mobile: Move the tile view controls into the screen
  header
 
 The bar below the header (notebook filter, zoom buttons, layout toggle)

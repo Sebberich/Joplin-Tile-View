@@ -1,0 +1,1363 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:11:44 +0000
+Subject: [PATCH 24/27] Mobile: Add switchable test logging with export
+
+A "Test logging" settings section with a master switch and one switch
+per feature (shopping list database, relays, sync, Bluetooth, invites,
+screens, note tiles). Entries go to a ring buffer and a rotating file in
+the profile directory, so they survive a crash; they can be viewed,
+filtered, cleared and shared as a text file.
+
+diff --git a/packages/app-mobile/components/NoteTileFolderDialog.tsx b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+index 7a8de8a..4de8a5a 100644
+--- a/packages/app-mobile/components/NoteTileFolderDialog.tsx
++++ b/packages/app-mobile/components/NoteTileFolderDialog.tsx
+@@ -11,6 +11,9 @@ import { _ } from '@joplin/lib/locale';
+ import Checkbox from './Checkbox';
+ import Modal from './Modal';
+ import { themeStyle } from './global-style';
++import { debugLog } from '../utils/debugLog';
++
++const log = debugLog('tiles');
+ 
+ interface Props {
+ 	themeId: number;
+@@ -165,6 +168,7 @@ const NoteTileFolderDialogComponent: React.FC<Props> = props => {
+ 
+ 	const onConfirm = () => {
+ 		Setting.setValue('notes.tileFolderIds', storedValueFromWorkingSet(workingSet, visibleFolders));
++		log.info('Notebook filter changed', { selectedCount: workingSet.length, totalCount: visibleFolders.length });
+ 		props.onClose();
+ 	};
+ 
+diff --git a/packages/app-mobile/components/screens/ConfigScreen/ConfigScreen.tsx b/packages/app-mobile/components/screens/ConfigScreen/ConfigScreen.tsx
+index c64374b..9dd41ec 100644
+--- a/packages/app-mobile/components/screens/ConfigScreen/ConfigScreen.tsx
++++ b/packages/app-mobile/components/screens/ConfigScreen/ConfigScreen.tsx
+@@ -44,6 +44,7 @@ import { UpdateSettingValueCallback } from './types';
+ import Folder from '@joplin/lib/models/Folder';
+ import { FolderEntity } from '@joplin/lib/services/database/types';
+ import { substrWithEllipsis } from '@joplin/lib/string-utils';
++import { shareDebugLog, clearDebugLogAndFiles } from '../../../utils/shareDebugLog';
+ 
+ interface ConfigScreenState {
+ 	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Settings values are heterogeneous (string/number/boolean/object) and accessed by string key across many call sites; tightening to `unknown` forces casts everywhere
+@@ -181,6 +182,18 @@ class ConfigScreenComponent extends BaseScreenComponent<ConfigScreenProps, Confi
+ 		void NavService.go('Log');
+ 	};
+ 
++	private viewTestLogButtonPress_ = () => {
++		void NavService.go('DebugLog');
++	};
++
++	private shareTestLogButtonPress_ = () => {
++		void shareDebugLog();
++	};
++
++	private clearTestLogButtonPress_ = () => {
++		void clearDebugLogAndFiles();
++	};
++
+ 	private deletionLogButtonPress_ = () => {
+ 		void NavService.go('Log', { defaultFilter: 'DeleteAction' });
+ 	};
+@@ -546,6 +559,12 @@ class ConfigScreenComponent extends BaseScreenComponent<ConfigScreenProps, Confi
+ 			addSettingButton('e2ee_config_button', _('Encryption Config'), this.e2eeConfig_);
+ 		}
+ 
++		if (section.name === 'testLogging' && settings['debugLog.enabled']) {
++			addSettingButton('view_test_log_button', _('View test log'), this.viewTestLogButtonPress_);
++			addSettingButton('share_test_log_button', _('Share test log'), this.shareTestLogButtonPress_);
++			addSettingButton('clear_test_log_button', _('Clear test log'), this.clearTestLogButtonPress_);
++		}
++
+ 		if (section.name === 'noteLock' && isNoteLockEnabled()) {
+ 			addSettingComponent(<NoteLockConfig key='note-lock-config'/>, [_('Password setup'), _('Note lock password')]);
+ 		}
+diff --git a/packages/app-mobile/components/screens/DebugLogScreen.test.tsx b/packages/app-mobile/components/screens/DebugLogScreen.test.tsx
+new file mode 100644
+index 0000000..866bdaa
+--- /dev/null
++++ b/packages/app-mobile/components/screens/DebugLogScreen.test.tsx
+@@ -0,0 +1,85 @@
++import * as React from 'react';
++import { Store } from 'redux';
++import { setupDatabaseAndSynchronizer } from '@joplin/lib/testing/test-utils';
++import TestProviderStack from '../testing/TestProviderStack';
++import createMockReduxStore from '../../utils/testing/createMockReduxStore';
++import setupGlobalStore from '../../utils/testing/setupGlobalStore';
++import { render, screen, fireEvent, waitFor } from '../../utils/testing/testingLibrary';
++import { AppState } from '../../utils/types';
++import { clearDebugLog, debugLog, resetDebugLogPersistenceForTests, setDebugLogConfig } from '../../utils/debugLog';
++
++// The share/clear buttons hand off to shareDebugLog / clearDebugLogAndFiles, which touch the
++// filesystem -- keep this a focused UI test by mocking them out, same as ListScreen.test.tsx mocks
++// out its runtime dependencies.
++const shareDebugLog = jest.fn();
++const clearDebugLogAndFiles = jest.fn();
++jest.mock('../../utils/shareDebugLog', () => ({
++	shareDebugLog: (...args: unknown[]) => shareDebugLog(...args),
++	clearDebugLogAndFiles: () => clearDebugLogAndFiles(),
++}));
++
++import { DebugLogScreenComponent } from './DebugLogScreen';
++
++let testStore: Store<AppState>;
++
++const WrappedDebugLogScreen: React.FC = () => {
++	return <TestProviderStack store={testStore}>
++		<DebugLogScreenComponent navigation={{}} themeId={testStore.getState().settings.theme} />
++	</TestProviderStack>;
++};
++
++describe('DebugLogScreen', () => {
++	beforeEach(async () => {
++		await setupDatabaseAndSynchronizer(0);
++		testStore = createMockReduxStore();
++		setupGlobalStore(testStore);
++
++		clearDebugLog();
++		setDebugLogConfig(false, []);
++		resetDebugLogPersistenceForTests();
++		shareDebugLog.mockClear();
++		clearDebugLogAndFiles.mockClear();
++	});
++
++	afterEach(() => {
++		resetDebugLogPersistenceForTests();
++	});
++
++	test('should show the empty state when there are no entries', async () => {
++		render(<WrappedDebugLogScreen/>);
++
++		await waitFor(() => {
++			expect(screen.getByText(/No log entries yet/)).toBeTruthy();
++		});
++	});
++
++	test('should list existing entries', async () => {
++		setDebugLogConfig(true, ['tiles', 'lists.sync']);
++		debugLog('tiles').info('Tile zoom changed');
++		debugLog('lists.sync').info('Sync finished');
++
++		render(<WrappedDebugLogScreen/>);
++
++		await waitFor(() => {
++			expect(screen.getByText(/Tile zoom changed/)).toBeTruthy();
++			expect(screen.getByText(/Sync finished/)).toBeTruthy();
++		});
++	});
++
++	test('toggling a category chip off should hide that category\'s entries', async () => {
++		setDebugLogConfig(true, ['tiles', 'lists.sync']);
++		debugLog('tiles').info('Tile zoom changed');
++		debugLog('lists.sync').info('Sync finished');
++
++		render(<WrappedDebugLogScreen/>);
++
++		await waitFor(() => expect(screen.getByText(/Tile zoom changed/)).toBeTruthy());
++
++		fireEvent.press(screen.getByText('Note tiles'));
++
++		await waitFor(() => {
++			expect(screen.queryByText(/Tile zoom changed/)).toBeFalsy();
++			expect(screen.getByText(/Sync finished/)).toBeTruthy();
++		});
++	});
++});
+diff --git a/packages/app-mobile/components/screens/DebugLogScreen.tsx b/packages/app-mobile/components/screens/DebugLogScreen.tsx
+new file mode 100644
+index 0000000..c1b9e10
+--- /dev/null
++++ b/packages/app-mobile/components/screens/DebugLogScreen.tsx
+@@ -0,0 +1,269 @@
++import * as React from 'react';
++
++import { FlatList, View, Text, StyleSheet, Platform, TouchableOpacity, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
++import { connect } from 'react-redux';
++import { _ } from '@joplin/lib/locale';
++import { themeStyle } from '../global-style';
++import { BaseScreenComponent } from '../base-screen';
++import ScreenHeader, { MenuOption } from '../ScreenHeader';
++import { AppState } from '../../utils/types';
++import { shareDebugLog, clearDebugLogAndFiles } from '../../utils/shareDebugLog';
++import {
++	DebugLogCategory, DebugLogEntry, debugLogCategories, debugLogEntries, formatDebugLogEntry,
++	onDebugLogChange,
++} from '../../utils/debugLog';
++
++interface Props {
++	themeId: number;
++	navigation: unknown;
++}
++
++interface State {
++	entries: DebugLogEntry[];
++	activeCategories: DebugLogCategory[]|null; // null: no filter, show every category
++	atBottom: boolean;
++}
++
++const categoryLabels: Record<DebugLogCategory, string> = {
++	'lists.store': _('Local database'),
++	'lists.relays': _('Relays'),
++	'lists.sync': _('Sync'),
++	'lists.nearby': _('Bluetooth'),
++	'lists.invite': _('Invites and links'),
++	'lists.ui': _('Screens'),
++	'tiles': _('Note tiles'),
++};
++
++export class DebugLogScreenComponent extends BaseScreenComponent<Props, State> {
++
++	private readonly menuOptions_: MenuOption[];
++	private styles_: Record<number, ReturnType<typeof StyleSheet.create>> = {};
++	private readonly listRef_ = React.createRef<FlatList>();
++	private unsubscribeDebugLog_: (()=> void)|null = null;
++
++	public static navigationOptions(): { header: null } {
++		return { header: null };
++	}
++
++	public constructor(props: Props) {
++		super(props);
++
++		this.state = {
++			entries: debugLogEntries(),
++			activeCategories: null,
++			atBottom: true,
++		};
++
++		this.menuOptions_ = [
++			{
++				title: _('Share'),
++				onPress: () => {
++					void this.onSharePress_();
++				},
++			},
++			{
++				title: _('Clear'),
++				onPress: () => {
++					void this.onClearPress_();
++				},
++			},
++		];
++	}
++
++	public override componentDidMount() {
++		this.unsubscribeDebugLog_ = onDebugLogChange(this.onDebugLogChange_);
++	}
++
++	public override componentWillUnmount() {
++		if (this.unsubscribeDebugLog_) this.unsubscribeDebugLog_();
++	}
++
++	private onDebugLogChange_ = () => {
++		this.setState({ entries: debugLogEntries() }, () => {
++			if (this.state.atBottom) {
++				// Wait for the FlatList to have laid out the new row before scrolling to it.
++				requestAnimationFrame(() => this.listRef_.current?.scrollToEnd({ animated: true }));
++			}
++		});
++	};
++
++	private onScroll_ = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
++		const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
++		const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
++		this.setState({ atBottom: distanceFromBottom < 40 });
++	};
++
++	private toggleCategory_ = (category: DebugLogCategory) => {
++		this.setState(state => {
++			const current = state.activeCategories ?? [...debugLogCategories];
++			const isActive = current.includes(category);
++			let next = isActive ? current.filter(c => c !== category) : [...current, category];
++			// Selecting every category is the same as no filter -- and clearing the last one
++			// resets to "show everything" too, rather than leaving the list empty.
++			if (next.length === 0 || next.length === debugLogCategories.length) next = null;
++			return { activeCategories: next };
++		});
++	};
++
++	private filteredEntries(): DebugLogEntry[] {
++		const { activeCategories, entries } = this.state;
++		if (!activeCategories) return entries;
++		return entries.filter(entry => entry.separator || activeCategories.includes(entry.category));
++	}
++
++	private async onSharePress_() {
++		await shareDebugLog(this.state.activeCategories ?? undefined);
++	}
++
++	private async onClearPress_() {
++		await clearDebugLogAndFiles();
++	}
++
++	public styles() {
++		if (this.styles_[this.props.themeId]) return this.styles_[this.props.themeId];
++		this.styles_ = {};
++
++		const theme = themeStyle(this.props.themeId);
++
++		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Heterogeneous style entries (row text variants for warn/error/separator built off rowText)
++		const styles: Record<string, any> = {
++			row: {
++				paddingHorizontal: 8,
++				paddingVertical: 1,
++			},
++			rowText: {
++				fontSize: 11,
++				color: theme.color,
++			},
++			separatorText: {
++				fontSize: 11,
++				color: theme.colorFaded,
++				fontStyle: 'italic',
++				textAlign: 'center',
++				paddingVertical: 4,
++			},
++			filterRow: {
++				flexDirection: 'row',
++				flexWrap: 'wrap',
++				paddingHorizontal: 8,
++				paddingVertical: 6,
++				backgroundColor: theme.backgroundColor3,
++			},
++			chip: {
++				borderRadius: 12,
++				paddingHorizontal: 10,
++				paddingVertical: 4,
++				marginRight: 6,
++				marginBottom: 6,
++				borderWidth: 1,
++				borderColor: theme.dividerColor,
++			},
++			chipActive: {
++				backgroundColor: theme.selectedColor2,
++				borderColor: theme.selectedColor2,
++			},
++			chipText: {
++				fontSize: 12,
++				color: theme.color,
++			},
++			emptyText: {
++				color: theme.colorFaded,
++				textAlign: 'center',
++				marginTop: 20,
++			},
++		};
++
++		if (Platform.OS !== 'ios') {
++			// Crashes on iOS with error "Unrecognized font family 'monospace'" (see LogScreen.tsx).
++			styles.rowText.fontFamily = 'monospace';
++		}
++
++		styles.rowTextWarn = { ...styles.rowText, color: theme.colorWarn };
++		styles.rowTextError = { ...styles.rowText, color: theme.colorError };
++
++		this.styles_[this.props.themeId] = StyleSheet.create(styles);
++		return this.styles_[this.props.themeId];
++	}
++
++	private onRenderRow_ = ({ item }: { item: DebugLogEntry }) => {
++		const styles = this.styles();
++		if (item.separator) {
++			return (
++				<View style={styles.row}>
++					<Text style={styles.separatorText}>{item.message}</Text>
++				</View>
++			);
++		}
++
++		let textStyle = styles.rowText;
++		if (item.level === 'warn') textStyle = styles.rowTextWarn;
++		if (item.level === 'error') textStyle = styles.rowTextError;
++
++		return (
++			<View style={styles.row}>
++				<Text style={textStyle}>{formatDebugLogEntry(item)}</Text>
++			</View>
++		);
++	};
++
++	private renderFilterChips() {
++		const styles = this.styles();
++		const active = this.state.activeCategories;
++
++		return (
++			<View style={styles.filterRow}>
++				{debugLogCategories.map(category => {
++					const isActive = !active || active.includes(category);
++					return (
++						<TouchableOpacity
++							key={category}
++							style={[styles.chip, isActive ? styles.chipActive : null]}
++							onPress={() => this.toggleCategory_(category)}
++							accessibilityRole="button"
++							accessibilityLabel={categoryLabels[category]}
++						>
++							<Text style={styles.chipText}>{categoryLabels[category]}</Text>
++						</TouchableOpacity>
++					);
++				})}
++			</View>
++		);
++	}
++
++	public render() {
++		const styles = this.styles();
++		const entries = this.filteredEntries();
++
++		return (
++			<View style={this.rootStyle(this.props.themeId).root}>
++				<ScreenHeader
++					title={_('Test log')}
++					menuOptions={this.menuOptions_}
++				/>
++				{this.renderFilterChips()}
++				{entries.length ? (
++					<FlatList
++						ref={this.listRef_}
++						data={entries}
++						initialNumToRender={200}
++						renderItem={this.onRenderRow_}
++						keyExtractor={(item, index) => `${item.time}-${index}`}
++						onScroll={this.onScroll_}
++						scrollEventThrottle={200}
++					/>
++				) : (
++					<Text style={styles.emptyText}>{_('No log entries yet. Enable test logging in the settings and use the feature you want to test.')}</Text>
++				)}
++			</View>
++		);
++	}
++
++}
++
++const DebugLogScreen = connect((state: AppState) => {
++	return {
++		themeId: state.settings.theme,
++	};
++})(DebugLogScreenComponent);
++
++export default DebugLogScreen;
+diff --git a/packages/app-mobile/components/screens/Notes/Notes.tsx b/packages/app-mobile/components/screens/Notes/Notes.tsx
+index e98eb2f..b51dee1 100644
+--- a/packages/app-mobile/components/screens/Notes/Notes.tsx
++++ b/packages/app-mobile/components/screens/Notes/Notes.tsx
+@@ -26,6 +26,9 @@ import { getScopeFolderIds, workingSetFromStoredValue } from '../../../utils/til
+ import { zoomIn, zoomOut } from '../../../utils/tileZoom';
+ import PerFolderSortOrderService from '@joplin/lib/services/sortOrder/PerFolderSortOrderService';
+ import { ALL_NOTES_FILTER_ID } from '@joplin/lib/reserved-ids';
++import { debugLog } from '../../../utils/debugLog';
++
++const tilesLog = debugLog('tiles');
+ 
+ interface Props {
+ 	dispatch: Dispatch;
+@@ -201,7 +204,11 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 
+ 		options.push({
+ 			title: this.props.mobileLayout === 'tiles' ? _('Switch to list view') : _('Switch to tile view'),
+-			onPress: () => Setting.setValue('notes.mobileLayout', this.props.mobileLayout === 'tiles' ? 'list' : 'tiles'),
++			onPress: () => {
++				const newLayout = this.props.mobileLayout === 'tiles' ? 'list' : 'tiles';
++				Setting.setValue('notes.mobileLayout', newLayout);
++				tilesLog.info('Layout toggled', { layout: newLayout });
++			},
+ 		});
+ 
+ 		return options;
+diff --git a/packages/app-mobile/root.tsx b/packages/app-mobile/root.tsx
+index 33083f9..4df059a 100644
+--- a/packages/app-mobile/root.tsx
++++ b/packages/app-mobile/root.tsx
+@@ -46,6 +46,7 @@ import TagsScreen from './components/screens/tags';
+ import ConfigScreen from './components/screens/ConfigScreen/ConfigScreen';
+ import FolderScreen from './components/screens/folder';
+ import LogScreen from './components/screens/LogScreen';
++import DebugLogScreen from './components/screens/DebugLogScreen';
+ import StatusScreen from './components/screens/status';
+ import SearchScreen from './components/screens/SearchScreen';
+ import ResourceScreen from './components/screens/ResourceScreen';
+@@ -96,6 +97,7 @@ import ProfileSwitcher from './components/ProfileSwitcher/ProfileSwitcher';
+ import ProfileEditor from './components/ProfileSwitcher/ProfileEditor';
+ import sensorInfo, { SensorInfo } from './components/biometrics/sensorInfo';
+ import { setDispatch } from './services/profiles';
++import { initDebugLog, isDebugLogSettingKey, updateDebugLogConfig } from './utils/debugLogSettings';
+ import { ReactNode } from 'react';
+ import autodetectTheme, { onSystemColorSchemeChange } from './utils/autodetectTheme';
+ import PluginRunnerWebView from './components/plugins/PluginRunnerWebView';
+@@ -190,6 +192,10 @@ const generalMiddleware = (store: any) => (next: any) => async (action: any) =>
+ 		reg.setupRecurrentSync();
+ 	}
+ 
++	if ((action.type === 'SETTING_UPDATE_ONE' && isDebugLogSettingKey(action.key)) || action.type === 'SETTING_UPDATE_ALL') {
++		updateDebugLogConfig();
++	}
++
+ 	if ((action.type === 'SETTING_UPDATE_ONE' && (action.key === 'dateFormat' || action.key === 'timeFormat')) || (action.type === 'SETTING_UPDATE_ALL')) {
+ 		time.setDateFormat(Setting.value('dateFormat'));
+ 		time.setTimeFormat(Setting.value('timeFormat'));
+@@ -303,6 +309,8 @@ async function initialize(dispatch: Dispatch) {
+ 		});
+ 	}
+ 
++	await initDebugLog();
++
+ 	logger.info('Application initialized');
+ }
+ 
+@@ -817,6 +825,7 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 			ProfileEditor: { screen: ProfileEditor },
+ 			NoteRevisionViewer: { screen: NoteRevisionViewer },
+ 			Log: { screen: LogScreen },
++			DebugLog: { screen: DebugLogScreen },
+ 			Status: { screen: StatusScreen },
+ 			Search: { screen: SearchScreen },
+ 			NoteResources: { screen: ResourceScreen },
+diff --git a/packages/app-mobile/utils/debugLog.test.ts b/packages/app-mobile/utils/debugLog.test.ts
+new file mode 100644
+index 0000000..0255664
+--- /dev/null
++++ b/packages/app-mobile/utils/debugLog.test.ts
+@@ -0,0 +1,202 @@
++import FsDriverBase, { Stat } from '@joplin/lib/fs-driver-base';
++import {
++	clearDebugLog, clearDebugLogFiles, debugLog, debugLogEntries, flushDebugLog, formatDebugLog,
++	formatDebugLogEntry, initDebugLogPersistence, isDebugLogEnabled, onDebugLogChange,
++	resetDebugLogPersistenceForTests, setDebugLogConfig, setDebugLogProfileDirForTests,
++} from './debugLog';
++
++// A minimal in-memory stand-in for the platform filesystem driver, just covering the methods
++// debugLog.ts's persistence uses.
++class FakeFsDriver extends FsDriverBase {
++	public files = new Map<string, string>();
++
++	public override async exists(path: string): Promise<boolean> {
++		return this.files.has(path);
++	}
++
++	public override async appendFile(path: string, content: string): Promise<void> {
++		this.files.set(path, (this.files.get(path) ?? '') + content);
++	}
++
++	public override async writeFile(path: string, content: string): Promise<void> {
++		this.files.set(path, content);
++	}
++
++	public override async readFile(path: string): Promise<string> {
++		if (!this.files.has(path)) throw new Error(`ENOENT: ${path}`);
++		return this.files.get(path);
++	}
++
++	public override async unlink(path: string): Promise<void> {
++		this.files.delete(path);
++	}
++
++	public override async move(source: string, dest: string): Promise<void> {
++		this.files.set(dest, this.files.get(source) ?? '');
++		this.files.delete(source);
++	}
++
++	public override async stat(path: string): Promise<Stat> {
++		if (!this.files.has(path)) return null;
++		const content = this.files.get(path);
++		return { size: Buffer.byteLength(content), isDirectory: () => false, birthtime: new Date(), mtime: new Date(), path };
++	}
++}
++
++describe('debugLog', () => {
++	beforeEach(() => {
++		clearDebugLog();
++		setDebugLogConfig(false, []);
++		resetDebugLogPersistenceForTests();
++		setDebugLogProfileDirForTests('/fake-profile');
++	});
++
++	afterEach(() => {
++		resetDebugLogPersistenceForTests();
++	});
++
++	test('should not record entries for a disabled category', () => {
++		setDebugLogConfig(true, ['lists.sync']);
++		const log = debugLog('lists.nearby');
++		expect(log.enabled()).toBe(false);
++		log.info('Should not be recorded');
++		expect(debugLogEntries()).toHaveLength(0);
++	});
++
++	test('should not record entries while the master switch is off', () => {
++		setDebugLogConfig(false, ['lists.nearby']);
++		debugLog('lists.nearby').info('Should not be recorded');
++		expect(debugLogEntries()).toHaveLength(0);
++	});
++
++	test('should record entries for an enabled category, and notify listeners', () => {
++		setDebugLogConfig(true, ['lists.nearby']);
++		const listener = jest.fn();
++		const unsubscribe = onDebugLogChange(listener);
++
++		const log = debugLog('lists.nearby');
++		expect(log.enabled()).toBe(true);
++		log.info('Scan started', { listId: 'abc' });
++		log.warn('Retrying');
++		log.error('Failed', new Error('boom'));
++
++		const entries = debugLogEntries();
++		expect(entries).toHaveLength(3);
++		expect(entries[0]).toMatchObject({ level: 'info', category: 'lists.nearby', message: 'Scan started' });
++		expect(entries[0].data).toBe('{"listId":"abc"}');
++		expect(entries[2].data).toContain('Error: boom');
++		expect(listener).toHaveBeenCalledTimes(3);
++
++		unsubscribe();
++		log.info('After unsubscribe');
++		expect(listener).toHaveBeenCalledTimes(3);
++	});
++
++	test('clearDebugLog should empty the ring buffer', () => {
++		setDebugLogConfig(true, ['tiles']);
++		debugLog('tiles').info('Some entry');
++		expect(debugLogEntries()).toHaveLength(1);
++
++		clearDebugLog();
++		expect(debugLogEntries()).toHaveLength(0);
++	});
++
++	test('formatDebugLog should filter by category and always keep separator lines', () => {
++		setDebugLogConfig(true, ['tiles', 'lists.sync']);
++		debugLog('tiles').info('Tile event');
++		debugLog('lists.sync').info('Sync event');
++
++		const filtered = formatDebugLog(['tiles']);
++		expect(filtered).toContain('[tiles] Tile event');
++		expect(filtered).not.toContain('[lists.sync]');
++
++		const all = formatDebugLog();
++		expect(all).toContain('[tiles] Tile event');
++		expect(all).toContain('[lists.sync] Sync event');
++	});
++
++	test('formatDebugLogEntry should append the data payload only when present', () => {
++		const withData = formatDebugLogEntry({ time: 0, category: 'tiles', level: 'debug', message: 'Msg', data: '{"a":1}' });
++		expect(withData).toContain('Msg {"a":1}');
++
++		const withoutData = formatDebugLogEntry({ time: 0, category: 'tiles', level: 'debug', message: 'Msg' });
++		expect(withoutData.endsWith('Msg')).toBe(true);
++	});
++
++	test('setDebugLogConfig should be re-enterable and only enable the given categories', () => {
++		setDebugLogConfig(true, ['tiles', 'lists.sync']);
++		expect(isDebugLogEnabled('tiles')).toBe(true);
++		expect(isDebugLogEnabled('lists.sync')).toBe(true);
++		expect(isDebugLogEnabled('lists.nearby')).toBe(false);
++
++		setDebugLogConfig(true, ['lists.nearby']);
++		expect(isDebugLogEnabled('tiles')).toBe(false);
++		expect(isDebugLogEnabled('lists.nearby')).toBe(true);
++	});
++
++	describe('persistence', () => {
++		let fsDriver: FakeFsDriver;
++
++		beforeEach(() => {
++			fsDriver = new FakeFsDriver();
++		});
++
++		test('flushDebugLog should append pending entries to the log file, batched', async () => {
++			setDebugLogConfig(true, ['tiles']);
++			await initDebugLogPersistence(fsDriver);
++			debugLog('tiles').info('First');
++			debugLog('tiles').info('Second');
++
++			// Nothing written yet -- append() only queues, flushDebugLog() writes.
++			const path = '/fake-profile/test-log.txt';
++			expect(fsDriver.files.has(path)).toBe(false);
++
++			await flushDebugLog(fsDriver);
++
++			const afterFlush = fsDriver.files.get(path);
++			expect(afterFlush).toContain('app started');
++			expect(afterFlush).toContain('[tiles] First');
++			expect(afterFlush).toContain('[tiles] Second');
++		});
++
++		test('flushDebugLog should rotate the log file to a .1 backup once it grows past the size limit', async () => {
++			const path = '/fake-profile/test-log.txt';
++			const backupPath = `${path}.1`;
++			fsDriver.files.set(path, 'x'.repeat(2 * 1024 * 1024));
++
++			setDebugLogConfig(true, ['tiles']);
++			await initDebugLogPersistence(fsDriver);
++			debugLog('tiles').info('Triggers rotation');
++			await flushDebugLog(fsDriver);
++
++			expect(fsDriver.files.get(backupPath)?.length).toBe(2 * 1024 * 1024);
++			expect(fsDriver.files.get(path)).toContain('Triggers rotation');
++			expect(fsDriver.files.get(path)).not.toContain('x'.repeat(100));
++		});
++
++		test('initDebugLogPersistence should load the tail of a previous session into the ring buffer', async () => {
++			const path = '/fake-profile/test-log.txt';
++			const previousEntry = formatDebugLogEntry({ time: Date.parse('2024-01-01T00:00:00.000Z'), category: 'tiles', level: 'info', message: 'From last session' });
++			fsDriver.files.set(path, `${previousEntry}\n--- app started 2024-01-01 00:00:00.000 ---\n`);
++
++			await initDebugLogPersistence(fsDriver);
++
++			const entries = debugLogEntries();
++			expect(entries.some(e => e.message === 'From last session' && e.category === 'tiles')).toBe(true);
++			expect(entries.some(e => e.separator && e.message.includes('app started'))).toBe(true);
++			// A fresh "app started" marker for *this* session is appended too.
++			expect(entries.filter(e => e.separator).length).toBeGreaterThanOrEqual(2);
++		});
++
++		test('clearDebugLogFiles should delete the main and backup log files', async () => {
++			const path = '/fake-profile/test-log.txt';
++			fsDriver.files.set(path, 'some content');
++			fsDriver.files.set(`${path}.1`, 'older content');
++
++			await clearDebugLogFiles(fsDriver);
++
++			expect(fsDriver.files.has(path)).toBe(false);
++			expect(fsDriver.files.has(`${path}.1`)).toBe(false);
++		});
++	});
++});
+diff --git a/packages/app-mobile/utils/debugLog.ts b/packages/app-mobile/utils/debugLog.ts
+new file mode 100644
+index 0000000..fcfaf39
+--- /dev/null
++++ b/packages/app-mobile/utils/debugLog.ts
+@@ -0,0 +1,290 @@
++// Test logging for features under device testing (shopping lists, relays, Bluetooth, tile view).
++//
++// Separate from Joplin's own log: entries are kept in a bounded in-memory ring buffer, only while
++// test logging is switched on in the settings (master switch plus one switch per category), and
++// can be viewed and shared as a text file from the settings screen. Calls are cheap no-ops while
++// a category is off, so they can stay in the code permanently.
++//
++// Usage:
++//   import { debugLog } from '../../utils/debugLog';
++//   const log = debugLog('lists.nearby');
++//   log.info('Scan started', { listId });
++//
++// Persistence (see initDebugLogPersistence below): while active, entries are also appended to a
++// file in the profile directory, batched and flushed at most every couple of seconds so that
++// entries survive an app crash (relevant for Bluetooth testing, which can crash the app). On the
++// next start, the tail of that file is loaded back into the ring buffer, so the viewer shows
++// entries from the previous session too.
++
++import shim from '@joplin/lib/shim';
++import Setting from '@joplin/lib/models/Setting';
++import FsDriverBase from '@joplin/lib/fs-driver-base';
++import { AppState as RNAppState, AppStateStatus } from 'react-native';
++
++export type DebugLogCategory =
++	'lists.store' | // local list database and store operations
++	'lists.relays' | // relay connections, publish/query results
++	'lists.sync' | // list sync passes, directory, join requests, merge results
++	'lists.nearby' | // Bluetooth: advertising, scanning, connections, handshake, transfer
++	'lists.invite' | // creating and parsing invites, deep links
++	'lists.ui' | // list screens: input, suggestions, taps
++	'tiles'; // note tile view: zoom, filter, layout
++
++export const debugLogCategories: DebugLogCategory[] = [
++	'lists.store', 'lists.relays', 'lists.sync', 'lists.nearby', 'lists.invite', 'lists.ui', 'tiles',
++];
++
++export type DebugLogLevel = 'debug' | 'info' | 'warn' | 'error';
++
++export interface DebugLogEntry {
++	time: number;
++	category: DebugLogCategory;
++	level: DebugLogLevel;
++	message: string;
++	data?: string;
++	// Set on the "--- app started ... ---" markers loaded from the persisted file (and on lines
++	// from that file that could not be parsed back into a normal entry). Shown regardless of the
++	// active category filter.
++	separator?: boolean;
++}
++
++export interface DebugLogger {
++	debug(message: string, data?: unknown): void;
++	info(message: string, data?: unknown): void;
++	warn(message: string, data?: unknown): void;
++	error(message: string, data?: unknown): void;
++	enabled(): boolean;
++}
++
++const maxEntries = 5000;
++const entries: DebugLogEntry[] = [];
++const listeners = new Set<()=> void>();
++
++// Which categories are on. Set by the settings integration (see setDebugLogConfig); everything
++// is off until then.
++let masterEnabled = false;
++const enabledCategories = new Set<DebugLogCategory>();
++
++export const setDebugLogConfig = (enabled: boolean, categories: DebugLogCategory[]) => {
++	masterEnabled = enabled;
++	enabledCategories.clear();
++	for (const c of categories) enabledCategories.add(c);
++};
++
++export const isDebugLogEnabled = (category: DebugLogCategory) => masterEnabled && enabledCategories.has(category);
++
++const stringifyData = (data: unknown): string | undefined => {
++	if (data === undefined) return undefined;
++	if (data instanceof Error) return `${data.name}: ${data.message}${data.stack ? `\n${data.stack}` : ''}`;
++	if (typeof data === 'string') return data;
++	try {
++		return JSON.stringify(data, (_key, value) => {
++			if (value instanceof Uint8Array) return `<${value.length} bytes>`;
++			if (value instanceof Error) return `${value.name}: ${value.message}`;
++			return value;
++		});
++	} catch (error) {
++		return String(data);
++	}
++};
++
++const pushEntry = (entry: DebugLogEntry) => {
++	entries.push(entry);
++	if (entries.length > maxEntries) entries.splice(0, entries.length - maxEntries);
++	for (const listener of listeners) listener();
++};
++
++const append = (category: DebugLogCategory, level: DebugLogLevel, message: string, data: unknown) => {
++	if (!isDebugLogEnabled(category)) return;
++	const entry: DebugLogEntry = { time: Date.now(), category, level, message, data: stringifyData(data) };
++	pushEntry(entry);
++	if (persistenceEnabled) pendingLines.push(formatDebugLogEntry(entry));
++};
++
++export const debugLog = (category: DebugLogCategory): DebugLogger => ({
++	debug: (message, data) => append(category, 'debug', message, data),
++	info: (message, data) => append(category, 'info', message, data),
++	warn: (message, data) => append(category, 'warn', message, data),
++	error: (message, data) => append(category, 'error', message, data),
++	enabled: () => isDebugLogEnabled(category),
++});
++
++export const debugLogEntries = (): DebugLogEntry[] => entries.slice();
++
++export const clearDebugLog = () => {
++	entries.splice(0, entries.length);
++	pendingLines.splice(0, pendingLines.length);
++	for (const listener of listeners) listener();
++};
++
++// Also deletes the persisted log files (main and backup). Separate from clearDebugLog so that
++// callers that only need the in-memory buffer cleared (e.g. tests) don't have to deal with a
++// filesystem driver.
++export const clearDebugLogFiles = async (fsDriver: FsDriverBase = shim.fsDriver()): Promise<void> => {
++	const path = logFilePath();
++	const backupPath = logFileBackupPath();
++	if (await fsDriver.exists(path)) await fsDriver.unlink(path);
++	if (await fsDriver.exists(backupPath)) await fsDriver.unlink(backupPath);
++};
++
++export const onDebugLogChange = (listener: ()=> void) => {
++	listeners.add(listener);
++	return () => {
++		listeners.delete(listener);
++	};
++};
++
++const pad = (n: number, width = 2) => String(n).padStart(width, '0');
++
++const formatTime = (time: number) => {
++	const d = new Date(time);
++	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
++};
++
++export const formatDebugLogEntry = (entry: DebugLogEntry) => {
++	if (entry.separator) return entry.message;
++	const head = `${formatTime(entry.time)} ${entry.level.toUpperCase().padEnd(5)} [${entry.category}] ${entry.message}`;
++	return entry.data === undefined ? head : `${head} ${entry.data}`;
++};
++
++export const formatDebugLog = (filter?: DebugLogCategory[]) => {
++	const selected = filter ? entries.filter(e => e.separator || filter.includes(e.category)) : entries;
++	return selected.map(formatDebugLogEntry).join('\n');
++};
++
++// --- Persistence -------------------------------------------------------------------------------
++//
++// Entries are appended to a file in the profile directory so they survive an app crash. Writes
++// are batched: append() above only pushes to `pendingLines`, and a timer flushes them to disk at
++// most every `flushIntervalMs`. A flush is also forced when the app goes to the background, since
++// that's the last reliable point before a crash or the OS killing the process.
++
++const maxLogFileSize = 2 * 1024 * 1024;
++const flushIntervalMs = 2000;
++const logFileName = 'test-log.txt';
++
++let persistenceEnabled = false;
++let pendingLines: string[] = [];
++let flushTimer: ReturnType<typeof setInterval> | null = null;
++let flushing = false;
++let appStateSubscription: { remove(): void } | null = null;
++
++// Overridable for tests, which don't have a real profile directory.
++let profileDirOverride: string | null = null;
++export const setDebugLogProfileDirForTests = (dir: string | null) => {
++	profileDirOverride = dir;
++};
++
++const profileDir = () => profileDirOverride ?? Setting.value('profileDir');
++const logFilePath = () => `${profileDir()}/${logFileName}`;
++const logFileBackupPath = () => `${logFilePath()}.1`;
++
++const rotateIfNeeded = async (fsDriver: FsDriverBase, addedBytes: number) => {
++	const path = logFilePath();
++	if (!(await fsDriver.exists(path))) return;
++	const stat = await fsDriver.stat(path);
++	if (!stat || stat.size + addedBytes <= maxLogFileSize) return;
++
++	const backupPath = logFileBackupPath();
++	if (await fsDriver.exists(backupPath)) await fsDriver.unlink(backupPath);
++	await fsDriver.move(path, backupPath);
++};
++
++// Flushes any pending lines to the log file, rotating it first if it's about to exceed
++// maxLogFileSize. Safe to call when there's nothing pending, or while a flush is already running
++// (the second call is a no-op -- the pending lines it would have written stay in `pendingLines`
++// and go out on the next flush).
++export const flushDebugLog = async (fsDriver: FsDriverBase = shim.fsDriver()): Promise<void> => {
++	if (flushing || !pendingLines.length) return;
++	flushing = true;
++	try {
++		const toWrite = `${pendingLines.join('\n')}\n`;
++		pendingLines = [];
++		await rotateIfNeeded(fsDriver, toWrite.length);
++		await fsDriver.appendFile(logFilePath(), toWrite, 'utf8');
++	} finally {
++		flushing = false;
++	}
++};
++
++// Parses a line previously written by formatDebugLogEntry back into an entry, for loading the
++// tail of the log file on startup. Lines that don't match (in particular, previous separator
++// lines) are returned as-is, marked as a separator so they're still shown in the viewer.
++const logLineRegex = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) (\w+)\s+\[([^\]]+)\] (.*)$/;
++const debugLogLevels: DebugLogLevel[] = ['debug', 'info', 'warn', 'error'];
++
++const parseTime = (formatted: string): number => {
++	const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})$/.exec(formatted);
++	if (!match) return Date.now();
++	const [year, month, day, hour, minute, second, ms] = match.slice(1).map(Number);
++	return new Date(year, month - 1, day, hour, minute, second, ms).getTime();
++};
++
++const parseLogLine = (line: string): DebugLogEntry => {
++	const match = logLineRegex.exec(line);
++	const level = match ? match[2].toLowerCase() as DebugLogLevel : null;
++	if (match && debugLogLevels.includes(level)) {
++		return { time: parseTime(match[1]), category: match[3] as DebugLogCategory, level, message: match[4] };
++	}
++	return { time: Date.now(), category: debugLogCategories[0], level: 'info', message: line, separator: true };
++};
++
++const loadTail = async (fsDriver: FsDriverBase) => {
++	const path = logFilePath();
++	if (!(await fsDriver.exists(path))) return;
++
++	let content = '';
++	try {
++		content = await fsDriver.readFile(path, 'utf8');
++	} catch (error) {
++		return;
++	}
++
++	const lines = content.split('\n').filter(line => line.length > 0);
++	for (const line of lines.slice(-maxEntries)) pushEntry(parseLogLine(line));
++};
++
++// Starts persistence: loads the tail of the previous session's log into the ring buffer, marks
++// the new session with a separator line, and starts batching new entries to disk. Called once,
++// from the settings bridge (utils/debugLogSettings.ts), after settings have loaded.
++export const initDebugLogPersistence = async (fsDriver: FsDriverBase = shim.fsDriver()): Promise<void> => {
++	if (persistenceEnabled) return;
++	persistenceEnabled = true;
++
++	await loadTail(fsDriver);
++
++	const startedEntry: DebugLogEntry = {
++		time: Date.now(),
++		category: debugLogCategories[0],
++		level: 'info',
++		message: `--- app started ${formatTime(Date.now())} ---`,
++		separator: true,
++	};
++	pushEntry(startedEntry);
++	pendingLines.push(formatDebugLogEntry(startedEntry));
++
++	if (!flushTimer) {
++		flushTimer = setInterval(() => { void flushDebugLog(fsDriver); }, flushIntervalMs);
++	}
++	if (!appStateSubscription) {
++		appStateSubscription = RNAppState.addEventListener('change', (state: AppStateStatus) => {
++			if (state !== 'active') void flushDebugLog(fsDriver);
++		});
++	}
++};
++
++// For tests: undoes initDebugLogPersistence so each test starts from a clean slate.
++export const resetDebugLogPersistenceForTests = () => {
++	persistenceEnabled = false;
++	pendingLines = [];
++	flushing = false;
++	if (flushTimer) {
++		clearInterval(flushTimer);
++		flushTimer = null;
++	}
++	if (appStateSubscription) {
++		appStateSubscription.remove();
++		appStateSubscription = null;
++	}
++	profileDirOverride = null;
++};
+diff --git a/packages/app-mobile/utils/debugLogSettings.test.ts b/packages/app-mobile/utils/debugLogSettings.test.ts
+new file mode 100644
+index 0000000..9b49073
+--- /dev/null
++++ b/packages/app-mobile/utils/debugLogSettings.test.ts
+@@ -0,0 +1,54 @@
++import { setupDatabaseAndSynchronizer } from '@joplin/lib/testing/test-utils';
++import Setting from '@joplin/lib/models/Setting';
++import { initDebugLog, isDebugLogSettingKey, updateDebugLogConfig } from './debugLogSettings';
++import { isDebugLogEnabled, resetDebugLogPersistenceForTests, setDebugLogConfig } from './debugLog';
++
++describe('debugLogSettings', () => {
++	beforeEach(async () => {
++		await setupDatabaseAndSynchronizer(0);
++		setDebugLogConfig(false, []);
++		resetDebugLogPersistenceForTests();
++	});
++
++	afterEach(() => {
++		resetDebugLogPersistenceForTests();
++	});
++
++	test('isDebugLogSettingKey should match the master switch and per-category keys only', () => {
++		expect(isDebugLogSettingKey('debugLog.enabled')).toBe(true);
++		expect(isDebugLogSettingKey('debugLog.category.tiles')).toBe(true);
++		expect(isDebugLogSettingKey('debugLog.category.lists.nearby')).toBe(true);
++		expect(isDebugLogSettingKey('sync.interval')).toBe(false);
++	});
++
++	test('updateDebugLogConfig should reflect the master switch and per-category settings', () => {
++		Setting.setValue('debugLog.enabled', true);
++		Setting.setValue('debugLog.category.tiles', true);
++		Setting.setValue('debugLog.category.lists.sync', false);
++
++		updateDebugLogConfig();
++
++		expect(isDebugLogEnabled('tiles')).toBe(true);
++		expect(isDebugLogEnabled('lists.sync')).toBe(false);
++	});
++
++	test('updateDebugLogConfig should disable everything when the master switch is off, even if categories are on', () => {
++		Setting.setValue('debugLog.enabled', false);
++		Setting.setValue('debugLog.category.tiles', true);
++
++		updateDebugLogConfig();
++
++		expect(isDebugLogEnabled('tiles')).toBe(false);
++	});
++
++	test('initDebugLog should apply the current settings and start persistence', async () => {
++		Setting.setValue('debugLog.enabled', true);
++		Setting.setValue('debugLog.category.tiles', true);
++		Setting.setValue('debugLog.category.lists.sync', false);
++
++		await initDebugLog();
++
++		expect(isDebugLogEnabled('tiles')).toBe(true);
++		expect(isDebugLogEnabled('lists.sync')).toBe(false);
++	});
++});
+diff --git a/packages/app-mobile/utils/debugLogSettings.ts b/packages/app-mobile/utils/debugLogSettings.ts
+new file mode 100644
+index 0000000..33a250e
+--- /dev/null
++++ b/packages/app-mobile/utils/debugLogSettings.ts
+@@ -0,0 +1,26 @@
++// Bridges the "Test logging" settings (packages/lib/models/settings/builtInMetadata.ts, section
++// 'testLogging') to the debugLog module: reads the master switch and the per-category toggles and
++// pushes them into setDebugLogConfig, so that debugLog() calls elsewhere in the app become no-ops
++// or start recording accordingly.
++//
++// initDebugLog() is called once from root.tsx after settings have loaded. After that,
++// updateDebugLogConfig() is called by root.tsx's redux middleware whenever a 'debugLog.*' setting
++// changes.
++
++import Setting from '@joplin/lib/models/Setting';
++import { debugLogCategories, initDebugLogPersistence, setDebugLogConfig } from './debugLog';
++
++export const updateDebugLogConfig = () => {
++	const enabled = !!Setting.value('debugLog.enabled');
++	const categories = debugLogCategories.filter(category => !!Setting.value(`debugLog.category.${category}`));
++	setDebugLogConfig(enabled, categories);
++};
++
++export const initDebugLog = async (): Promise<void> => {
++	updateDebugLogConfig();
++	await initDebugLogPersistence();
++};
++
++// True for any settings key that should trigger updateDebugLogConfig() when changed -- the master
++// switch and every per-category toggle.
++export const isDebugLogSettingKey = (key: string): boolean => key === 'debugLog.enabled' || key.startsWith('debugLog.category.');
+diff --git a/packages/app-mobile/utils/shareDebugLog.ts b/packages/app-mobile/utils/shareDebugLog.ts
+new file mode 100644
+index 0000000..89303a7
+--- /dev/null
++++ b/packages/app-mobile/utils/shareDebugLog.ts
+@@ -0,0 +1,63 @@
++// Builds and shares the test log as a text file, and clears it (buffer and persisted files).
++// Shared by the "Share test log" / "Clear test log" settings buttons (ConfigScreen.tsx) and the
++// DebugLogScreen viewer, so both act on the log the same way.
++
++import { Platform } from 'react-native';
++import shim from '@joplin/lib/shim';
++import Logger from '@joplin/utils/Logger';
++import { _ } from '@joplin/lib/locale';
++import { writeTextToCacheFile } from './ShareUtils';
++import shareFile from './shareFile';
++import {
++	DebugLogCategory, clearDebugLog, clearDebugLogFiles, debugLogCategories, debugLogEntries,
++	formatDebugLogEntry, isDebugLogEnabled,
++} from './debugLog';
++
++const logger = Logger.create('shareDebugLog');
++
++const pad = (n: number) => String(n).padStart(2, '0');
++
++// yyyymmdd-hhmm, for the shared file name.
++const shareFileTimestamp = (date: Date) => {
++	return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
++};
++
++const buildShareHeader = (): string => {
++	const enabledCategories = debugLogCategories.filter(isDebugLogEnabled);
++	const model = Platform.OS === 'android' ? (Platform.constants as { Model?: string })?.Model ?? '' : '';
++
++	return [
++		'Joplin Tiles -- test log',
++		`Generated: ${new Date().toString()}`,
++		`App version: ${shim.appVersion()}`,
++		`Platform: ${Platform.OS} ${Platform.Version}${model ? ` (${model})` : ''}`,
++		`Enabled categories: ${enabledCategories.length ? enabledCategories.join(', ') : 'none'}`,
++		'',
++	].join('\n');
++};
++
++// categoryFilter: when given, only entries in one of these categories (plus separator lines) are
++// included. Leave undefined to share everything currently in the ring buffer.
++export const shareDebugLog = async (categoryFilter?: DebugLogCategory[]): Promise<void> => {
++	const allEntries = debugLogEntries();
++	const entries = categoryFilter ? allEntries.filter(entry => entry.separator || categoryFilter.includes(entry.category)) : allEntries;
++	const logData = entries.map(formatDebugLogEntry).join('\n');
++	const content = `${buildShareHeader()}\n${logData}\n`;
++	const fileName = `joplin-tiles-test-log-${shareFileTimestamp(new Date())}.txt`;
++
++	let fileToShare: string|null = null;
++	try {
++		fileToShare = await writeTextToCacheFile(content, fileName);
++		await shareFile(fileToShare, 'text/plain');
++	} catch (error) {
++		logger.error('Unable to share test log:', error);
++		void shim.showErrorDialog(_('Unable to share the test log. Reason: %s', error.toString()));
++	} finally {
++		if (fileToShare) await shim.fsDriver().remove(fileToShare);
++	}
++};
++
++export const clearDebugLogAndFiles = async (): Promise<void> => {
++	clearDebugLog();
++	await clearDebugLogFiles();
++};
+diff --git a/packages/app-mobile/utils/tileZoom.ts b/packages/app-mobile/utils/tileZoom.ts
+index 36ada26..dda45fc 100644
+--- a/packages/app-mobile/utils/tileZoom.ts
++++ b/packages/app-mobile/utils/tileZoom.ts
+@@ -1,4 +1,7 @@
+ import Setting from '@joplin/lib/models/Setting';
++import { debugLog } from './debugLog';
++
++const log = debugLog('tiles');
+ 
+ interface ZoomLevel {
+ 	columns: number;
+@@ -76,9 +79,11 @@ export const zoomStep = (columns: number, fontScale: number, direction: 1|-1): Z
+ // by the pinch-to-zoom gesture (NoteTileList.tsx) and the "Smaller"/"Larger" entries in the
+ // Notes screen's overflow menu, so that both ways of zooming always land on the same ladder step.
+ const applyZoomStep = (direction: 1|-1) => {
+-	const next = zoomStep(Setting.value('notes.tileColumns'), Setting.value('notes.tileFontScale'), direction);
++	const before = { columns: Setting.value('notes.tileColumns'), fontScale: Setting.value('notes.tileFontScale') };
++	const next = zoomStep(before.columns, before.fontScale, direction);
+ 	Setting.setValue('notes.tileColumns', next.columns);
+ 	Setting.setValue('notes.tileFontScale', next.fontScale);
++	log.info(`Zoom ${direction === 1 ? 'in' : 'out'}`, { before, after: next });
+ };
+ 
+ export const zoomIn = () => applyZoomStep(1);
+diff --git a/packages/lib/models/Setting.ts b/packages/lib/models/Setting.ts
+index 16a6746..55d81f6 100644
+--- a/packages/lib/models/Setting.ts
++++ b/packages/lib/models/Setting.ts
+@@ -1306,6 +1306,7 @@ class Setting extends BaseModel {
+ 			'keymap',
+ 			'tools',
+ 			'importOrExport',
++			'testLogging',
+ 			'moreInfo',
+ 		];
+ 	}
+@@ -1361,6 +1362,7 @@ class Setting extends BaseModel {
+ 		if (name === 'note') return _('Note');
+ 		if (name === 'folder') return _('Notebook');
+ 		if (name === 'lists') return _('Shopping lists');
++		if (name === 'testLogging') return _('Test logging');
+ 		if (name === 'markdownPlugins') return _('Markdown');
+ 		if (name === 'plugins') return _('Plugins');
+ 		if (name === 'application') return _('Application');
+@@ -1394,6 +1396,9 @@ class Setting extends BaseModel {
+ 		if (name === 'ai.tools') {
+ 			return _('Tools and services to expose to AI. AI agents can use these tools either via the note chat panel or Joplin\'s MCP server (if enabled).');
+ 		}
++		if (name === 'testLogging') {
++			return _('Records detailed logs for features that are still under test. The log stays on this device until you clear it, and you can view or share it from here.');
++		}
+ 
+ 		if (this.customSections_[name] && this.customSections_[name].description) return this.customSections_[name].description;
+ 
+@@ -1416,6 +1421,7 @@ class Setting extends BaseModel {
+ 			'importOrExport': _('Import or export your data'),
+ 			'plugins': _('Enable or disable plugins'),
+ 			'moreInfo': _('Donate, website'),
++			'testLogging': _('Enable, view or share the test log'),
+ 		};
+ 
+ 		// In some cases (e.g. plugin settings pages) there is no preset summary.
+@@ -1461,6 +1467,7 @@ class Setting extends BaseModel {
+ 			'moreInfo': 'fa fa-info-circle',
+ 			'ai': 'fa fa-robot',
+ 			'ai.tools': 'fa fa-plug',
++			'testLogging': 'fa fa-bug',
+ 		};
+ 
+ 		// Icomoon icons are currently not present in the mobile app -- we override these
+diff --git a/packages/lib/models/settings/builtInMetadata.ts b/packages/lib/models/settings/builtInMetadata.ts
+index 613b975..6fd54e5 100644
+--- a/packages/lib/models/settings/builtInMetadata.ts
++++ b/packages/lib/models/settings/builtInMetadata.ts
+@@ -2650,6 +2650,104 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			storage: SettingStorage.File,
+ 			isGlobal: true,
+ 		},
++
++		'debugLog.enabled': {
++			value: false,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Enable test logging'),
++			description: () => _('Records detailed logs of features under test (shopping lists, note tiles). The log is kept on this device only -- use the buttons below to view, share or clear it.'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
++		// The keys below (debugLog.category.<category>) must stay in sync with the categories
++		// listed in app-mobile/utils/debugLog.ts (debugLogCategories) -- one toggle per category.
++		'debugLog.category.lists.store': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			show: settings => !!settings['debugLog.enabled'],
++			label: () => _('Shopping lists: local database'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
++		'debugLog.category.lists.relays': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			show: settings => !!settings['debugLog.enabled'],
++			label: () => _('Shopping lists: relays'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
++		'debugLog.category.lists.sync': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			show: settings => !!settings['debugLog.enabled'],
++			label: () => _('Shopping lists: sync'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
++		'debugLog.category.lists.nearby': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			show: settings => !!settings['debugLog.enabled'],
++			label: () => _('Shopping lists: Bluetooth'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
++		'debugLog.category.lists.invite': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			show: settings => !!settings['debugLog.enabled'],
++			label: () => _('Shopping lists: invites and links'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
++		'debugLog.category.lists.ui': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			show: settings => !!settings['debugLog.enabled'],
++			label: () => _('Shopping lists: screens'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
++		'debugLog.category.tiles': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			show: settings => !!settings['debugLog.enabled'],
++			label: () => _('Note tiles'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
+ 	} satisfies Record<string, SettingItem>;
+ 
+ 	for (const [key, md] of Object.entries(output)) {

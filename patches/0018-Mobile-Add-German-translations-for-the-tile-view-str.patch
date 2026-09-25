@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 14 Sep 2026 14:23:26 +0000
-Subject: [PATCH 18/23] Mobile: Add German translations for the tile view
+Subject: [PATCH 18/27] Mobile: Add German translations for the tile view
  strings
 
 The tile view UI strings introduced in this fork were correctly marked

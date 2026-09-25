@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Wed, 23 Sep 2026 17:13:33 +0000
-Subject: [PATCH 22/23] Mobile: Add the shopping list screens
+Subject: [PATCH 22/27] Mobile: Add the shopping list screens
 
 "Shopping lists" entry in the side menu: overview, list screen with
 suggestion chips, emoji tiles grouped by category and a "recently

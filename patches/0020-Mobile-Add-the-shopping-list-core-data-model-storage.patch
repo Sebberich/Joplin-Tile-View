@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Wed, 23 Sep 2026 16:35:46 +0000
-Subject: [PATCH 20/23] Mobile: Add the shopping list core (data model,
+Subject: [PATCH 20/27] Mobile: Add the shopping list core (data model,
  storage, crypto)
 
 Pure, UI-free core for shared shopping lists: one record per item with
