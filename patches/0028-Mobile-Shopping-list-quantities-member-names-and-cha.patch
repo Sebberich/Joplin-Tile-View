@@ -1,0 +1,4186 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:34:29 +0000
+Subject: [PATCH 28/29] Mobile: Shopping list quantities, member names and
+ change notifications
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Typed names are kept as typed; the catalog only supplies emoji and
+  category.
+- Quantities add up ("3 Eier" + "Eier 7" = 10, "-4 Eier" subtracts,
+  never below 0) as a per-device counter that merges without losing
+  concurrent additions; reaching 0 marks the item bought; re-opening
+  within 5 minutes restores the old quantity, later starts fresh. Notes
+  such as "Bio" are kept separately.
+- Each device publishes an encrypted profile event with its name, so
+  renaming in the settings reaches all members; the default name is the
+  device model.
+- Share screen: fixed header, crisp QR code with quiet zone, "Share…"
+  opens the system share sheet with an invite message.
+- Notifications when others change a list (aggregated per list, global
+  and per-list switch) and a foreground service that keeps Bluetooth
+  sync alive with the screen off.
+
+diff --git a/.gitignore b/.gitignore
+index a1578ce..02451cb 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1027,6 +1027,12 @@ packages/app-mobile/lists/core/merge.test.js
+ packages/app-mobile/lists/core/merge.js
+ packages/app-mobile/lists/core/normalize.test.js
+ packages/app-mobile/lists/core/normalize.js
++packages/app-mobile/lists/core/profile.test.js
++packages/app-mobile/lists/core/profile.js
++packages/app-mobile/lists/core/qty.test.js
++packages/app-mobile/lists/core/qty.js
++packages/app-mobile/lists/core/remoteChanges.test.js
++packages/app-mobile/lists/core/remoteChanges.js
+ packages/app-mobile/lists/core/store.test.js
+ packages/app-mobile/lists/core/store.js
+ packages/app-mobile/lists/core/types.js
+@@ -1038,6 +1044,13 @@ packages/app-mobile/lists/nearby/protocol.js
+ packages/app-mobile/lists/nearby/session.test.js
+ packages/app-mobile/lists/nearby/session.js
+ packages/app-mobile/lists/nearby/testing/fakeBle.js
++packages/app-mobile/lists/notify/activeScreen.js
++packages/app-mobile/lists/notify/aggregator.test.js
++packages/app-mobile/lists/notify/aggregator.js
++packages/app-mobile/lists/notify/listSettings.js
++packages/app-mobile/lists/notify/notifyManager.js
++packages/app-mobile/lists/notify/suppression.test.js
++packages/app-mobile/lists/notify/suppression.js
+ packages/app-mobile/lists/sync/defaultRelays.js
+ packages/app-mobile/lists/sync/index.js
+ packages/app-mobile/lists/sync/listSync.test.js
+@@ -1051,6 +1064,7 @@ packages/app-mobile/lists/ui/ListScreen.test.js
+ packages/app-mobile/lists/ui/ListScreen.js
+ packages/app-mobile/lists/ui/ListsOverviewScreen.js
+ packages/app-mobile/lists/ui/MembersScreen.js
++packages/app-mobile/lists/ui/ShareScreen.test.js
+ packages/app-mobile/lists/ui/ShareScreen.js
+ packages/app-mobile/lists/ui/components/CreateListModal.js
+ packages/app-mobile/lists/ui/components/ItemEditModal.js
+@@ -1058,6 +1072,8 @@ packages/app-mobile/lists/ui/components/NearbyPeersModal.js
+ packages/app-mobile/lists/ui/components/NearbyStatusCircle.js
+ packages/app-mobile/lists/ui/components/PromptModal.js
+ packages/app-mobile/lists/ui/components/QrCode.js
++packages/app-mobile/lists/ui/deviceNameSettings.test.js
++packages/app-mobile/lists/ui/deviceNameSettings.js
+ packages/app-mobile/lists/ui/groupItems.test.js
+ packages/app-mobile/lists/ui/groupItems.js
+ packages/app-mobile/lists/ui/listTileZoom.test.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index 9db0ee6..96cb782 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -1053,6 +1053,12 @@ packages/app-mobile/lists/core/merge.test.js
+ packages/app-mobile/lists/core/merge.js
+ packages/app-mobile/lists/core/normalize.test.js
+ packages/app-mobile/lists/core/normalize.js
++packages/app-mobile/lists/core/profile.test.js
++packages/app-mobile/lists/core/profile.js
++packages/app-mobile/lists/core/qty.test.js
++packages/app-mobile/lists/core/qty.js
++packages/app-mobile/lists/core/remoteChanges.test.js
++packages/app-mobile/lists/core/remoteChanges.js
+ packages/app-mobile/lists/core/store.test.js
+ packages/app-mobile/lists/core/store.js
+ packages/app-mobile/lists/core/types.js
+@@ -1064,6 +1070,13 @@ packages/app-mobile/lists/nearby/protocol.js
+ packages/app-mobile/lists/nearby/session.test.js
+ packages/app-mobile/lists/nearby/session.js
+ packages/app-mobile/lists/nearby/testing/fakeBle.js
++packages/app-mobile/lists/notify/activeScreen.js
++packages/app-mobile/lists/notify/aggregator.test.js
++packages/app-mobile/lists/notify/aggregator.js
++packages/app-mobile/lists/notify/listSettings.js
++packages/app-mobile/lists/notify/notifyManager.js
++packages/app-mobile/lists/notify/suppression.test.js
++packages/app-mobile/lists/notify/suppression.js
+ packages/app-mobile/lists/sync/defaultRelays.js
+ packages/app-mobile/lists/sync/index.js
+ packages/app-mobile/lists/sync/listSync.test.js
+@@ -1077,6 +1090,7 @@ packages/app-mobile/lists/ui/ListScreen.test.js
+ packages/app-mobile/lists/ui/ListScreen.js
+ packages/app-mobile/lists/ui/ListsOverviewScreen.js
+ packages/app-mobile/lists/ui/MembersScreen.js
++packages/app-mobile/lists/ui/ShareScreen.test.js
+ packages/app-mobile/lists/ui/ShareScreen.js
+ packages/app-mobile/lists/ui/components/CreateListModal.js
+ packages/app-mobile/lists/ui/components/ItemEditModal.js
+@@ -1084,6 +1098,8 @@ packages/app-mobile/lists/ui/components/NearbyPeersModal.js
+ packages/app-mobile/lists/ui/components/NearbyStatusCircle.js
+ packages/app-mobile/lists/ui/components/PromptModal.js
+ packages/app-mobile/lists/ui/components/QrCode.js
++packages/app-mobile/lists/ui/deviceNameSettings.test.js
++packages/app-mobile/lists/ui/deviceNameSettings.js
+ packages/app-mobile/lists/ui/groupItems.test.js
+ packages/app-mobile/lists/ui/groupItems.js
+ packages/app-mobile/lists/ui/listTileZoom.test.js
+diff --git a/packages/app-mobile/android/app/src/main/AndroidManifest.xml b/packages/app-mobile/android/app/src/main/AndroidManifest.xml
+index e7b186f..68371c5 100644
+--- a/packages/app-mobile/android/app/src/main/AndroidManifest.xml
++++ b/packages/app-mobile/android/app/src/main/AndroidManifest.xml
+@@ -12,6 +12,10 @@
+ 	<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+ 	<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+ 	<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
++	<!-- Foreground service that keeps nearby sync running with the screen off, see
++	     NearbyForegroundService.kt -->
++	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
++	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+ 	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+ 	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+ 	<uses-permission android:name="android.permission.USE_BIOMETRIC" />
+@@ -141,6 +145,13 @@
+ 			<!-- /SHOPPING LIST INVITE LINK -->
+ 		</activity>
+ 
++		<!-- Nearby (Bluetooth) sync foreground service, see
++		     packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyForegroundService.kt -->
++		<service
++			android:name="net.cozic.joplin.nearby.NearbyForegroundService"
++			android:exported="false"
++			android:foregroundServiceType="connectedDevice" />
++
+ 	</application>
+ 
+ </manifest>
+diff --git a/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyForegroundService.kt b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyForegroundService.kt
+new file mode 100644
+index 0000000..10a8896
+--- /dev/null
++++ b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyForegroundService.kt
+@@ -0,0 +1,129 @@
++package net.cozic.joplin.nearby
++
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.app.PendingIntent
++import android.app.Service
++import android.content.Context
++import android.content.Intent
++import android.content.pm.ServiceInfo
++import android.os.Build
++import android.os.IBinder
++import androidx.core.app.NotificationCompat
++import androidx.core.app.ServiceCompat
++
++// Foreground service that keeps the app process alive (screen off, in a
++// pocket) while Bluetooth nearby sync is on -- see PROTOCOL.md's "Live sync"
++// and "Token rotation, discovery loop, auto-off" sections. Started/updated/
++// stopped from NearbyModule.kt, which mirrors this on the JS side via
++// lists/nearby/nativeBle.ts's startForegroundService/updateForegroundService/
++// stopForegroundService, called from lists/nearby/nearbyManager.ts.
++//
++// All strings (channel name/description, notification title/text, the Stop
++// button's label) are passed in from the TS side, already localized via
++// @joplin/lib's _() -- this class has no resource strings of its own, only
++// the fallbacks below for the unlikely case the service is started without
++// having gone through NearbyModule (defensive; shouldn't happen in practice).
++class NearbyForegroundService : Service() {
++
++	companion object {
++		const val CHANNEL_ID = "net.cozic.joplin.nearby.sync"
++		const val NOTIFICATION_ID = 4821
++		const val ACTION_UPDATE = "net.cozic.joplin.nearby.ACTION_UPDATE"
++		const val ACTION_STOP = "net.cozic.joplin.nearby.ACTION_STOP"
++		// Broadcast NearbyModule listens for to relay the Stop button tap to JS
++		// (see NearbyModule.kt's stopBroadcastReceiver).
++		const val BROADCAST_STOP = "net.cozic.joplin.nearby.STOP_REQUESTED"
++
++		private const val EXTRA_CHANNEL_NAME = "channelName"
++		private const val EXTRA_CHANNEL_DESCRIPTION = "channelDescription"
++		private const val EXTRA_TITLE = "title"
++		private const val EXTRA_TEXT = "text"
++		private const val EXTRA_STOP_LABEL = "stopLabel"
++
++		fun start(context: Context, channelName: String, channelDescription: String, title: String, text: String, stopLabel: String) {
++			val intent = Intent(context, NearbyForegroundService::class.java)
++			intent.putExtra(EXTRA_CHANNEL_NAME, channelName)
++			intent.putExtra(EXTRA_CHANNEL_DESCRIPTION, channelDescription)
++			intent.putExtra(EXTRA_TITLE, title)
++			intent.putExtra(EXTRA_TEXT, text)
++			intent.putExtra(EXTRA_STOP_LABEL, stopLabel)
++			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
++		}
++
++		fun update(context: Context, text: String) {
++			val intent = Intent(context, NearbyForegroundService::class.java)
++			intent.action = ACTION_UPDATE
++			intent.putExtra(EXTRA_TEXT, text)
++			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
++		}
++
++		fun stop(context: Context) {
++			context.stopService(Intent(context, NearbyForegroundService::class.java))
++		}
++	}
++
++	private var channelName = "Nearby sync"
++	private var channelDescription = ""
++	private var title = "Nearby sync"
++	private var stopLabel = "Stop"
++
++	override fun onBind(intent: Intent?): IBinder? = null
++
++	override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
++		if (intent?.action == ACTION_STOP) {
++			sendBroadcast(Intent(BROADCAST_STOP).setPackage(packageName))
++			stopForeground(STOP_FOREGROUND_REMOVE)
++			stopSelf()
++			return START_NOT_STICKY
++		}
++
++		intent?.getStringExtra(EXTRA_CHANNEL_NAME)?.let { channelName = it }
++		intent?.getStringExtra(EXTRA_CHANNEL_DESCRIPTION)?.let { channelDescription = it }
++		intent?.getStringExtra(EXTRA_TITLE)?.let { title = it }
++		intent?.getStringExtra(EXTRA_STOP_LABEL)?.let { stopLabel = it }
++		val text = intent?.getStringExtra(EXTRA_TEXT) ?: ""
++
++		ensureChannel()
++		startForegroundWithNotification(text)
++		return START_STICKY
++	}
++
++	private fun ensureChannel() {
++		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
++		val manager = getSystemService(NotificationManager::class.java) ?: return
++		// A channel's name/description can't be changed once created without
++		// deleting and recreating it (which would briefly drop the ongoing
++		// notification) -- recreating on every locale change is out of scope
++		// this round; the values below only take effect for a channel that
++		// doesn't exist yet (e.g. after a fresh install).
++		if (manager.getNotificationChannel(CHANNEL_ID) != null) return
++		val channel = NotificationChannel(CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_LOW)
++		channel.description = channelDescription
++		channel.setShowBadge(false)
++		manager.createNotificationChannel(channel)
++	}
++
++	private fun startForegroundWithNotification(text: String) {
++		val stopIntent = Intent(this, NearbyForegroundService::class.java).setAction(ACTION_STOP)
++		val stopFlags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
++		val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, stopFlags)
++
++		val notification = NotificationCompat.Builder(this, CHANNEL_ID)
++			.setContentTitle(title)
++			.setContentText(text)
++			.setSmallIcon(applicationInfo.icon)
++			.setOngoing(true)
++			.setOnlyAlertOnce(true)
++			.setPriority(NotificationCompat.PRIORITY_LOW)
++			.setCategory(NotificationCompat.CATEGORY_SERVICE)
++			.addAction(0, stopLabel, stopPendingIntent)
++			.build()
++
++		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
++			ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
++		} else {
++			startForeground(NOTIFICATION_ID, notification)
++		}
++	}
++}
+diff --git a/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt
+index 8dcd665..da60c98 100644
+--- a/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt
++++ b/packages/app-mobile/android/app/src/main/java/net/cozic/joplin/nearby/NearbyModule.kt
+@@ -25,14 +25,20 @@ import android.bluetooth.le.ScanCallback
+ import android.bluetooth.le.ScanFilter
+ import android.bluetooth.le.ScanResult
+ import android.bluetooth.le.ScanSettings
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.app.PendingIntent
+ import android.content.BroadcastReceiver
+ import android.content.Context
+ import android.content.Intent
+ import android.content.IntentFilter
+ import android.content.pm.PackageManager
++import android.net.Uri
+ import android.os.Build
+ import android.os.ParcelUuid
+ import android.util.Base64
++import androidx.core.app.NotificationCompat
++import androidx.core.app.NotificationManagerCompat
+ import androidx.core.content.ContextCompat
+ import com.facebook.react.bridge.Arguments
+ import com.facebook.react.bridge.Promise
+@@ -95,9 +101,11 @@ class NearbyModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
+ 	private val lastScanEmitMs = ConcurrentHashMap<String, Long>()
+ 
+ 	private var adapterStateReceiver: BroadcastReceiver? = null
++	private var foregroundServiceStopReceiver: BroadcastReceiver? = null
+ 
+ 	init {
+ 		registerAdapterStateReceiver()
++		registerForegroundServiceStopReceiver()
+ 	}
+ 
+ 	// --- capabilities / state ---------------------------------------------
+@@ -589,6 +597,95 @@ class NearbyModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
+ 		}
+ 	}
+ 
++	// --- foreground service (keeps the app alive while syncing, see
++	// NearbyForegroundService.kt and PROTOCOL.md) --------------------------
++
++	@ReactMethod
++	fun startForegroundService(channelName: String, channelDescription: String, title: String, text: String, stopLabel: String, promise: Promise) {
++		try {
++			NearbyForegroundService.start(reactApplicationContext, channelName, channelDescription, title, text, stopLabel)
++			promise.resolve(null)
++		} catch (e: Exception) {
++			promise.reject("E_FOREGROUND_SERVICE", e.message, e)
++		}
++	}
++
++	@ReactMethod
++	fun updateForegroundService(text: String, promise: Promise) {
++		try {
++			NearbyForegroundService.update(reactApplicationContext, text)
++			promise.resolve(null)
++		} catch (e: Exception) {
++			promise.reject("E_FOREGROUND_SERVICE", e.message, e)
++		}
++	}
++
++	@ReactMethod
++	fun stopForegroundService(promise: Promise) {
++		try {
++			NearbyForegroundService.stop(reactApplicationContext)
++			promise.resolve(null)
++		} catch (e: Exception) {
++			promise.reject("E_FOREGROUND_SERVICE", e.message, e)
++		}
++	}
++
++	private fun registerForegroundServiceStopReceiver() {
++		val receiver = object : BroadcastReceiver() {
++			override fun onReceive(context: Context, intent: Intent) {
++				emit("nearbyForegroundServiceStop", Arguments.createMap())
++			}
++		}
++		foregroundServiceStopReceiver = receiver
++		val filter = IntentFilter(NearbyForegroundService.BROADCAST_STOP)
++		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++			reactApplicationContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
++		} else {
++			reactApplicationContext.registerReceiver(receiver, filter)
++		}
++	}
++
++	// --- immediate local notifications ("someone changed your list", see
++	// lists/notify/) -----------------------------------------------------
++
++	@ReactMethod
++	fun showNotification(id: Int, channelId: String, channelName: String, channelDescription: String, title: String, text: String, deepLink: String, promise: Promise) {
++		try {
++			ensureNotificationChannel(channelId, channelName, channelDescription)
++			val intent = Intent(Intent.ACTION_VIEW, Uri.parse(deepLink))
++			intent.setPackage(reactApplicationContext.packageName)
++			val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
++			val contentIntent = PendingIntent.getActivity(reactApplicationContext, id, intent, flags)
++			val notification = NotificationCompat.Builder(reactApplicationContext, channelId)
++				.setContentTitle(title)
++				.setContentText(text)
++				.setStyle(NotificationCompat.BigTextStyle().bigText(text))
++				.setSmallIcon(reactApplicationContext.applicationInfo.icon)
++				.setAutoCancel(true)
++				.setContentIntent(contentIntent)
++				.setPriority(NotificationCompat.PRIORITY_DEFAULT)
++				.build()
++			NotificationManagerCompat.from(reactApplicationContext).notify(id, notification)
++			promise.resolve(null)
++		} catch (e: SecurityException) {
++			// POST_NOTIFICATIONS (API 33+) not granted -- the TS side is
++			// expected to have requested it (see NearbyStatusCircle.tsx), but
++			// this must never crash a sync pass just because it wasn't.
++			promise.reject("E_PERMISSION", e.message, e)
++		} catch (e: Exception) {
++			promise.reject("E_NOTIFY", e.message, e)
++		}
++	}
++
++	private fun ensureNotificationChannel(channelId: String, channelName: String, channelDescription: String) {
++		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
++		val manager = reactApplicationContext.getSystemService(NotificationManager::class.java) ?: return
++		if (manager.getNotificationChannel(channelId) != null) return
++		val channel = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_DEFAULT)
++		channel.description = channelDescription
++		manager.createNotificationChannel(channel)
++	}
++
+ 	// --- adapter state events -----------------------------------------
+ 
+ 	private fun registerAdapterStateReceiver() {
+diff --git a/packages/app-mobile/components/screens/DebugLogScreen.tsx b/packages/app-mobile/components/screens/DebugLogScreen.tsx
+index c1b9e10..a0ce190 100644
+--- a/packages/app-mobile/components/screens/DebugLogScreen.tsx
++++ b/packages/app-mobile/components/screens/DebugLogScreen.tsx
+@@ -31,6 +31,7 @@ const categoryLabels: Record<DebugLogCategory, string> = {
+ 	'lists.nearby': _('Bluetooth'),
+ 	'lists.invite': _('Invites and links'),
+ 	'lists.ui': _('Screens'),
++	'lists.notify': _('Notifications'),
+ 	'tiles': _('Note tiles'),
+ };
+ 
+diff --git a/packages/app-mobile/lists/core/db.test.ts b/packages/app-mobile/lists/core/db.test.ts
+index 4ac2bb1..39302f1 100644
+--- a/packages/app-mobile/lists/core/db.test.ts
++++ b/packages/app-mobile/lists/core/db.test.ts
+@@ -18,7 +18,7 @@ const openTestDatabase = async (): Promise<{ db: ListsDatabase; path: string }>
+ const item = (overrides: Partial<ItemRecord> = {}): ItemRecord => ({
+ 	listId: 'list-1', dTag: 'tag-1', name: 'Milch',
+ 	detail: null, detailT: null, category: null, categoryT: null, icon: null, iconT: null,
+-	open: true, openT: 1, deleted: false, deletedT: null, device: 'aaaaaaaa', pending: false,
++	open: true, openT: 1, deleted: false, deletedT: null, device: 'aaaaaaaa', pending: false, qty: null,
+ 	...overrides,
+ });
+ 
+@@ -163,6 +163,52 @@ describe('lists/core/db', () => {
+ 		expect((await db.list(list.id))!.contentKey).toBe(bytesToHex(rotated));
+ 	});
+ 
++	test('setDeviceName persists the name and records when it changed', async () => {
++		await db.deviceIdentity(); // generates the default
++		await db.setDeviceName('Küchen-Tablet', 1000);
++		const identity = await db.deviceIdentity();
++		expect(identity.name).toBe('Küchen-Tablet');
++		expect(await db.deviceNameChangedAt()).toBe(1000);
++	});
++
++	test('deviceNameChangedAt is 0 until setDeviceName has been called', async () => {
++		await db.deviceIdentity();
++		expect(await db.deviceNameChangedAt()).toBe(0);
++	});
++
++	test('upsertProfileName applies a newer name and keeps the newer one on an older update', async () => {
++		expect(await db.upsertProfileName('list-1', 'mem1', 'Handy', 10)).toBe(true);
++		expect(await db.profileName('list-1', 'mem1')).toEqual({ name: 'Handy', t: 10 });
++
++		expect(await db.upsertProfileName('list-1', 'mem1', 'Alt', 5)).toBe(false);
++		expect(await db.profileName('list-1', 'mem1')).toEqual({ name: 'Handy', t: 10 });
++
++		expect(await db.upsertProfileName('list-1', 'mem1', 'Neu', 20)).toBe(true);
++		expect(await db.profileName('list-1', 'mem1')).toEqual({ name: 'Neu', t: 20 });
++	});
++
++	test('profileName returns null for a member with no profile event yet', async () => {
++		expect(await db.profileName('list-1', 'unknown')).toBeNull();
++	});
++
++	test('profileNames returns every known profile for a list, keyed by pubkey', async () => {
++		await db.upsertProfileName('list-1', 'mem1', 'Handy', 1);
++		await db.upsertProfileName('list-1', 'mem2', 'Tablet', 2);
++		await db.upsertProfileName('list-2', 'mem1', 'Anderes Gerät', 3);
++
++		const names = await db.profileNames('list-1');
++		expect(names.get('mem1')).toEqual({ name: 'Handy', t: 1 });
++		expect(names.get('mem2')).toEqual({ name: 'Tablet', t: 2 });
++		expect(names.has('mem3')).toBe(false);
++	});
++
++	test('profilePublishedAt / setProfilePublishedAt track the last profile publish per list', async () => {
++		expect(await db.profilePublishedAt('list-1')).toBe(0);
++		await db.setProfilePublishedAt('list-1', 42);
++		expect(await db.profilePublishedAt('list-1')).toBe(42);
++		expect(await db.profilePublishedAt('list-2')).toBe(0);
++	});
++
+ 	test('suggestions returns catalog matches by prefix, then previously used item names', async () => {
+ 		const fromCatalog = await db.suggestions('Milc');
+ 		expect(fromCatalog.some(s => s.canonical === 'Milch')).toBe(true);
+@@ -171,4 +217,70 @@ describe('lists/core/db', () => {
+ 		const custom = await db.suggestions('Zauber');
+ 		expect(custom).toContainEqual({ canonical: 'Zauberkeks', emoji: null, category: null });
+ 	});
++
++	test('setQty persists an item\'s qty (or clears it) and marks the item pending', async () => {
++		await db.upsertItem(item({ pending: false }));
++		const qty: ItemRecord['qty'] = { epoch: 1, byDevice: { aaaaaaaa: { t: 1, units: { count: 3 } } } };
++
++		await db.setQty('list-1', 'tag-1', qty, 'aaaaaaaa');
++		let stored = await db.item('list-1', 'tag-1');
++		expect(stored).toMatchObject({ qty, pending: true });
++
++		await db.setQty('list-1', 'tag-1', null, 'aaaaaaaa');
++		stored = await db.item('list-1', 'tag-1');
++		expect(stored!.qty).toBeNull();
++	});
++
++	test('maxSeenTime also considers qty\'s per-device times', async () => {
++		await db.upsertItem(item({ dTag: 'a', openT: 5 }));
++		await db.setQty('list-1', 'a', { epoch: 200, byDevice: { aaaaaaaa: { t: 200, units: { count: 3 } } } }, 'aaaaaaaa');
++
++		expect(await db.maxSeenTime('list-1')).toBe(200);
++	});
++
++	test('upgrading a pre-existing (v1, no qty column) database migrates a whole-string quantity detail into qty', async () => {
++		// Simulates a database created by an older app version: create it
++		// straight from the raw driver at schema v1 (no qty column), the shape
++		// the old parseItemInput.ts's `detail` values always had.
++		const path = join(tmpdir(), `tiles-lists-migration-test-${uuid.createNano()}.sqlite`);
++		const raw = new Database(new DatabaseDriverNode());
++		await raw.open({ name: path });
++		await raw.transactionExecBatch([
++			`CREATE TABLE lists (
++				id TEXT PRIMARY KEY, kind TEXT NOT NULL, list_key TEXT, content_key TEXT, name TEXT NOT NULL,
++				settings TEXT, relays TEXT, sort_order INTEGER NOT NULL DEFAULT 0
++			)`,
++			`CREATE TABLE members (
++				list_id TEXT NOT NULL, pubkey TEXT NOT NULL, name TEXT, role TEXT NOT NULL, since INTEGER NOT NULL,
++				removed_at INTEGER, PRIMARY KEY (list_id, pubkey)
++			)`,
++			`CREATE TABLE items (
++				list_id TEXT NOT NULL, d_tag TEXT NOT NULL, name TEXT NOT NULL, detail TEXT, detail_t INTEGER,
++				category TEXT, category_t INTEGER, icon TEXT, icon_t INTEGER, open INTEGER NOT NULL,
++				open_t INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, deleted_t INTEGER, device TEXT NOT NULL,
++				pending INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (list_id, d_tag)
++			)`,
++			'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)',
++			`INSERT INTO items (list_id, d_tag, name, detail, detail_t, open, open_t, device)
++				VALUES ('list-1', 'milch', 'Milch', '1,5 kg', 5, 1, 5, 'aaaaaaaa')`,
++			`INSERT INTO items (list_id, d_tag, name, open, open_t, device)
++				VALUES ('list-1', 'salat', 'Salat', 1, 6, 'aaaaaaaa')`,
++			'PRAGMA user_version = 1',
++		]);
++		await raw.close();
++
++		const migrated = new ListsDatabase(new Database(new DatabaseDriverNode()));
++		try {
++			await migrated.openOrCreate(path);
++			const milch = await migrated.item('list-1', 'milch');
++			expect(milch!.detail).toBeNull();
++			expect(milch!.qty).toEqual({ epoch: expect.any(Number), byDevice: { aaaaaaaa: { t: expect.any(Number), units: { g: 1500 } } } });
++
++			const salat = await migrated.item('list-1', 'salat');
++			expect(salat!.qty).toBeNull();
++		} finally {
++			await migrated.close();
++			await rm(path, { force: true });
++		}
++	});
+ });
+diff --git a/packages/app-mobile/lists/core/db.ts b/packages/app-mobile/lists/core/db.ts
+index 77ca844..d482335 100644
+--- a/packages/app-mobile/lists/core/db.ts
++++ b/packages/app-mobile/lists/core/db.ts
+@@ -2,15 +2,40 @@ import Database, { Row } from '@joplin/lib/database';
+ import { getPublicKey } from 'nostr-tools';
+ import { generateContentKey, generateKeyPair, generateListKey, deriveOpenListKeys, bytesToHex, hexToBytes } from './crypto';
+ import { normalizeName } from './normalize';
+-import { CatalogItemDef, CatalogMatch, ItemRecord, ListKind, ListRecord, MemberRecord } from './types';
++import { qtyMaxTime, splitQuantityFromText } from './qty';
++import { CatalogItemDef, CatalogMatch, ItemRecord, ListKind, ListRecord, MemberRecord, Qty } from './types';
++import { debugLog } from '../../utils/debugLog';
++
++const log = debugLog('lists.store');
+ 
+ // eslint-disable-next-line @typescript-eslint/no-var-requires -- plain JSON data file, no resolveJsonModule configured for this package
+ const catalogItems: CatalogItemDef[] = require('../catalog/items.json');
+ 
+-const SCHEMA_VERSION = 1;
++const SCHEMA_VERSION = 3;
++// Fallback used when the platform can't tell us a device model (iOS, or a
++// plain Node test environment) -- see defaultDeviceName() below.
+ const DEFAULT_DEVICE_NAME = 'Joplin Tiles';
+ 
+-const CREATE_TABLES: string[] = [
++// The device's own display name defaults to its model (e.g. "Pixel 8") rather
++// than the generic DEFAULT_DEVICE_NAME above, so members see something
++// recognisable without having to set a name in lists.deviceName first (see
++// docs/KONZEPT.md and the lists.deviceName setting in builtInMetadata.ts).
++// react-native is required lazily and defensively: this module is also used
++// from plain-Node jest tests (see db.test.ts), where it isn't mocked.
++const defaultDeviceName = (): string => {
++	try {
++		// eslint-disable-next-line @typescript-eslint/no-var-requires -- see comment above
++		const { Platform } = require('react-native');
++		if (Platform.OS === 'android' && Platform.constants && Platform.constants.Model) {
++			return String(Platform.constants.Model);
++		}
++	} catch (error) {
++		// Not running under React Native -- fall through to the generic default.
++	}
++	return DEFAULT_DEVICE_NAME;
++};
++
++const CREATE_TABLES_V1: string[] = [
+ 	`CREATE TABLE lists (
+ 		id TEXT PRIMARY KEY,
+ 		kind TEXT NOT NULL,
+@@ -52,6 +77,22 @@ const CREATE_TABLES: string[] = [
+ 	'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)',
+ ];
+ 
++// Schema version 2: the newest known display name for each (list, member),
++// from that member's own profile events (see core/profile.ts). Separate from
++// members.name (the directory's name, set at invite/join time and only
++// re-signable by an admin for a managed list) so that a device's own
++// lists.deviceName change can reach other members without needing directory
++// write access -- see docs/KONZEPT.md and ListsSync#handleProfileEvent.
++const CREATE_TABLES_V2: string[] = [
++	`CREATE TABLE IF NOT EXISTS profiles (
++		list_id TEXT NOT NULL,
++		pubkey TEXT NOT NULL,
++		name TEXT NOT NULL,
++		t INTEGER NOT NULL,
++		PRIMARY KEY (list_id, pubkey)
++	)`,
++];
++
+ export interface DeviceIdentity {
+ 	secretKey: Uint8Array;
+ 	publicKey: string;
+@@ -96,6 +137,7 @@ const rowToItem = (row: Row): ItemRecord => ({
+ 	deletedT: nullableNumber(row.deleted_t),
+ 	device: row.device,
+ 	pending: !!row.pending,
++	qty: row.qty ? JSON.parse(row.qty as string) as Qty : null,
+ });
+ 
+ // Local persistence for the shopping-list feature: its own SQLite file,
+@@ -126,11 +168,44 @@ export class ListsDatabase {
+ 	private async migrate(): Promise<void> {
+ 		const row = await this.db.selectOne('PRAGMA user_version');
+ 		const version = Number(row?.user_version ?? 0);
++		if (version < 1) {
++			await this.db.transactionExecBatch([...CREATE_TABLES_V1, 'PRAGMA user_version = 1']);
++		}
++		if (version < 2) {
++			await this.db.transactionExecBatch([...CREATE_TABLES_V2, 'PRAGMA user_version = 2']);
++		}
+ 		if (version < SCHEMA_VERSION) {
+-			await this.db.transactionExecBatch([...CREATE_TABLES, `PRAGMA user_version = ${SCHEMA_VERSION}`]);
++			await this.migrateQtyColumn();
+ 		}
+ 	}
+ 
++	// v3: adds the `qty` column, and moves any existing item's `detail` into it
++	// when the whole thing is a parseable quantity (that's all `detail` was
++	// ever set to before this column existed, via the old parseItemInput.ts --
++	// see splitQuantityFromText()'s `allowWholeMatch`). Runs the same way for a
++	// brand-new database (nothing to migrate) as for a pre-existing one, so
++	// there's only one code path to test.
++	private async migrateQtyColumn(): Promise<void> {
++		await this.db.exec('ALTER TABLE items ADD COLUMN qty TEXT');
++
++		const rows = await this.db.selectAll('SELECT list_id, d_tag, detail, device FROM items WHERE detail IS NOT NULL');
++		let migratedCount = 0;
++		for (const row of rows) {
++			const split = splitQuantityFromText(row.detail as string, true);
++			if (!split) continue;
++			const t = Date.now();
++			const qty: Qty = { epoch: t, byDevice: { [row.device as string]: { t, units: { [split.quantity.unit]: Math.max(0, split.quantity.amount) } } } };
++			await this.db.exec(
++				'UPDATE items SET qty = ?, detail = ?, detail_t = ? WHERE list_id = ? AND d_tag = ?',
++				[JSON.stringify(qty), split.rest || null, split.rest ? t : null, row.list_id, row.d_tag],
++			);
++			migratedCount++;
++		}
++
++		await this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
++		log.info('Migrated lists DB to schema v3 (qty column)', { itemsWithQuantityMoved: migratedCount, itemsScanned: rows.length });
++	}
++
+ 	// --- meta / device identity -----------------------------------------
+ 
+ 	public async getMeta(key: string): Promise<string | null> {
+@@ -156,15 +231,69 @@ export class ListsDatabase {
+ 		}
+ 		let name = await this.getMeta('deviceName');
+ 		if (!name) {
+-			name = DEFAULT_DEVICE_NAME;
++			name = defaultDeviceName();
+ 			await this.setMeta('deviceName', name);
+ 		}
+ 		const secretKey = hexToBytes(secretHex);
+ 		return { secretKey, publicKey: getPublicKey(secretKey), name };
+ 	}
+ 
+-	public async setDeviceName(name: string): Promise<void> {
++	// Also records when the name changed (see deviceNameChangedAt()) so the
++	// sync layer knows to (re)publish a profile event for every list -- see
++	// lists/ui/deviceNameSettings.ts and ListsSync#publishOwnProfile.
++	public async setDeviceName(name: string, changedAt: number = Date.now()): Promise<void> {
+ 		await this.setMeta('deviceName', name);
++		await this.setMeta('deviceNameChangedAt', String(changedAt));
++	}
++
++	// Milliseconds since epoch of the last explicit setDeviceName() call, or 0
++	// if the device name has never been changed since its default was
++	// generated (nothing to publish in that case -- the directory-supplied
++	// name is still current).
++	public async deviceNameChangedAt(): Promise<number> {
++		const value = await this.getMeta('deviceNameChangedAt');
++		return value ? Number(value) : 0;
++	}
++
++	// --- profiles (per-list, per-member display name from profile events) --
++
++	private profilePublishedKey = (listId: string): string => `profilePublished:${listId}`;
++
++	// Milliseconds since epoch of the profile this device last successfully
++	// published for `listId`, or 0 if it never has.
++	public async profilePublishedAt(listId: string): Promise<number> {
++		const value = await this.getMeta(this.profilePublishedKey(listId));
++		return value ? Number(value) : 0;
++	}
++
++	public async setProfilePublishedAt(listId: string, t: number): Promise<void> {
++		await this.setMeta(this.profilePublishedKey(listId), String(t));
++	}
++
++	// Applies an incoming (or local) profile name if `t` is newer than what's
++	// already stored for this (list, pubkey) -- last-writer-wins, mirroring
++	// merge.ts's field semantics for items. Returns whether it was applied.
++	public async upsertProfileName(listId: string, pubkey: string, name: string, t: number): Promise<boolean> {
++		const current = await this.profileName(listId, pubkey);
++		if (current && current.t >= t) return false;
++		await this.db.exec(
++			`INSERT INTO profiles (list_id, pubkey, name, t) VALUES (?, ?, ?, ?)
++				ON CONFLICT(list_id, pubkey) DO UPDATE SET name = excluded.name, t = excluded.t`,
++			[listId, pubkey, name, t],
++		);
++		return true;
++	}
++
++	public async profileName(listId: string, pubkey: string): Promise<{ name: string; t: number } | null> {
++		const row = await this.db.selectOne('SELECT name, t FROM profiles WHERE list_id = ? AND pubkey = ?', [listId, pubkey]);
++		return row ? { name: row.name as string, t: Number(row.t) } : null;
++	}
++
++	// Every known profile name for a list, keyed by member pubkey -- used by
++	// MembersScreen to show each member's newest self-chosen name in one query.
++	public async profileNames(listId: string): Promise<Map<string, { name: string; t: number }>> {
++		const rows = await this.db.selectAll('SELECT pubkey, name, t FROM profiles WHERE list_id = ?', [listId]);
++		return new Map(rows.map(row => [row.pubkey as string, { name: row.name as string, t: Number(row.t) }]));
+ 	}
+ 
+ 	// --- lists -------------------------------------------------------------
+@@ -311,16 +440,17 @@ export class ListsDatabase {
+ 	// should go through the field setters below, which set it.
+ 	public async upsertItem(item: ItemRecord): Promise<void> {
+ 		await this.db.exec(
+-			`INSERT INTO items (list_id, d_tag, name, detail, detail_t, category, category_t, icon, icon_t, open, open_t, deleted, deleted_t, device, pending)
+-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++			`INSERT INTO items (list_id, d_tag, name, detail, detail_t, category, category_t, icon, icon_t, open, open_t, deleted, deleted_t, device, pending, qty)
++				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ 				ON CONFLICT(list_id, d_tag) DO UPDATE SET name = excluded.name, detail = excluded.detail,
+ 					detail_t = excluded.detail_t, category = excluded.category, category_t = excluded.category_t,
+ 					icon = excluded.icon, icon_t = excluded.icon_t, open = excluded.open, open_t = excluded.open_t,
+-					deleted = excluded.deleted, deleted_t = excluded.deleted_t, device = excluded.device, pending = excluded.pending`,
++					deleted = excluded.deleted, deleted_t = excluded.deleted_t, device = excluded.device, pending = excluded.pending,
++					qty = excluded.qty`,
+ 			[
+ 				item.listId, item.dTag, item.name, item.detail, item.detailT, item.category, item.categoryT,
+ 				item.icon, item.iconT, item.open ? 1 : 0, item.openT, item.deleted ? 1 : 0, item.deletedT, item.device,
+-				item.pending ? 1 : 0,
++				item.pending ? 1 : 0, item.qty ? JSON.stringify(item.qty) : null,
+ 			],
+ 		);
+ 	}
+@@ -346,6 +476,15 @@ export class ListsDatabase {
+ 		);
+ 	}
+ 
++	// Replaces an item's whole qty object (the PN-counter, see core/qty.ts) --
++	// always the full object, since it's a single JSON column.
++	public async setQty(listId: string, dTag: string, qty: Qty | null, device: string): Promise<void> {
++		await this.db.exec(
++			'UPDATE items SET qty = ?, device = ?, pending = 1 WHERE list_id = ? AND d_tag = ?',
++			[qty ? JSON.stringify(qty) : null, device, listId, dTag],
++		);
++	}
++
+ 	// Tombstones an item rather than removing the row, so a device that was
+ 	// offline when it was deleted doesn't resurrect it (see KONZEPT.md).
+ 	public async deleteItem(listId: string, dTag: string, t: number, device: string): Promise<void> {
+@@ -365,7 +504,9 @@ export class ListsDatabase {
+ 	}
+ 
+ 	// The latest field timestamp seen so far for a list, used to clamp new
+-	// local timestamps against a misbehaving device clock (see merge.ts).
++	// local timestamps against a misbehaving device clock (see merge.ts). qty's
++	// per-device timestamps live in a JSON column, so they're maxed in JS
++	// rather than in the SQL query the other fields use.
+ 	public async maxSeenTime(listId: string): Promise<number> {
+ 		const row = await this.db.selectOne(
+ 			`SELECT MAX(
+@@ -373,7 +514,10 @@ export class ListsDatabase {
+ 			) as maxT FROM items WHERE list_id = ?`,
+ 			[listId],
+ 		);
+-		return Number(row?.maxT ?? 0);
++		let maxT = Number(row?.maxT ?? 0);
++		const qtyRows = await this.db.selectAll('SELECT qty FROM items WHERE list_id = ? AND qty IS NOT NULL', [listId]);
++		for (const qtyRow of qtyRows) maxT = Math.max(maxT, qtyMaxTime(JSON.parse(qtyRow.qty as string) as Qty));
++		return maxT;
+ 	}
+ 
+ 	public async pendingItems(listId?: string): Promise<ItemRecord[]> {
+diff --git a/packages/app-mobile/lists/core/merge.ts b/packages/app-mobile/lists/core/merge.ts
+index b7c1e7a..7447f35 100644
+--- a/packages/app-mobile/lists/core/merge.ts
++++ b/packages/app-mobile/lists/core/merge.ts
+@@ -1,3 +1,4 @@
++import { mergeQty, qtyMaxTime } from './qty';
+ import { FieldValue, ItemPayload } from './types';
+ 
+ // A device never sets a timestamp behind the newest one it has already seen,
+@@ -25,13 +26,19 @@ const mergeField = <T>(a: FieldValue<T> | undefined, aDevice: string, b: FieldVa
+ // associative and idempotent: mergeItem(a, b) === mergeItem(b, a), and merging
+ // the result with either input again changes nothing.
+ export const mergeItem = (a: ItemPayload, b: ItemPayload): ItemPayload => {
++	// A pseudo field-value standing in for qty in the "most recently changed
++	// field overall" ranking below: qty has no single timestamp of its own,
++	// just each device's, so its latest one (qtyMaxTime) is used here.
++	const qtyFieldValue = (qty: ItemPayload['qty']): FieldValue<unknown> | undefined =>
++		qty ? { v: true, t: qtyMaxTime(qty) } : undefined;
++
+ 	// "name" itself carries no per-field timestamp: it follows whichever record
+ 	// has the most recently changed field overall.
+ 	const ranks: [FieldValue<unknown> | undefined, string][] = [
+-		[a.detail, a.device], [a.category, a.device], [a.icon, a.device], [a.deleted, a.device], [a.open, a.device],
++		[a.detail, a.device], [a.category, a.device], [a.icon, a.device], [a.deleted, a.device], [a.open, a.device], [qtyFieldValue(a.qty), a.device],
+ 	];
+ 	const bRanks: [FieldValue<unknown> | undefined, string][] = [
+-		[b.detail, b.device], [b.category, b.device], [b.icon, b.device], [b.deleted, b.device], [b.open, b.device],
++		[b.detail, b.device], [b.category, b.device], [b.icon, b.device], [b.deleted, b.device], [b.open, b.device], [qtyFieldValue(b.qty), b.device],
+ 	];
+ 	const maxRank = (entries: [FieldValue<unknown> | undefined, string][]): [number, string] =>
+ 		entries.reduce((best, [field, device]) => {
+@@ -56,6 +63,8 @@ export const mergeItem = (a: ItemPayload, b: ItemPayload): ItemPayload => {
+ 	if (icon) merged.icon = icon;
+ 	const deleted = mergeField(a.deleted, a.device, b.deleted, b.device);
+ 	if (deleted) merged.deleted = deleted;
++	const qty = mergeQty(a.qty, b.qty);
++	if (qty) merged.qty = qty;
+ 
+ 	return merged;
+ };
+diff --git a/packages/app-mobile/lists/core/profile.test.ts b/packages/app-mobile/lists/core/profile.test.ts
+new file mode 100644
+index 0000000..bc187b8
+--- /dev/null
++++ b/packages/app-mobile/lists/core/profile.test.ts
+@@ -0,0 +1,66 @@
++import { generateContentKey, generateKeyPair } from './crypto';
++import { InvalidEventError } from './events';
++import {
++	buildProfileEvent,
++	displayName,
++	isProfileDTag,
++	mergeProfileName,
++	parseProfileEvent,
++	profileDTag,
++} from './profile';
++
++describe('lists/core/profile', () => {
++	test('profile event round-trips through build/parse', () => {
++		const device = generateKeyPair();
++		const contentKey = generateContentKey();
++
++		const event = buildProfileEvent(device.secretKey, 'list-pubkey', contentKey, 'Küche', 1234);
++
++		expect(event.tags).toContainEqual(['d', 'profile:list-pubkey']);
++		expect(event.tags).toContainEqual(['L', 'list-pubkey']);
++		const parsed = parseProfileEvent(event, contentKey);
++		expect(parsed).toEqual({ name: 'Küche', t: 1234, devicePubkey: device.publicKey });
++	});
++
++	test('parsing a profile event fails with a wrong content key', () => {
++		const device = generateKeyPair();
++		const event = buildProfileEvent(device.secretKey, 'list-pubkey', generateContentKey(), 'Küche', 1);
++
++		expect(() => parseProfileEvent(event, generateContentKey())).toThrow();
++	});
++
++	test('parsing a tampered profile event fails signature verification', () => {
++		const device = generateKeyPair();
++		const contentKey = generateContentKey();
++		const event = buildProfileEvent(device.secretKey, 'list-pubkey', contentKey, 'Küche', 1);
++
++		// See events.test.ts for why a JSON round-trip (not a spread) is needed
++		// here: it drops nostr-tools' cached "already verified" flag.
++		const tampered = { ...JSON.parse(JSON.stringify(event)), content: `${event.content.slice(0, -2)}zz` };
++
++		expect(() => parseProfileEvent(tampered, contentKey)).toThrow(InvalidEventError);
++	});
++
++	test('isProfileDTag distinguishes profile d-tags from item/directory/join ones', () => {
++		expect(isProfileDTag(profileDTag('list-pubkey'))).toBe(true);
++		expect(isProfileDTag('members')).toBe(false);
++		expect(isProfileDTag('join:abc')).toBe(false);
++		expect(isProfileDTag('item-d-tag')).toBe(false);
++	});
++
++	test.each([
++		{ current: null, incoming: { name: 'Handy', t: 5 }, expected: { name: 'Handy', t: 5 } },
++		{ current: { name: 'Alt', t: 5 }, incoming: { name: 'Neu', t: 10 }, expected: { name: 'Neu', t: 10 } },
++		{ current: { name: 'Alt', t: 10 }, incoming: { name: 'Neu', t: 5 }, expected: { name: 'Alt', t: 10 } },
++		{ current: { name: 'Alt', t: 10 }, incoming: { name: 'Neu', t: 10 }, expected: { name: 'Alt', t: 10 } },
++	])('mergeProfileName: newest t wins ($current, $incoming)', ({ current, incoming, expected }) => {
++		expect(mergeProfileName(current, incoming)).toEqual(expected);
++	});
++
++	test('displayName prefers the profile name, then the directory name, then null', () => {
++		expect(displayName({ name: 'Handy', t: 1 }, 'Küchen-Tablet')).toBe('Handy');
++		expect(displayName(null, 'Küchen-Tablet')).toBe('Küchen-Tablet');
++		expect(displayName(null, null)).toBeNull();
++		expect(displayName({ name: '', t: 1 }, 'Küchen-Tablet')).toBe('Küchen-Tablet');
++	});
++});
+diff --git a/packages/app-mobile/lists/core/profile.ts b/packages/app-mobile/lists/core/profile.ts
+new file mode 100644
+index 0000000..295ef5b
+--- /dev/null
++++ b/packages/app-mobile/lists/core/profile.ts
+@@ -0,0 +1,82 @@
++// Per-list device profile events: a lightweight, addressable (kind 30078,
++// d = 'profile:' + listPubkey) event through which each device publishes its
++// own display name for one list, so a lists.deviceName change reaches other
++// members without needing directory write access (only admins may re-sign a
++// managed list's directory, see core/events.ts#buildManagedDirectoryEvent).
++// Mirrors the item/directory event builders in events.ts; kept in its own
++// module since it's a distinct concept (a device's self-reported name, not
++// list content) with its own merge rule below.
++import { EventTemplate, finalizeEvent, nip44, VerifiedEvent, verifyEvent } from 'nostr-tools';
++import { InvalidEventError, LIST_EVENT_KIND } from './events';
++
++export const PROFILE_D_TAG_PREFIX = 'profile:';
++
++export const profileDTag = (listPubkey: string): string => `${PROFILE_D_TAG_PREFIX}${listPubkey}`;
++
++// Whether an event's 'd' tag identifies it as a profile event, so the sync
++// layer can route kind-30078 events it fetches for a list (items, directory,
++// join requests, profiles) to the right handler without extra round trips.
++export const isProfileDTag = (dTag: string): boolean => dTag.startsWith(PROFILE_D_TAG_PREFIX);
++
++export interface ProfilePayload {
++	name: string;
++	// Device time (ms since epoch) the name was set -- the field this event's
++	// own created_at (seconds, clamped like every other event) can't safely
++	// carry across relay "too old" rejections and republishes, see
++	// listSync.ts#publishOwnProfile.
++	t: number;
++}
++
++const nowSeconds = (): number => Math.floor(Date.now() / 1000);
++
++export const buildProfileEvent = (
++	deviceSecretKey: Uint8Array,
++	listPubkey: string,
++	contentKey: Uint8Array,
++	name: string,
++	t: number,
++	createdAt: number = nowSeconds(),
++): VerifiedEvent => {
++	const payload: ProfilePayload = { name, t };
++	const template: EventTemplate = {
++		kind: LIST_EVENT_KIND,
++		tags: [['d', profileDTag(listPubkey)], ['L', listPubkey]],
++		content: nip44.encrypt(JSON.stringify(payload), contentKey),
++		created_at: createdAt,
++	};
++	return finalizeEvent(template, deviceSecretKey);
++};
++
++export interface ParsedProfile extends ProfilePayload {
++	devicePubkey: string;
++}
++
++// Verifies the event's signature, then decrypts and parses its payload.
++// Throws InvalidEventError / whatever nip44.decrypt or JSON.parse throw for a
++// bad signature, wrong content key or tampered event -- same contract as
++// events.ts#parseItemEvent.
++export const parseProfileEvent = (event: VerifiedEvent, contentKey: Uint8Array): ParsedProfile => {
++	if (!verifyEvent(event)) throw new InvalidEventError('Profile event has an invalid signature');
++	const payload = JSON.parse(nip44.decrypt(event.content, contentKey)) as ProfilePayload;
++	return { ...payload, devicePubkey: event.pubkey };
++};
++
++export interface NamedAt {
++	name: string;
++	t: number;
++}
++
++// Last-writer-wins merge for a member's displayed name: an incoming profile
++// only replaces what's already known if it's strictly newer -- an equal or
++// older t (e.g. the same event delivered twice, once over relays and once
++// over Bluetooth) is a no-op. Mirrors merge.ts's field semantics for items.
++export const mergeProfileName = (current: NamedAt | null, incoming: NamedAt): NamedAt => {
++	if (!current || incoming.t > current.t) return incoming;
++	return current;
++};
++
++// The name to show for a member: the newest profile event's name if we have
++// one, otherwise the member directory's own name field (set at invite/join
++// time), otherwise null -- callers fall back to a shortened pubkey.
++export const displayName = (profile: NamedAt | null, directoryName: string | null): string | null =>
++	(profile && profile.name) || directoryName || null;
+diff --git a/packages/app-mobile/lists/core/qty.test.ts b/packages/app-mobile/lists/core/qty.test.ts
+new file mode 100644
+index 0000000..1509cc9
+--- /dev/null
++++ b/packages/app-mobile/lists/core/qty.test.ts
+@@ -0,0 +1,150 @@
++import {
++	applyLocalQtyDelta, epochForReopen, formatQty, mergeQty, parseQuantityToken,
++	qtyIsZero, qtyTotal, REOPEN_UNDO_WINDOW_MS, splitQuantityFromText,
++} from './qty';
++import { Qty } from './types';
++
++describe('lists/core/qty', () => {
++	describe('parseQuantityToken', () => {
++		test.each([
++			['3', { unit: 'count', amount: 3 }],
++			['-4', { unit: 'count', amount: -4 }],
++			['3x', { unit: 'count', amount: 3 }],
++			['2kg', { unit: 'g', amount: 2000 }],
++			['500g', { unit: 'g', amount: 500 }],
++			['1,5l', { unit: 'ml', amount: 1500 }],
++			['500ml', { unit: 'ml', amount: 500 }],
++			['', null],
++			['abc', null],
++		])('%s -> %j', (input, expected) => {
++			expect(parseQuantityToken(input)).toEqual(expected);
++		});
++	});
++
++	describe('splitQuantityFromText', () => {
++		test('splits a leading amount from the name', () => {
++			expect(splitQuantityFromText('3 Eier')).toEqual({ quantity: { unit: 'count', amount: 3 }, rest: 'Eier' });
++		});
++
++		test('splits a trailing amount from the name', () => {
++			expect(splitQuantityFromText('Eier 7')).toEqual({ quantity: { unit: 'count', amount: 7 }, rest: 'Eier' });
++		});
++
++		test('returns null when there is no amount', () => {
++			expect(splitQuantityFromText('Salat')).toBeNull();
++		});
++
++		test('with allowWholeMatch, a bare amount matches with an empty rest', () => {
++			expect(splitQuantityFromText('1,5 kg', true)).toEqual({ quantity: { unit: 'g', amount: 1500 }, rest: '' });
++		});
++
++		test('without allowWholeMatch, an amount with nothing meaningful left over does not match', () => {
++			expect(splitQuantityFromText('7')).toBeNull();
++		});
++	});
++
++	describe('applyLocalQtyDelta (additive PN-counter) and qtyTotal', () => {
++		test('adds up multiple local deltas for the same device and unit', () => {
++			let qty = applyLocalQtyDelta(null, 1, 'aaaaaaaa', 'count', 3, 10);
++			qty = applyLocalQtyDelta(qty, 1, 'aaaaaaaa', 'count', 7, 20);
++			expect(qtyTotal(qty, 'count')).toBe(10);
++		});
++
++		test('a negative delta is clamped so the known total never goes below 0', () => {
++			let qty = applyLocalQtyDelta(null, 1, 'aaaaaaaa', 'count', 3, 10);
++			qty = applyLocalQtyDelta(qty, 1, 'aaaaaaaa', 'count', 7, 20); // 10
++			qty = applyLocalQtyDelta(qty, 1, 'aaaaaaaa', 'count', -4, 30); // 6
++			expect(qtyTotal(qty, 'count')).toBe(6);
++
++			qty = applyLocalQtyDelta(qty, 1, 'aaaaaaaa', 'count', -100, 40);
++			expect(qtyTotal(qty, 'count')).toBe(0);
++		});
++
++		test('incompatible units are tracked side by side', () => {
++			let qty = applyLocalQtyDelta(null, 1, 'aaaaaaaa', 'count', 2, 10);
++			qty = applyLocalQtyDelta(qty, 1, 'aaaaaaaa', 'ml', 1000, 20);
++			expect(qtyTotal(qty, 'count')).toBe(2);
++			expect(qtyTotal(qty, 'ml')).toBe(1000);
++			expect(formatQty(qty)).toBe('2 + 1 l');
++		});
++
++		test('qtyIsZero is true only once every unit totals 0', () => {
++			expect(qtyIsZero(null)).toBe(true);
++			const qty = applyLocalQtyDelta(null, 1, 'aaaaaaaa', 'count', 3, 10);
++			expect(qtyIsZero(qty)).toBe(false);
++			const zeroed = applyLocalQtyDelta(qty, 1, 'aaaaaaaa', 'count', -3, 20);
++			expect(qtyIsZero(zeroed)).toBe(true);
++		});
++	});
++
++	describe('mergeQty (PN-counter merge across devices)', () => {
++		test('is commutative and idempotent, and sums concurrent adds from different devices', () => {
++			// Device A adds 3, device B (independently, without seeing A's write) adds 2.
++			const a: Qty = { epoch: 1, byDevice: { aaaaaaaa: { t: 10, units: { count: 3 } } } };
++			const b: Qty = { epoch: 1, byDevice: { bbbbbbbb: { t: 20, units: { count: 2 } } } };
++
++			const mergedAB = mergeQty(a, b);
++			const mergedBA = mergeQty(b, a);
++			expect(mergedAB).toEqual(mergedBA);
++			expect(qtyTotal(mergedAB, 'count')).toBe(5);
++
++			// Merging the result back in again changes nothing.
++			expect(mergeQty(mergedAB, a)).toEqual(mergedAB);
++			expect(mergeQty(mergedAB, b)).toEqual(mergedAB);
++		});
++
++		test('is associative and order-independent across three devices', () => {
++			const a: Qty = { epoch: 1, byDevice: { aaaaaaaa: { t: 10, units: { count: 3 } } } };
++			const b: Qty = { epoch: 1, byDevice: { bbbbbbbb: { t: 20, units: { count: 2 } } } };
++			const c: Qty = { epoch: 1, byDevice: { cccccccc: { t: 30, units: { count: 1 } } } };
++
++			const total = (qty: Qty | undefined) => qtyTotal(qty, 'count');
++			expect(total(mergeQty(mergeQty(a, b), c))).toBe(6);
++			expect(total(mergeQty(a, mergeQty(b, c)))).toBe(6);
++			expect(total(mergeQty(mergeQty(c, a), b))).toBe(6);
++		});
++
++		test('for the same device, keeps the entry with the higher t (its own latest write wins)', () => {
++			const older: Qty = { epoch: 1, byDevice: { aaaaaaaa: { t: 10, units: { count: 3 } } } };
++			const newer: Qty = { epoch: 1, byDevice: { aaaaaaaa: { t: 20, units: { count: 5 } } } };
++			expect(mergeQty(older, newer)).toEqual(newer);
++			expect(mergeQty(newer, older)).toEqual(newer);
++		});
++
++		test('a higher epoch wins outright, discarding the whole previous epoch', () => {
++			const old: Qty = { epoch: 1, byDevice: { aaaaaaaa: { t: 10, units: { count: 3 } } } };
++			const fresh: Qty = { epoch: 2, byDevice: { bbbbbbbb: { t: 5, units: { count: 1 } } } };
++			expect(mergeQty(old, fresh)).toEqual(fresh);
++			expect(mergeQty(fresh, old)).toEqual(fresh);
++		});
++	});
++
++	describe('epochForReopen', () => {
++		const qty: Qty = { epoch: 100, byDevice: { aaaaaaaa: { t: 100, units: { count: 3 } } } };
++
++		test('within the undo window, keeps the previous epoch', () => {
++			const boughtT = 1_000_000;
++			const reopenT = boughtT + REOPEN_UNDO_WINDOW_MS - 1;
++			expect(epochForReopen(qty, boughtT, reopenT)).toBe(qty.epoch);
++		});
++
++		test('past the undo window, starts a fresh epoch at the reopen time', () => {
++			const boughtT = 1_000_000;
++			const reopenT = boughtT + REOPEN_UNDO_WINDOW_MS + 1;
++			expect(epochForReopen(qty, boughtT, reopenT)).toBe(reopenT);
++		});
++	});
++
++	describe('formatQty', () => {
++		test.each([
++			[{ epoch: 1, byDevice: { a: { t: 1, units: { count: 10 } } } }, '10'],
++			[{ epoch: 1, byDevice: { a: { t: 1, units: { ml: 2500 } } } }, '2,5 l'],
++			[{ epoch: 1, byDevice: { a: { t: 1, units: { ml: 500 } } } }, '500 ml'],
++			[{ epoch: 1, byDevice: { a: { t: 1, units: { g: 2500 } } } }, '2,5 kg'],
++			[{ epoch: 1, byDevice: { a: { t: 1, units: { g: 500 } } } }, '500 g'],
++			[null, ''],
++		])('%j -> %s', (qty, expected) => {
++			expect(formatQty(qty as Qty | null)).toBe(expected);
++		});
++	});
++});
+diff --git a/packages/app-mobile/lists/core/qty.ts b/packages/app-mobile/lists/core/qty.ts
+new file mode 100644
+index 0000000..a64ffd8
+--- /dev/null
++++ b/packages/app-mobile/lists/core/qty.ts
+@@ -0,0 +1,203 @@
++// Quantity math for shopping-list items: parsing amounts out of free text,
++// the additive PN-counter used to track "how much" across devices without a
++// central total, unit conversion/formatting, and the epoch-reset rule for
++// re-opening a bought item. See docs/KONZEPT.md section 2 and
++// lists/ui/parseItemInput.ts, which builds on splitQuantityFromText() below.
++//
++// Data model: `qty.byDevice[device]` holds one device's own cumulative delta
++// per unit, plus when it last wrote that entry. A device only ever writes
++// its own entry, which is what makes merging safe (see mergeQty()): the
++// known total for a unit is the sum of every device's entry for it, clamped
++// to >= 0 for display.
++
++import { QtyDeviceEntry, Qty, QtyUnit, QuantityDelta } from './types';
++
++// A re-open within this many ms of the bought timestamp undoes the "mark
++// bought" (the old quantity comes back); past it, it starts a fresh epoch
++// (the old quantity is gone). See epochForReopen().
++export const REOPEN_UNDO_WINDOW_MS = 5 * 60 * 1000;
++
++export const QTY_UNITS: QtyUnit[] = ['count', 'g', 'ml'];
++
++// Recognised amount units, longest/most specific first isn't required here
++// since the caller's regex always requires a word boundary after the match.
++// Kept in one place so the "add item" field, the item editor's quantity
++// field and the detail->qty migration (db.ts) all agree on the same set.
++export const QTY_UNIT_WORDS = ['kg', 'g', 'l', 'ml', 'stk', 'stück', 'st', 'pkg', 'pck', 'dose', 'dosen', 'flasche', 'flaschen', 'packung', 'packungen', 'bund', 'bündel', 'x'];
++
++const NUMBER_PATTERN = '-?\\d+(?:[.,]\\d+)?';
++const UNIT_PATTERN = QTY_UNIT_WORDS.join('|');
++const AMOUNT_TOKEN = `${NUMBER_PATTERN}\\s*(?:${UNIT_PATTERN})?`;
++const QUANTITY_TOKEN = new RegExp(`^(${NUMBER_PATTERN})\\s*(${UNIT_PATTERN})?$`, 'i');
++const LEADING_AMOUNT = new RegExp(`^(${AMOUNT_TOKEN})\\s+(.+)$`, 'i');
++const TRAILING_AMOUNT = new RegExp(`^(.+?)\\s+(${AMOUNT_TOKEN})$`, 'i');
++
++const parseGermanNumber = (raw: string): number => parseFloat(raw.replace(',', '.'));
++
++// Parses a single amount token, e.g. "3", "-4", "2kg", "500ml", "1,5l",
++// "3x" -- no surrounding name text. Container-type count units (Stück, Pck,
++// Flasche, Dose, Bund, "x", or no unit at all) all map to the same 'count'
++// bucket; only mass and volume convert to a smaller base unit.
++export const parseQuantityToken = (raw: string): QuantityDelta | null => {
++	const trimmed = raw.trim();
++	if (!trimmed) return null;
++	const match = QUANTITY_TOKEN.exec(trimmed);
++	if (!match) return null;
++	const amount = parseGermanNumber(match[1]);
++	if (Number.isNaN(amount)) return null;
++	const unit = (match[2] ?? '').toLowerCase();
++	if (unit === 'kg') return { unit: 'g', amount: amount * 1000 };
++	if (unit === 'g') return { unit: 'g', amount };
++	if (unit === 'l') return { unit: 'ml', amount: amount * 1000 };
++	if (unit === 'ml') return { unit: 'ml', amount };
++	return { unit: 'count', amount };
++};
++
++export interface SplitQuantity {
++	quantity: QuantityDelta;
++	rest: string;
++}
++
++// Pulls a leading or trailing amount out of free text, e.g. "3 Eier",
++// "Eier 7", "2 l Milch" -- the rest is what's left over (the item name for
++// the "add item" field, or the remaining note text when migrating an old
++// combined detail value, see db.ts). With `allowWholeMatch` (only used by
++// that migration) a detail value that is *only* an amount, with nothing
++// left over, also matches -- not used for the "add item" field, where a
++// bare number has no name to attach it to.
++export const splitQuantityFromText = (text: string, allowWholeMatch = false): SplitQuantity | null => {
++	const trimmed = text.trim().replace(/\s+/g, ' ');
++	if (!trimmed) return null;
++
++	if (allowWholeMatch) {
++		const whole = parseQuantityToken(trimmed);
++		if (whole) return { quantity: whole, rest: '' };
++	}
++
++	const leading = trimmed.match(LEADING_AMOUNT);
++	if (leading) {
++		const quantity = parseQuantityToken(leading[1]);
++		if (quantity) return { quantity, rest: leading[2].trim() };
++	}
++
++	const trailing = trimmed.match(TRAILING_AMOUNT);
++	if (trailing) {
++		const quantity = parseQuantityToken(trailing[2]);
++		if (quantity) return { quantity, rest: trailing[1].trim() };
++	}
++
++	return null;
++};
++
++export const emptyQty = (epoch: number): Qty => ({ epoch, byDevice: {} });
++
++// The known total for one unit: the sum of every device's own entry,
++// clamped to >= 0 so a merge that hasn't yet seen every device's latest
++// write never displays (or triggers "bought" on) a transient negative.
++export const qtyTotal = (qty: Qty | null | undefined, unit: QtyUnit): number => {
++	if (!qty) return 0;
++	let sum = 0;
++	for (const entry of Object.values(qty.byDevice)) sum += entry.units[unit] ?? 0;
++	return Math.max(0, sum);
++};
++
++// Every unit with a non-zero total, e.g. { count: 2, ml: 1000 } for
++// "2 Pck + 1 l".
++export const qtyTotals = (qty: Qty | null | undefined): Partial<Record<QtyUnit, number>> => {
++	const totals: Partial<Record<QtyUnit, number>> = {};
++	for (const unit of QTY_UNITS) {
++		const total = qtyTotal(qty, unit);
++		if (total > 0) totals[unit] = total;
++	}
++	return totals;
++};
++
++export const qtyIsZero = (qty: Qty | null | undefined): boolean => QTY_UNITS.every(unit => qtyTotal(qty, unit) === 0);
++
++// The latest per-device write time in a qty object -- participates in an
++// item's overall "max field time", used by BLE/relay sync to decide who has
++// the newer version of an item (see core/store.ts#itemMaxFieldTime,
++// lists/nearby/nearbyManager.ts, lists/sync/listSync.ts).
++export const qtyMaxTime = (qty: Qty | null | undefined): number => {
++	if (!qty) return 0;
++	let max = 0;
++	for (const entry of Object.values(qty.byDevice)) max = Math.max(max, entry.t);
++	return max;
++};
++
++// Applies one device's local delta for one unit. The delta is clamped
++// against the *known* total (the sum across all devices) at input time, so
++// this device's own recorded delta can never drive that known total below
++// 0 -- e.g. typing "-4" against a known total of 3 records a delta of -3,
++// not -4. A device only ever writes its own entry (`device`); switching to
++// a different epoch (a fresh start after a >5 minute re-open, see
++// epochForReopen()) drops every device's previous entries.
++export const applyLocalQtyDelta = (qty: Qty | null | undefined, epoch: number, device: string, unit: QtyUnit, delta: number, t: number): Qty => {
++	const base: Qty = qty && qty.epoch === epoch ? qty : emptyQty(epoch);
++	const currentTotal = qtyTotal(base, unit);
++	const clampedDelta = delta < 0 ? -Math.min(-delta, currentTotal) : delta;
++	const existingEntry = base.byDevice[device];
++	const previousOwn = existingEntry?.units[unit] ?? 0;
++	const units = { ...(existingEntry?.units ?? {}), [unit]: previousOwn + clampedDelta };
++	return { epoch: base.epoch, byDevice: { ...base.byDevice, [device]: { t, units } } };
++};
++
++// Decides the epoch an item's quantity should be under after re-opening it
++// (bought -> open), given when it was marked bought and the re-open time:
++// within REOPEN_UNDO_WINDOW_MS it's treated as an undo of "mark bought" (the
++// same epoch, so the old quantity comes back); after that it's a fresh
++// start (a new epoch, discarding the old quantity). No timer is kept
++// running for this -- it's decided once, at re-open time, from the bought
++// timestamp.
++export const epochForReopen = (previousQty: Qty | null | undefined, boughtT: number, reopenT: number): number => {
++	if (reopenT - boughtT <= REOPEN_UNDO_WINDOW_MS) return previousQty?.epoch ?? reopenT;
++	return reopenT;
++};
++
++// Field-wise merge of two qty objects for the same item (see merge.ts):
++// commutative, associative and idempotent, like mergeItem(). A higher epoch
++// always wins outright -- a fresh epoch discards the whole previous one, on
++// every device, at once. For equal epochs, every device's entry is merged
++// independently by keeping the one with the higher `t`: since a device only
++// ever writes its own entry, its latest write always wins over its own
++// older one, and two different devices' entries never conflict with each
++// other.
++export const mergeQty = (a: Qty | undefined, b: Qty | undefined): Qty | undefined => {
++	if (!a) return b;
++	if (!b) return a;
++	if (a.epoch !== b.epoch) return a.epoch > b.epoch ? a : b;
++
++	const byDevice: { [device: string]: QtyDeviceEntry } = { ...a.byDevice };
++	for (const [device, entry] of Object.entries(b.byDevice)) {
++		const existing = byDevice[device];
++		if (!existing || entry.t >= existing.t) byDevice[device] = entry;
++	}
++	return { epoch: a.epoch, byDevice };
++};
++
++const formatNumber = (n: number): string => {
++	// German decimal comma, and no more than the fractional precision
++	// needed (1.5 -> "1,5", 2 -> "2", 0.25 -> "0,25").
++	const rounded = Math.round(n * 100) / 100;
++	return rounded.toString().replace('.', ',');
++};
++
++// Formats one unit's total for display: count as a plain number, mass as g
++// or kg (>= 1000 g), volume as ml or l (>= 1000 ml) -- always with a German
++// decimal comma. Used both by formatQty() below (every unit present) and by
++// ItemEditModal's quantity field (its own single edited unit).
++export const formatQtyUnit = (unit: QtyUnit, amount: number): string => {
++	if (unit === 'g') return amount >= 1000 ? `${formatNumber(amount / 1000)} kg` : `${formatNumber(amount)} g`;
++	if (unit === 'ml') return amount >= 1000 ? `${formatNumber(amount / 1000)} l` : `${formatNumber(amount)} ml`;
++	return formatNumber(amount);
++};
++
++// Formats an item's full quantity for the tile/editor, e.g. "10",
++// "2,5 l", or "2 + 1 l" when incompatible units are both present (see
++// qtyIsZero() for why they're never auto-converted into each other). Empty
++// when there's no quantity at all.
++export const formatQty = (qty: Qty | null | undefined): string => {
++	const totals = qtyTotals(qty);
++	const parts = QTY_UNITS.filter(unit => totals[unit] !== undefined).map(unit => formatQtyUnit(unit, totals[unit] as number));
++	return parts.join(' + ');
++};
+diff --git a/packages/app-mobile/lists/core/remoteChanges.test.ts b/packages/app-mobile/lists/core/remoteChanges.test.ts
+new file mode 100644
+index 0000000..7caf00a
+--- /dev/null
++++ b/packages/app-mobile/lists/core/remoteChanges.test.ts
+@@ -0,0 +1,76 @@
++import { deriveRemoteChangeKind, emitRemoteChange, onRemoteChange, RemoteChangeEvent } from './remoteChanges';
++import { ItemPayload, ItemRecord } from './types';
++
++const record = (overrides: Partial<ItemRecord> = {}): ItemRecord => ({
++	listId: 'list-1', dTag: 'item-1', name: 'Milch',
++	detail: null, detailT: null, category: null, categoryT: null, icon: null, iconT: null,
++	open: true, openT: 1000, deleted: false, deletedT: null, device: 'bbbbbbbb', pending: false, qty: null,
++	...overrides,
++});
++
++const payload = (overrides: Partial<ItemPayload> = {}): ItemPayload => ({
++	name: 'Milch', open: { v: true, t: 1000 }, device: 'bbbbbbbb', ...overrides,
++});
++
++describe('lists/core/remoteChanges', () => {
++	test('deriveRemoteChangeKind: a brand-new item is "added"', () => {
++		expect(deriveRemoteChangeKind(null, record())).toBe('added');
++	});
++
++	test('deriveRemoteChangeKind: a brand-new item that arrives already deleted is not reported', () => {
++		expect(deriveRemoteChangeKind(null, record({ deleted: true }))).toBeNull();
++	});
++
++	test('deriveRemoteChangeKind: deleted transition is "deleted"', () => {
++		expect(deriveRemoteChangeKind(record({ deleted: false }), record({ deleted: true }))).toBe('deleted');
++	});
++
++	test('deriveRemoteChangeKind: already-deleted staying deleted reports nothing', () => {
++		expect(deriveRemoteChangeKind(record({ deleted: true }), record({ deleted: true }))).toBeNull();
++	});
++
++	test('deriveRemoteChangeKind: bought -> open transition is "reopened"', () => {
++		expect(deriveRemoteChangeKind(record({ open: false }), record({ open: true }))).toBe('reopened');
++	});
++
++	test('deriveRemoteChangeKind: open -> bought transition is "bought"', () => {
++		expect(deriveRemoteChangeKind(record({ open: true }), record({ open: false }))).toBe('bought');
++	});
++
++	test('deriveRemoteChangeKind: a detail/category/icon-only change reports nothing', () => {
++		expect(deriveRemoteChangeKind(record({ detail: 'old' }), record({ detail: 'new' }))).toBeNull();
++	});
++
++	test('emitRemoteChange notifies listeners with the derived kind and the remote device tag', () => {
++		const received: RemoteChangeEvent[] = [];
++		const unsubscribe = onRemoteChange(event => received.push(event));
++		try {
++			emitRemoteChange('list-1', 'item-1', null, payload(), record(), 'aaaaaaaaaaaaaaaa');
++			expect(received).toEqual([{ listId: 'list-1', itemDTag: 'item-1', itemName: 'Milch', device: 'bbbbbbbb', kind: 'added', at: expect.any(Number) }]);
++		} finally {
++			unsubscribe();
++		}
++	});
++
++	test('emitRemoteChange does not notify for a device\'s own change echoed back (device tag matches the local public key)', () => {
++		const received: RemoteChangeEvent[] = [];
++		const unsubscribe = onRemoteChange(event => received.push(event));
++		try {
++			emitRemoteChange('list-1', 'item-1', null, payload({ device: 'aaaaaaaa' }), record({ device: 'aaaaaaaa' }), 'aaaaaaaaaaaaaaaa');
++			expect(received).toEqual([]);
++		} finally {
++			unsubscribe();
++		}
++	});
++
++	test('emitRemoteChange does not notify when nothing a person would notice changed', () => {
++		const received: RemoteChangeEvent[] = [];
++		const unsubscribe = onRemoteChange(event => received.push(event));
++		try {
++			emitRemoteChange('list-1', 'item-1', record(), payload(), record(), 'aaaaaaaaaaaaaaaa');
++			expect(received).toEqual([]);
++		} finally {
++			unsubscribe();
++		}
++	});
++});
+diff --git a/packages/app-mobile/lists/core/remoteChanges.ts b/packages/app-mobile/lists/core/remoteChanges.ts
+new file mode 100644
+index 0000000..7bc2beb
+--- /dev/null
++++ b/packages/app-mobile/lists/core/remoteChanges.ts
+@@ -0,0 +1,55 @@
++// Tiny pub/sub, parallel to ListsStore's own ChangeEmitter (see ./store.ts),
++// that reports item changes ListsStore#applyRemoteItem accepted from another
++// device. Used by lists/notify to decide whether to show a "someone changed
++// your list" notification. Kept separate from ListsStore itself so that
++// store.ts (owned by another agent this round) only needs a single call
++// added to applyRemoteItem, see there.
++import { ItemPayload, ItemRecord } from './types';
++
++export type RemoteChangeKind = 'added' | 'reopened' | 'bought' | 'deleted';
++
++export interface RemoteChangeEvent {
++	listId: string;
++	itemDTag: string;
++	itemName: string;
++	// The remote device's 8-char tag, same truncation as store.ts's own
++	// (unexported) deviceTag() helper -- used to resolve a display name and to
++	// exclude a device's own changes from its own notifications.
++	device: string;
++	kind: RemoteChangeKind;
++	at: number;
++}
++
++type Listener = (event: RemoteChangeEvent)=> void;
++const listeners = new Set<Listener>();
++
++export const onRemoteChange = (listener: Listener): (()=> void) => {
++	listeners.add(listener);
++	return () => listeners.delete(listener);
++};
++
++// What visibly changed between the item's state before and after
++// applyRemoteItem() merged in a remote payload -- or null if nothing a person
++// would notice changed (e.g. a field-wise merge that didn't move `open`/
++// `deleted`, such as a detail/category/icon-only update, or a no-op replay).
++export const deriveRemoteChangeKind = (previous: ItemRecord | null, merged: ItemRecord): RemoteChangeKind | null => {
++	if (!previous) return merged.deleted ? null : 'added';
++	if (merged.deleted && !previous.deleted) return 'deleted';
++	if (merged.deleted) return null;
++	if (merged.open && !previous.open) return 'reopened';
++	if (!merged.open && previous.open) return 'bought';
++	return null;
++};
++
++// Called from ListsStore#applyRemoteItem with the item's state just before
++// and just after the merge. Skips devices notifying about their own changes
++// (an echo of a locally-authored event coming back via relay or Bluetooth).
++export const emitRemoteChange = (
++	listId: string, itemDTag: string, previous: ItemRecord | null, remote: ItemPayload, merged: ItemRecord, localPublicKey: string,
++): void => {
++	if (remote.device === localPublicKey.slice(0, 8)) return;
++	const kind = deriveRemoteChangeKind(previous, merged);
++	if (!kind) return;
++	const event: RemoteChangeEvent = { listId, itemDTag, itemName: merged.name, device: remote.device, kind, at: Date.now() };
++	for (const listener of listeners) listener(event);
++};
+diff --git a/packages/app-mobile/lists/core/store.test.ts b/packages/app-mobile/lists/core/store.test.ts
+index 79df006..5b41d73 100644
+--- a/packages/app-mobile/lists/core/store.test.ts
++++ b/packages/app-mobile/lists/core/store.test.ts
+@@ -26,15 +26,33 @@ describe('lists/core/store', () => {
+ 		await rm(path, { force: true });
+ 	});
+ 
+-	test('addItem resolves a catalog synonym and marks the item pending', async () => {
++	test('addItem keeps the name exactly as typed, only using the catalog for icon/category', async () => {
+ 		const list = await store.createOpenList('Groceries');
+ 
+ 		const item = await store.addItem(list.id, 'H-Milch');
+ 
+-		expect(item).toMatchObject({ name: 'Milch', icon: '🥛', open: true, pending: true });
++		expect(item).toMatchObject({ name: 'H-Milch', icon: '🥛', open: true, pending: true });
+ 		expect(await store.items(list.id)).toEqual([item]);
+ 	});
+ 
++	test('addItem does not rename a synonym to its catalog canonical ("Salat" stays "Salat")', async () => {
++		const list = await store.createOpenList('Groceries');
++
++		const item = await store.addItem(list.id, 'Salat');
++
++		expect(item).toMatchObject({ name: 'Salat', icon: '🥬' });
++	});
++
++	test('"Bio Eier" and "Eier" are two different items (the dedup key follows the typed name, not the catalog canonical)', async () => {
++		const list = await store.createOpenList('Groceries');
++
++		const bio = await store.addItem(list.id, 'Bio Eier');
++		const plain = await store.addItem(list.id, 'Eier');
++
++		expect(bio.dTag).not.toBe(plain.dTag);
++		expect(await store.items(list.id)).toHaveLength(2);
++	});
++
+ 	test('adding the same item twice reuses the same record instead of duplicating it', async () => {
+ 		const list = await store.createOpenList('Groceries');
+ 
+@@ -179,6 +197,81 @@ describe('lists/core/store', () => {
+ 		expect(await store.pendingItems(list.id)).toEqual([]);
+ 	});
+ 
++	test('addItem with a quantity delta adds up across repeated calls, name unaffected', async () => {
++		const list = await store.createOpenList('Groceries');
++
++		await store.addItem(list.id, 'Eier', { unit: 'count', amount: 3 });
++		const item = await store.addItem(list.id, 'Eier', { unit: 'count', amount: 7 });
++
++		expect(item.qty).toMatchObject({ byDevice: { [item.device]: { units: { count: 10 } } } });
++	});
++
++	test('a negative quantity delta subtracts, clamped so the total never goes below 0', async () => {
++		const list = await store.createOpenList('Groceries');
++		await store.addItem(list.id, 'Eier', { unit: 'count', amount: 10 });
++
++		const item = await store.addItem(list.id, 'Eier', { unit: 'count', amount: -4 });
++		expect(item.qty!.byDevice[item.device].units.count).toBe(6);
++
++		const zeroed = await store.addItem(list.id, 'Eier', { unit: 'count', amount: -100 });
++		expect(zeroed.qty!.byDevice[item.device].units.count).toBe(0);
++	});
++
++	test('an item is marked bought once its quantity reaches 0 across all units', async () => {
++		const list = await store.createOpenList('Groceries');
++		await store.addItem(list.id, 'Eier', { unit: 'count', amount: 3 });
++
++		const item = await store.addItem(list.id, 'Eier', { unit: 'count', amount: -3 });
++
++		expect(item.open).toBe(false);
++		expect((await store.items(list.id, { open: true }))).toEqual([]);
++	});
++
++	test('setQuantity sets this device\'s entry so the total for that unit becomes the entered value', async () => {
++		const list = await store.createOpenList('Groceries');
++		const item = await store.addItem(list.id, 'Milch', { unit: 'ml', amount: 500 });
++
++		const updated = await store.setQuantity(list.id, item.dTag, 'ml', 1500);
++
++		expect(updated.qty!.byDevice[updated.device].units.ml).toBe(1500);
++	});
++
++	test('re-opening a bought item within 5 minutes restores its old quantity (undo)', async () => {
++		jest.useFakeTimers();
++		try {
++			jest.setSystemTime(1_000_000);
++			const list = await store.createOpenList('Groceries');
++			const added = await store.addItem(list.id, 'Eier', { unit: 'count', amount: 5 });
++			await store.toggleOpen(list.id, added.dTag); // marks bought
++
++			jest.setSystemTime(1_000_000 + 60_000); // 1 minute later
++			const reopened = await store.addItem(list.id, 'Eier');
++
++			expect(reopened.open).toBe(true);
++			expect(reopened.qty!.byDevice[added.device].units.count).toBe(5);
++		} finally {
++			jest.useRealTimers();
++		}
++	});
++
++	test('re-opening a bought item after 5 minutes starts a fresh epoch (quantity gone)', async () => {
++		jest.useFakeTimers();
++		try {
++			jest.setSystemTime(1_000_000);
++			const list = await store.createOpenList('Groceries');
++			const added = await store.addItem(list.id, 'Eier', { unit: 'count', amount: 5 });
++			await store.toggleOpen(list.id, added.dTag); // marks bought
++
++			jest.setSystemTime(1_000_000 + 6 * 60_000); // 6 minutes later
++			const reopened = await store.addItem(list.id, 'Eier');
++
++			expect(reopened.open).toBe(true);
++			expect(reopened.qty).toEqual({ epoch: expect.any(Number), byDevice: {} });
++		} finally {
++			jest.useRealTimers();
++		}
++	});
++
+ 	test('onChange is notified on local mutations and the unsubscribe function stops further notifications', async () => {
+ 		const list = await store.createOpenList('Groceries');
+ 		let calls = 0;
+diff --git a/packages/app-mobile/lists/core/store.ts b/packages/app-mobile/lists/core/store.ts
+index b09311d..9b220ab 100644
+--- a/packages/app-mobile/lists/core/store.ts
++++ b/packages/app-mobile/lists/core/store.ts
+@@ -13,7 +13,12 @@ import {
+ } from './invite';
+ import { clampTime, mergeItem } from './merge';
+ import { normalizeName, resolveCatalog } from './normalize';
+-import { ItemPayload, ItemRecord, ListRecord, Role } from './types';
++import { applyLocalQtyDelta, emptyQty, epochForReopen, qtyIsZero, qtyMaxTime, qtyTotal } from './qty';
++import { emitRemoteChange } from './remoteChanges';
++import { ItemPayload, ItemRecord, ListRecord, Qty, QtyUnit, QuantityDelta, Role } from './types';
++import { debugLog } from '../../utils/debugLog';
++
++const log = debugLog('lists.store');
+ 
+ export type ChangeListener = ()=> void;
+ 
+@@ -40,6 +45,7 @@ const itemRecordToPayload = (item: ItemRecord): ItemPayload => {
+ 	if (item.category !== null && item.categoryT !== null) payload.category = { v: item.category, t: item.categoryT };
+ 	if (item.icon !== null && item.iconT !== null) payload.icon = { v: item.icon, t: item.iconT };
+ 	if (item.deletedT !== null) payload.deleted = { v: item.deleted, t: item.deletedT };
++	if (item.qty) payload.qty = item.qty;
+ 	return payload;
+ };
+ 
+@@ -59,8 +65,26 @@ const payloadToItemRecord = (listId: string, dTagValue: string, payload: ItemPay
+ 	deletedT: payload.deleted?.t ?? null,
+ 	device: payload.device,
+ 	pending,
++	qty: payload.qty ?? null,
+ });
+ 
++// An item's overall "max field time": the latest timestamp among all of its
++// fields, qty included. Used by the BLE and relay sync layers to decide
++// which side has the newer version of an item (see
++// lists/nearby/nearbyManager.ts and lists/sync/listSync.ts).
++export const itemMaxFieldTime = (item: ItemRecord): number =>
++	Math.max(item.openT, item.detailT ?? 0, item.categoryT ?? 0, item.iconT ?? 0, item.deletedT ?? 0, qtyMaxTime(item.qty));
++
++// The `created_at` (Nostr seconds) an outgoing event for this item should
++// carry, ms->s converted. Deliberately leaves iconT out (unlike
++// itemMaxFieldTime() above): the icon is catalog-derived, not something a
++// person edited, so it shouldn't bump the event's timestamp on its own.
++export const itemEventCreatedAt = (item: ItemRecord): number => {
++	const times = [item.openT, item.detailT, item.categoryT, item.deletedT, qtyMaxTime(item.qty) || null].filter((t): t is number => t !== null);
++	const maxMs = times.length > 0 ? Math.max(...times) : Date.now();
++	return Math.floor(maxMs / 1000);
++};
++
+ export type JoinResult =
+ 	| { type: 'open'; list: ListRecord }
+ 	| { type: 'managed'; list: ListRecord; joinRequest: VerifiedEvent };
+@@ -193,41 +217,85 @@ export class ListsStore {
+ 		return encodeInvite({ kind: 'managed', listPubkey: list.id, adminPubkey: identity.publicKey, token });
+ 	}
+ 
+-	// Adds an item by free-typed name, resolving it against the catalog and
+-	// re-opening an existing (bought or deleted) item instead of duplicating
+-	// it, so two people adding "Milch" independently land on the same record.
+-	public async addItem(listId: string, text: string): Promise<ItemRecord> {
++	// Re-opens an existing item (bought -> open, or un-deletes a removed one)
++	// as part of addItem() or toggleOpen() below, deciding the quantity's
++	// epoch as it does: an undelete always starts fresh (the old item is
++	// gone), while a bought->open transition follows epochForReopen() -- an
++	// "undo" within REOPEN_UNDO_WINDOW_MS keeps the old quantity, otherwise a
++	// new epoch discards it. Returns the qty the item now has, so callers
++	// applying a quantity delta of their own can build on top of it.
++	private async reopenItem(listId: string, item: ItemRecord, t: number, device: string): Promise<Qty | null> {
++		if (item.deleted) {
++			await this.db.undeleteItem(listId, item.dTag, t, device);
++			if (item.qty) await this.db.setQty(listId, item.dTag, null, device);
++			log.info('Item undeleted, quantity reset', { dTag: item.dTag });
++			return null;
++		}
++
++		if (item.open) return item.qty;
++
++		const newEpoch = epochForReopen(item.qty, item.openT, t);
++		await this.db.setOpen(listId, item.dTag, true, t, device);
++		if (item.qty && item.qty.epoch !== newEpoch) {
++			const fresh = emptyQty(newEpoch);
++			await this.db.setQty(listId, item.dTag, fresh, device);
++			log.info('Item reopened, quantity window elapsed: epoch reset', { dTag: item.dTag, boughtT: item.openT, reopenT: t });
++			return fresh;
++		}
++		if (item.qty) log.info('Item reopened within the undo window: quantity restored', { dTag: item.dTag, epoch: item.qty.epoch });
++		return item.qty;
++	}
++
++	// Adds an item by free-typed name (kept exactly as typed -- the catalog is
++	// only consulted for an emoji/category match, see docs/KONZEPT.md section
++	// 2), re-opening an existing (bought or deleted) item of the same typed
++	// name instead of duplicating it, so two people adding "Milch"
++	// independently land on the same record. An optional quantity delta (see
++	// lists/ui/parseItemInput.ts) is added on top via the same PN-counter
++	// applyLocalQtyDelta() uses everywhere else.
++	public async addItem(listId: string, text: string, quantity?: QuantityDelta): Promise<ItemRecord> {
+ 		const identity = await this.ensureOpen();
+ 		const list = await this.requireList(listId);
+ 		if (!list.contentKey) throw new Error('List is not ready yet: no content key');
+ 		const contentKey = hexToBytes(list.contentKey);
+ 
+-		const match = resolveCatalog(text);
+-		const tag = dTag(contentKey, normalizeName(match.canonical));
++		const typedName = text.trim();
++		const match = resolveCatalog(typedName);
++		const tag = dTag(contentKey, normalizeName(typedName));
+ 		const device = deviceTag(identity.publicKey);
+ 		const t = await this.nextTimestamp(listId);
+ 
+ 		const existing = await this.db.item(listId, tag);
+ 		if (existing) {
+-			if (existing.deleted) {
+-				await this.db.undeleteItem(listId, tag, t, device);
+-			} else if (!existing.open) {
+-				await this.db.setOpen(listId, tag, true, t, device);
++			let qty = await this.reopenItem(listId, existing, t, device);
++			if (quantity) {
++				const epoch = qty?.epoch ?? t;
++				const before = qtyTotal(qty, quantity.unit);
++				qty = applyLocalQtyDelta(qty, epoch, device, quantity.unit, quantity.amount, t);
++				await this.db.setQty(listId, tag, qty, device);
++				log.info('Quantity changed', { dTag: tag, unit: quantity.unit, before, after: qtyTotal(qty, quantity.unit) });
++				if (qtyIsZero(qty)) {
++					await this.db.setOpen(listId, tag, false, t, device);
++					log.info('Quantity reached zero, item marked bought', { dTag: tag });
++				}
+ 			}
+ 			this.changes.emit();
+ 			return (await this.db.item(listId, tag)) as ItemRecord;
+ 		}
+ 
++		const initialQty = quantity ? applyLocalQtyDelta(null, t, device, quantity.unit, quantity.amount, t) : null;
+ 		const record: ItemRecord = {
+-			listId, dTag: tag, name: match.canonical,
++			listId, dTag: tag, name: typedName,
+ 			detail: null, detailT: null,
+ 			category: match.category, categoryT: match.category ? t : null,
+ 			icon: match.emoji, iconT: match.emoji ? t : null,
+-			open: true, openT: t,
++			open: !initialQty || !qtyIsZero(initialQty), openT: t,
+ 			deleted: false, deletedT: null,
+ 			device, pending: true,
++			qty: initialQty,
+ 		};
+ 		await this.db.upsertItem(record);
++		log.info('Item added', { dTag: tag, hasQuantity: !!quantity, startsOpen: record.open });
+ 		this.changes.emit();
+ 		return record;
+ 	}
+@@ -237,8 +305,40 @@ export class ListsStore {
+ 		const item = await this.db.item(listId, itemDTag);
+ 		if (!item) throw new Error(`Unknown item: ${itemDTag}`);
+ 		const t = await this.nextTimestamp(listId);
+-		await this.db.setOpen(listId, itemDTag, !item.open, t, deviceTag(identity.publicKey));
++		const device = deviceTag(identity.publicKey);
++		if (item.open) {
++			await this.db.setOpen(listId, itemDTag, false, t, device);
++		} else {
++			await this.reopenItem(listId, item, t, device);
++		}
++		this.changes.emit();
++	}
++
++	// Sets one unit's total for an item to `total` (clamped to >= 0), by
++	// recording the difference as this device's own delta -- used by
++	// ItemEditModal's quantity field. Other units already present are left
++	// untouched (see core/qty.ts#formatQty on why incompatible units are
++	// tracked side by side rather than merged into one).
++	public async setQuantity(listId: string, itemDTag: string, unit: QtyUnit, total: number): Promise<ItemRecord> {
++		const identity = await this.ensureOpen();
++		const item = await this.db.item(listId, itemDTag);
++		if (!item) throw new Error(`Unknown item: ${itemDTag}`);
++		const t = await this.nextTimestamp(listId);
++		const device = deviceTag(identity.publicKey);
++
++		const epoch = item.qty?.epoch ?? t;
++		const before = qtyTotal(item.qty, unit);
++		const delta = Math.max(0, total) - before;
++		const qty = applyLocalQtyDelta(item.qty, epoch, device, unit, delta, t);
++		await this.db.setQty(listId, itemDTag, qty, device);
++		log.info('Quantity set from item editor', { dTag: itemDTag, unit, before, after: qtyTotal(qty, unit) });
++
++		if (item.open && qtyIsZero(qty)) {
++			await this.db.setOpen(listId, itemDTag, false, t, device);
++			log.info('Quantity reached zero, item marked bought', { dTag: itemDTag });
++		}
+ 		this.changes.emit();
++		return (await this.db.item(listId, itemDTag)) as ItemRecord;
+ 	}
+ 
+ 	public async setDetail(listId: string, itemDTag: string, detail: string | null): Promise<void> {
+@@ -266,12 +366,13 @@ export class ListsStore {
+ 	// Field-wise LWW via mergeItem(), so it doesn't matter whether the remote
+ 	// or the local record is newer, or which one calls this first.
+ 	public async applyRemoteItem(listId: string, itemDTag: string, remote: ItemPayload): Promise<ItemRecord> {
+-		await this.ensureOpen();
++		const identity = await this.ensureOpen();
+ 		const existing = await this.db.item(listId, itemDTag);
+ 		const merged = existing ? mergeItem(itemRecordToPayload(existing), remote) : remote;
+ 		const record = payloadToItemRecord(listId, itemDTag, merged, existing?.pending ?? false);
+ 		await this.db.upsertItem(record);
+ 		this.changes.emit();
++		emitRemoteChange(listId, itemDTag, existing, remote, record, identity.publicKey);
+ 		return record;
+ 	}
+ 
+diff --git a/packages/app-mobile/lists/core/types.ts b/packages/app-mobile/lists/core/types.ts
+index 4a4d61a..3aeb735 100644
+--- a/packages/app-mobile/lists/core/types.ts
++++ b/packages/app-mobile/lists/core/types.ts
+@@ -65,6 +65,7 @@ export interface ItemRecord {
+ 	device: string;
+ 	// True while this item has local changes not yet confirmed published.
+ 	pending: boolean;
++	qty: Qty | null;
+ }
+ 
+ // The decrypted payload carried by an item event (see events.ts).
+@@ -75,9 +76,40 @@ export interface ItemPayload {
+ 	open: FieldValue<boolean>;
+ 	deleted?: FieldValue<boolean>;
+ 	icon?: FieldValue<string>;
++	qty?: Qty;
+ 	device: string;
+ }
+ 
++// Storage unit for a quantity delta: mass and volume are always tracked in
++// their smallest unit (grams, millilitres) and converted for display; count
++// (Stück, Pck, Flasche, Dose, Bund, or no unit at all) has no smaller unit.
++// See core/qty.ts.
++export type QtyUnit = 'count' | 'g' | 'ml';
++
++// One device's cumulative per-unit delta within the current epoch, and when
++// it last wrote this entry. A device only ever writes its own entry (a
++// PN-counter), see core/qty.ts#mergeQty.
++export interface QtyDeviceEntry {
++	t: number;
++	units: Partial<Record<QtyUnit, number>>;
++}
++
++// An item's quantity, synced as part of its payload (see events.ts). `epoch`
++// changes when the item is re-opened long enough after being marked bought
++// that its old quantity should be gone rather than undone -- see
++// core/qty.ts#epochForReopen and docs/KONZEPT.md section 2.
++export interface Qty {
++	epoch: number;
++	byDevice: { [deviceTag: string]: QtyDeviceEntry };
++}
++
++// A parsed amount, e.g. from the "add item" field or the item editor's
++// quantity field. `amount` may be negative (a subtraction).
++export interface QuantityDelta {
++	unit: QtyUnit;
++	amount: number;
++}
++
+ export interface CategoryDef {
+ 	id: string;
+ 	name: string;
+diff --git a/packages/app-mobile/lists/nearby/nativeBle.ts b/packages/app-mobile/lists/nearby/nativeBle.ts
+index 98f7e17..9c9cd03 100644
+--- a/packages/app-mobile/lists/nearby/nativeBle.ts
++++ b/packages/app-mobile/lists/nearby/nativeBle.ts
+@@ -4,6 +4,7 @@
+ // bookkeeping) lives in TS; this file only translates to/from the native
+ // bridge, so nearbyManager.ts can be driven either by this or by
+ // testing/fakeBle.ts under the same BleDriver interface.
++import { _ } from '@joplin/lib/locale';
+ import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+ 
+ export interface BleCapabilities {
+@@ -62,6 +63,17 @@ export interface BleDriver {
+ 	onFrame(listener: (event: BleFrameEvent)=> void): ()=> void;
+ 	onError(listener: (event: BleErrorEvent)=> void): ()=> void;
+ 	onAdapterState(listener: (state: BleAdapterState)=> void): ()=> void;
++
++	// Keeps the process alive (foreground service, see PROTOCOL.md's "for a
++	// future iOS implementation" note -- Android only) while nearby sync is on.
++	// Optional: testing/fakeBle.ts and iOS don't implement it, and
++	// nearbyManager.ts calls these with `?.`.
++	startForegroundService?(title: string, text: string): Promise<void>;
++	updateForegroundService?(text: string): Promise<void>;
++	stopForegroundService?(): Promise<void>;
++	// Fires when the person taps "Stop" on the foreground service's
++	// notification.
++	onForegroundServiceStop?(listener: ()=> void): ()=> void;
+ }
+ 
+ // True when the native module is linked in this build (Android only -- iOS
+@@ -148,8 +160,57 @@ class NativeBle implements BleDriver {
+ 		const sub = this.emitter.addListener('nearbyAdapterState', (event: { state: BleAdapterState }) => listener(event.state));
+ 		return () => sub.remove();
+ 	}
++
++	// Channel name/description/stop-button label are localized here (TS is
++	// where @joplin/lib's _() lives) and passed down every time, rather than
++	// baked into the Kotlin side -- the channel's own name is fixed once
++	// Android creates it, but the notification's own title/text/button always
++	// reflect the current locale.
++	public startForegroundService(title: string, text: string): Promise<void> {
++		return this.native.startForegroundService(_('Nearby sync'), _('Notifies you while Bluetooth sync is searching for or connected to nearby list members.'), title, text, _('Stop'));
++	}
++
++	public updateForegroundService(text: string): Promise<void> {
++		return this.native.updateForegroundService(text);
++	}
++
++	public stopForegroundService(): Promise<void> {
++		return this.native.stopForegroundService();
++	}
++
++	public onForegroundServiceStop(listener: ()=> void): ()=> void {
++		const sub = this.emitter.addListener('nearbyForegroundServiceStop', listener);
++		return () => sub.remove();
++	}
+ }
+ 
++// Posts an immediate (non-foreground) local notification from the same
++// native module, for "someone changed your list" (see ../notify/). Separate
++// from BleDriver since it's not part of the BLE transport -- but native's
++// showNotification() lives in the same NearbyModule.kt, see there.
++export interface ShowNotificationParams {
++	id: number;
++	title: string;
++	text: string;
++	// joplintiles://list/<listId>, handled in root.tsx alongside the existing
++	// shopping-list invite links.
++	deepLink: string;
++}
++
++export const showNativeNotification = (params: ShowNotificationParams): Promise<void> => {
++	const native = NativeModules.TilesNearby;
++	if (!native) return Promise.resolve();
++	return native.showNotification(
++		params.id,
++		'net.cozic.joplin.nearby.changes',
++		_('Shopping list changes'),
++		_('Notifies you when another member changes a shared list.'),
++		params.title,
++		params.text,
++		params.deepLink,
++	);
++};
++
+ let cached: BleDriver | null = null;
+ 
+ // Lazily constructed so importing this module never touches NativeModules on
+diff --git a/packages/app-mobile/lists/nearby/nearbyManager.ts b/packages/app-mobile/lists/nearby/nearbyManager.ts
+index 87e445a..8d58673 100644
+--- a/packages/app-mobile/lists/nearby/nearbyManager.ts
++++ b/packages/app-mobile/lists/nearby/nearbyManager.ts
+@@ -4,9 +4,10 @@
+ // changes to connected peers, and reports found/total for the UI's status
+ // circle. See docs/KONZEPT.md section 3 and PROTOCOL.md.
+ import { AppState, AppStateStatus, NativeEventSubscription } from 'react-native';
++import { _ } from '@joplin/lib/locale';
+ import { VerifiedEvent } from 'nostr-tools';
+ import { ListsDatabase } from '../core/db';
+-import { ListsStore, itemRecordToPayload } from '../core/store';
++import { ListsStore, itemEventCreatedAt, itemMaxFieldTime, itemRecordToPayload } from '../core/store';
+ import { buildItemEvent, parseItemEvent } from '../core/events';
+ import { hexToBytes } from '../core/crypto';
+ import { ItemRecord, ListRecord } from '../core/types';
+@@ -56,14 +57,9 @@ const base64ToBytes = (base64: string): Uint8Array => {
+ 	return Uint8Array.from(bytes);
+ };
+ 
+-const itemEventCreatedAt = (item: ItemRecord): number => {
+-	const times = [item.openT, item.detailT, item.categoryT, item.deletedT].filter((t): t is number => t !== null);
+-	const maxMs = times.length > 0 ? Math.max(...times) : Date.now();
+-	return Math.floor(maxMs / 1000);
+-};
+-
+-const itemMaxFieldTime = (item: ItemRecord): number =>
+-	Math.max(item.openT, item.detailT ?? 0, item.categoryT ?? 0, item.iconT ?? 0, item.deletedT ?? 0);
++// itemEventCreatedAt() and itemMaxFieldTime() live in core/store.ts (also
++// used by lists/sync/listSync.ts), so qty's per-device times only need to
++// participate in one place.
+ 
+ interface Connection {
+ 	session: Session;
+@@ -140,6 +136,10 @@ export class NearbyManager implements NearbyTransport {
+ 	private setState(patch: Partial<NearbyState>): void {
+ 		this.state = { ...this.state, ...patch };
+ 		for (const listener of this.listeners) listener(this.state);
++		if (this.listId && (this.state.mode === 'searching' || this.state.mode === 'found')) {
++			const text = this.state.found > 0 ? _('%d of %d members nearby', this.state.found, this.state.total) : _('Searching for list members nearby');
++			void this.ble.updateForegroundService?.(text);
++		}
+ 	}
+ 
+ 	public async start(listId: string): Promise<void> {
+@@ -185,6 +185,11 @@ export class NearbyManager implements NearbyTransport {
+ 		this.wireBleEvents();
+ 		const tokenHex = deriveAdvertisingTokenHex(this.contentKey, this.now());
+ 		log.info('Nearby: starting', { listId: listId.slice(0, 8), codedPhy: capabilities.codedPhy });
++		// Keeps the app process alive with the screen off (e.g. in a pocket at
++		// the supermarket, see docs/KONZEPT.md section 3) for as long as nearby
++		// sync is on -- best-effort: older/unsupported native builds simply
++		// don't implement startForegroundService, see nativeBle.ts.
++		await this.ble.startForegroundService?.(_('Nearby sync'), _('Searching for list members nearby'));
+ 		await this.ble.startAdvertising(NEARBY_SERVICE_UUID, tokenHex, capabilities.codedPhy);
+ 		await this.ble.startScan(NEARBY_SERVICE_UUID, capabilities.codedPhy);
+ 
+@@ -211,6 +216,11 @@ export class NearbyManager implements NearbyTransport {
+ 			} catch (error) {
+ 				log.warn('Nearby: stopAll failed', { error: String(error) });
+ 			}
++			try {
++				await this.ble.stopForegroundService?.();
++			} catch (error) {
++				log.warn('Nearby: stopForegroundService failed', { error: String(error) });
++			}
+ 		}
+ 		this.listId = null;
+ 		this.list = null;
+@@ -243,6 +253,11 @@ export class NearbyManager implements NearbyTransport {
+ 		this.bleUnsubs.push(this.ble.onFrame(event => { void this.onFrame(event.address, event.base64); }));
+ 		this.bleUnsubs.push(this.ble.onError(event => log.warn('Nearby native error', event)));
+ 		this.bleUnsubs.push(this.ble.onAdapterState(state => this.onAdapterState(state)));
++		const stopUnsub = this.ble.onForegroundServiceStop?.(() => {
++			log.info('Nearby: stop requested from the foreground service notification');
++			void this.stop();
++		});
++		if (stopUnsub) this.bleUnsubs.push(stopUnsub);
+ 	}
+ 
+ 	private onAdapterState(state: BleAdapterState): void {
+diff --git a/packages/app-mobile/lists/nearby/session.test.ts b/packages/app-mobile/lists/nearby/session.test.ts
+index 132da04..4f98274 100644
+--- a/packages/app-mobile/lists/nearby/session.test.ts
++++ b/packages/app-mobile/lists/nearby/session.test.ts
+@@ -11,6 +11,7 @@ interface Harness {
+ 	session: Session;
+ 	events: VerifiedEvent[];
+ 	receivedEvents: VerifiedEvent[];
++	receivedProfileEvents: VerifiedEvent[];
+ 	closedReason: string | null;
+ 	syncResult: { sent: number; received: number } | null;
+ 	states: SessionState[];
+@@ -20,13 +21,21 @@ const makeItemEvent = (dTag: string, pubkey: string, createdAt: number): Verifie
+ 	kind: 30078, tags: [['d', dTag]], content: '', created_at: createdAt, pubkey, id: `${dTag}-${pubkey}-${createdAt}`, sig: 'sig',
+ } as VerifiedEvent);
+ 
++const makeProfileEvent = (listId: string, pubkey: string, name: string): VerifiedEvent => ({
++	kind: 30078, tags: [['d', `profile:${listId}`], ['L', listId]], content: name, created_at: 1, pubkey, id: `profile-${pubkey}`, sig: 'sig',
++} as VerifiedEvent);
++
+ const makeHarness = (
+ 	options: SessionOptions,
+ 	members: FakeMember[],
+ 	localItems: { dTag: string; maxFieldTime: number }[],
+ 	sendTo: (bytes: Uint8Array)=> Promise<void>,
++	localProfileEvent: VerifiedEvent | null = null,
+ ): Harness => {
+-	const harness: Harness = { session: null as unknown as Session, events: [], receivedEvents: [], closedReason: null, syncResult: null, states: [] };
++	const harness: Harness = {
++		session: null as unknown as Session, events: [], receivedEvents: [], receivedProfileEvents: [],
++		closedReason: null, syncResult: null, states: [],
++	};
+ 	const callbacks: SessionCallbacks = {
+ 		sendFrame: sendTo,
+ 		isActiveMember: async pubkey => members.some(m => m.pubkey === pubkey && m.active),
+@@ -41,6 +50,8 @@ const makeHarness = (
+ 		applyRemoteItemEvent: async event => { harness.receivedEvents.push(event); return true; },
+ 		localDirectoryEvent: async () => null,
+ 		applyRemoteDirectoryEvent: async () => false,
++		localProfileEvent: async () => localProfileEvent,
++		applyRemoteProfileEvent: async event => { harness.receivedProfileEvents.push(event); return true; },
+ 		onStateChange: state => harness.states.push(state),
+ 		onSyncComplete: (sent, received) => { harness.syncResult = { sent, received }; },
+ 		onClosed: reason => { harness.closedReason = reason; },
+@@ -89,6 +100,30 @@ describe('lists/nearby/session', () => {
+ 		b.session.close('test done');
+ 	});
+ 
++	test('a device with a profile event sends it during the handshake, and the peer applies it', async () => {
++		const queueAtoB: Uint8Array[] = [];
++		const queueBtoA: Uint8Array[] = [];
++		const aProfile = makeProfileEvent('list-1', PUBKEY_A, 'Küchen-Tablet');
++
++		const a = makeHarness(baseOptions(PUBKEY_A), [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			[], async bytes => { queueAtoB.push(bytes); }, aProfile);
++		const b = makeHarness(baseOptions(PUBKEY_B), [{ pubkey: PUBKEY_A, active: true }, { pubkey: PUBKEY_B, active: true }],
++			[], async bytes => { queueBtoA.push(bytes); });
++
++		a.session.start();
++		b.session.start();
++
++		for (let i = 0; i < 20 && (queueAtoB.length || queueBtoA.length); i++) {
++			while (queueAtoB.length) await b.session.onFrameBytes(queueAtoB.shift() as Uint8Array);
++			while (queueBtoA.length) await a.session.onFrameBytes(queueBtoA.shift() as Uint8Array);
++		}
++
++		expect(b.receivedProfileEvents).toEqual([aProfile]);
++		expect(b.receivedEvents).toEqual([]); // routed to applyRemoteProfileEvent, not applyRemoteItemEvent
++		a.session.close('test done');
++		b.session.close('test done');
++	});
++
+ 	test('a wrong content key fails the proof check and the session is closed', async () => {
+ 		const queueAtoB: Uint8Array[] = [];
+ 		const queueBtoA: Uint8Array[] = [];
+diff --git a/packages/app-mobile/lists/nearby/session.ts b/packages/app-mobile/lists/nearby/session.ts
+index b33fa75..a9e41bd 100644
+--- a/packages/app-mobile/lists/nearby/session.ts
++++ b/packages/app-mobile/lists/nearby/session.ts
+@@ -5,6 +5,7 @@
+ // tests.
+ import { VerifiedEvent } from 'nostr-tools';
+ import { randomBytes, bytesToHex } from '../core/crypto';
++import { isProfileDTag } from '../core/profile';
+ import { debugLog } from '../../utils/debugLog';
+ import {
+ 	decodeFrame, deriveProof, encodeFrame, Frame, FrameReassembler, FrameType, fragmentMessage,
+@@ -41,6 +42,16 @@ export interface SessionCallbacks {
+ 	applyRemoteItemEvent: (event: VerifiedEvent)=> Promise<boolean>;
+ 	localDirectoryEvent: ()=> Promise<VerifiedEvent | null>;
+ 	applyRemoteDirectoryEvent: (event: VerifiedEvent)=> Promise<boolean>;
++	// This device's own profile event for the list (see core/profile.ts), if
++	// it has one to send -- sent once, alongside the summary, so a renamed
++	// device (lists.deviceName) doesn't need a relay round trip to be seen by
++	// a peer it's directly connected to. Optional/no-op when absent so this
++	// stays backward compatible with a caller that hasn't wired it up yet.
++	localProfileEvent?: ()=> Promise<VerifiedEvent | null>;
++	// Verifies signature + membership, decrypts and applies a peer's profile
++	// event -- same acceptance rule as a directory event (see onEventMessage
++	// below, which routes here by d-tag).
++	applyRemoteProfileEvent?: (event: VerifiedEvent)=> Promise<boolean>;
+ 	// Open lists only: accepts a peer that proved knowledge of the list's
+ 	// content key but isn't in the directory yet (QR-code join without
+ 	// internet, see docs/KONZEPT.md section 3). Absent/no-op for managed
+@@ -235,11 +246,22 @@ export class Session {
+ 			this.summaryPromise = (async () => {
+ 				this.localSummary = await this.callbacks.localSummary();
+ 				await this.sendMessage(FrameType.Summary, this.localSummary as SummaryMessage);
++				await this.sendOwnProfile();
+ 			})();
+ 		}
+ 		return this.summaryPromise;
+ 	}
+ 
++	// Sends this device's own profile event (if any), once per session,
++	// alongside the summary -- see SessionCallbacks#localProfileEvent above.
++	private profileSent = false;
++	private async sendOwnProfile(): Promise<void> {
++		if (this.profileSent || !this.callbacks.localProfileEvent) return;
++		this.profileSent = true;
++		const event = await this.callbacks.localProfileEvent();
++		if (event) await this.sendEvent(event);
++	}
++
+ 	private async onSummary(message: SummaryMessage): Promise<void> {
+ 		if (!this.proofVerified) {
+ 			this.fail('Received summary before the handshake was verified');
+@@ -285,7 +307,10 @@ export class Session {
+ 	}
+ 
+ 	private async onEventMessage(message: { event: VerifiedEvent }): Promise<void> {
+-		const accepted = await this.callbacks.applyRemoteItemEvent(message.event);
++		const dTagValue = message.event.tags.find(t => t[0] === 'd')?.[1];
++		const accepted = dTagValue && isProfileDTag(dTagValue) && this.callbacks.applyRemoteProfileEvent
++			? await this.callbacks.applyRemoteProfileEvent(message.event)
++			: await this.callbacks.applyRemoteItemEvent(message.event);
+ 		if (accepted) this.receivedEventCount++;
+ 	}
+ 
+diff --git a/packages/app-mobile/lists/notify/activeScreen.ts b/packages/app-mobile/lists/notify/activeScreen.ts
+new file mode 100644
+index 0000000..4dd004b
+--- /dev/null
++++ b/packages/app-mobile/lists/notify/activeScreen.ts
+@@ -0,0 +1,12 @@
++// Tracks which list screen (if any) is currently on-screen, so notifyManager
++// can suppress a notification for a list the person is already looking at.
++// Set/cleared by NearbyStatusCircle.tsx (mounted for exactly as long as
++// ListScreen is), which avoids needing a separate hook inside ListScreen.tsx
++// itself.
++let activeListId: string | null = null;
++
++export const setActiveListId = (listId: string | null): void => {
++	activeListId = listId;
++};
++
++export const getActiveListId = (): string | null => activeListId;
+diff --git a/packages/app-mobile/lists/notify/aggregator.test.ts b/packages/app-mobile/lists/notify/aggregator.test.ts
+new file mode 100644
+index 0000000..6043bd4
+--- /dev/null
++++ b/packages/app-mobile/lists/notify/aggregator.test.ts
+@@ -0,0 +1,89 @@
++import { AggregatedEntry, formatAggregatedText, MAX_SHOWN_ENTRIES, NotifyAggregator } from './aggregator';
++
++const entry = (itemName: string, kind: AggregatedEntry['kind'], device = 'aaaaaaaa'): AggregatedEntry => ({ device, itemName, kind });
++
++describe('lists/notify/aggregator', () => {
++	test('formats entries with symbols, author name and list name', () => {
++		const entries = [entry('Milch', 'added'), entry('Brot', 'added'), entry('Eier', 'bought')];
++		const text = formatAggregatedText('Zuhause', entries, () => 'Anna', 'Someone', n => `+ ${n} more`);
++		expect(text).toBe('Zuhause – Anna: + Milch, + Brot, ✓ Eier');
++	});
++
++	test('falls back to the unknown-member label when the device has no resolvable name', () => {
++		const text = formatAggregatedText('Zuhause', [entry('Milch', 'added')], () => null, 'Someone', n => `+ ${n} more`);
++		expect(text).toBe('Zuhause – Someone: + Milch');
++	});
++
++	test('lists each distinct author once, in first-seen order', () => {
++		const entries = [entry('Milch', 'added', 'aaaaaaaa'), entry('Brot', 'added', 'bbbbbbbb'), entry('Eier', 'bought', 'aaaaaaaa')];
++		const names: Record<string, string> = { aaaaaaaa: 'Anna', bbbbbbbb: 'Ben' };
++		const text = formatAggregatedText('Zuhause', entries, device => names[device] ?? null, 'Someone', n => `+ ${n} more`);
++		expect(text).toBe('Zuhause – Anna, Ben: + Milch, + Brot, ✓ Eier');
++	});
++
++	test('truncates after MAX_SHOWN_ENTRIES and appends a "+ n more" tail', () => {
++		const entries = Array.from({ length: MAX_SHOWN_ENTRIES + 3 }, (_unused, i) => entry(`Item ${i}`, 'added'));
++		const text = formatAggregatedText('Zuhause', entries, () => 'Anna', 'Someone', n => `+ ${n} more`);
++		const parts = text.split(': ')[1].split(', ');
++		expect(parts).toHaveLength(MAX_SHOWN_ENTRIES + 1);
++		expect(parts[parts.length - 1]).toBe('+ 3 more');
++	});
++
++	test('deleted uses the "−" symbol', () => {
++		const text = formatAggregatedText('Zuhause', [entry('Milch', 'deleted')], () => 'Anna', 'Someone', n => `+ ${n} more`);
++		expect(text).toBe('Zuhause – Anna: − Milch');
++	});
++
++	test('notifyAggregator buffers entries per list and flushes once after the window elapses', () => {
++		jest.useFakeTimers();
++		try {
++			const flush = jest.fn();
++			const aggregator = new NotifyAggregator(flush, 30000);
++			aggregator.add('list-1', entry('Milch', 'added'));
++			aggregator.add('list-1', entry('Brot', 'added'));
++			aggregator.add('list-2', entry('Eier', 'bought'));
++
++			expect(flush).not.toHaveBeenCalled();
++			jest.advanceTimersByTime(30000);
++
++			expect(flush).toHaveBeenCalledTimes(2);
++			expect(flush).toHaveBeenCalledWith('list-1', [entry('Milch', 'added'), entry('Brot', 'added')]);
++			expect(flush).toHaveBeenCalledWith('list-2', [entry('Eier', 'bought')]);
++		} finally {
++			jest.useRealTimers();
++		}
++	});
++
++	test('notifyAggregator starts a fresh window for a list after an earlier one already flushed', () => {
++		jest.useFakeTimers();
++		try {
++			const flush = jest.fn();
++			const aggregator = new NotifyAggregator(flush, 30000);
++			aggregator.add('list-1', entry('Milch', 'added'));
++			jest.advanceTimersByTime(30000);
++			aggregator.add('list-1', entry('Brot', 'added'));
++			jest.advanceTimersByTime(30000);
++
++			expect(flush).toHaveBeenCalledTimes(2);
++			expect(flush).toHaveBeenNthCalledWith(1, 'list-1', [entry('Milch', 'added')]);
++			expect(flush).toHaveBeenNthCalledWith(2, 'list-1', [entry('Brot', 'added')]);
++		} finally {
++			jest.useRealTimers();
++		}
++	});
++
++	test('notifyAggregator#flushAll() flushes every pending list immediately, without waiting for the window', () => {
++		jest.useFakeTimers();
++		try {
++			const flush = jest.fn();
++			const aggregator = new NotifyAggregator(flush, 30000);
++			aggregator.add('list-1', entry('Milch', 'added'));
++			aggregator.flushAll();
++			expect(flush).toHaveBeenCalledTimes(1);
++			jest.advanceTimersByTime(30000);
++			expect(flush).toHaveBeenCalledTimes(1); // no second, stale flush from the cleared timer
++		} finally {
++			jest.useRealTimers();
++		}
++	});
++});
+diff --git a/packages/app-mobile/lists/notify/aggregator.ts b/packages/app-mobile/lists/notify/aggregator.ts
+new file mode 100644
+index 0000000..d14d944
+--- /dev/null
++++ b/packages/app-mobile/lists/notify/aggregator.ts
+@@ -0,0 +1,98 @@
++// Pure aggregation logic for "someone changed your list" notifications: buffers
++// remote changes for a list for a short window, then formats them into one
++// line such as "Zuhause – Anna: + Milch, + Brot, ✓ Eier". No native/DB/setting
++// code here -- see notifyManager.ts for the wiring, and RemoteChangeKind in
++// ../core/remoteChanges.ts for where entries come from.
++import { RemoteChangeKind } from '../core/remoteChanges';
++
++export interface AggregatedEntry {
++	device: string;
++	itemName: string;
++	kind: RemoteChangeKind;
++}
++
++// 'added' and 'reopened' share a symbol: from a notification's point of view
++// both mean "back on the list", see docs/KONZEPT.md section 3's icon table.
++export const KIND_SYMBOL: Record<RemoteChangeKind, string> = {
++	added: '+',
++	reopened: '+',
++	bought: '✓',
++	deleted: '−',
++};
++
++export const MAX_SHOWN_ENTRIES = 6;
++
++// Formats one aggregated notification line. `resolveName` looks up a display
++// name for a device tag (member directory / profile name), returning null if
++// unknown -- the caller then falls back to a localized "Someone"/"Jemand".
++// `formatMore` formats the "+ n more" tail, also localized by the caller
++// (e.g. with @joplin/lib's `_n`).
++export const formatAggregatedText = (
++	listName: string,
++	entries: AggregatedEntry[],
++	resolveName: (device: string)=> string | null,
++	unknownMemberLabel: string,
++	formatMore: (count: number)=> string,
++): string => {
++	const authorNames: string[] = [];
++	for (const entry of entries) {
++		const name = resolveName(entry.device) ?? unknownMemberLabel;
++		if (!authorNames.includes(name)) authorNames.push(name);
++	}
++	const shown = entries.slice(0, MAX_SHOWN_ENTRIES);
++	const extraCount = entries.length - shown.length;
++	const parts = shown.map(entry => `${KIND_SYMBOL[entry.kind]} ${entry.itemName}`);
++	if (extraCount > 0) parts.push(formatMore(extraCount));
++	return `${listName} – ${authorNames.join(', ')}: ${parts.join(', ')}`;
++};
++
++type FlushCallback = (listId: string, entries: AggregatedEntry[])=> void;
++
++// Buffers incoming entries per list for `windowMs` (30s in production, see
++// notifyManager.ts) before calling `flush` once with everything collected --
++// so five quick changes to the same list become one notification, not five.
++export class NotifyAggregator {
++	private pending = new Map<string, { entries: AggregatedEntry[]; timer: ReturnType<typeof setTimeout> }>();
++	private flush: FlushCallback;
++	private windowMs: number;
++	private setTimeoutFn: typeof setTimeout;
++	private clearTimeoutFn: typeof clearTimeout;
++
++	public constructor(flush: FlushCallback, windowMs = 30000, setTimeoutFn: typeof setTimeout = setTimeout, clearTimeoutFn: typeof clearTimeout = clearTimeout) {
++		this.flush = flush;
++		this.windowMs = windowMs;
++		this.setTimeoutFn = setTimeoutFn;
++		this.clearTimeoutFn = clearTimeoutFn;
++	}
++
++	public add(listId: string, entry: AggregatedEntry): void {
++		let bucket = this.pending.get(listId);
++		if (!bucket) {
++			bucket = { entries: [], timer: this.setTimeoutFn(() => this.flushList(listId), this.windowMs) };
++			this.pending.set(listId, bucket);
++		}
++		bucket.entries.push(entry);
++	}
++
++	private flushList(listId: string): void {
++		const bucket = this.pending.get(listId);
++		if (!bucket) return;
++		this.pending.delete(listId);
++		this.flush(listId, bucket.entries);
++	}
++
++	// Flushes every pending list immediately (e.g. before the app is
++	// backgrounded/closed, so a change isn't silently lost mid-window).
++	public flushAll(): void {
++		for (const listId of [...this.pending.keys()]) {
++			const bucket = this.pending.get(listId);
++			if (bucket) this.clearTimeoutFn(bucket.timer);
++			this.flushList(listId);
++		}
++	}
++
++	public dispose(): void {
++		for (const bucket of this.pending.values()) this.clearTimeoutFn(bucket.timer);
++		this.pending.clear();
++	}
++}
+diff --git a/packages/app-mobile/lists/notify/listSettings.ts b/packages/app-mobile/lists/notify/listSettings.ts
+new file mode 100644
+index 0000000..75a8bb4
+--- /dev/null
++++ b/packages/app-mobile/lists/notify/listSettings.ts
+@@ -0,0 +1,18 @@
++// Per-list "notify me about this list" toggle. Stored in the lists DB's own
++// meta table (ListsDatabase#getMeta/setMeta, see ../core/db.ts) -- local to
++// this device, never synced -- the same pattern ListScreen.tsx already uses
++// for its tile-column count (see TILE_COLUMNS_META_KEY there).
++import { ListsDatabase } from '../core/db';
++
++const metaKey = (listId: string): string => `notify.enabled:${listId}`;
++
++// Default is enabled (matches the global 'lists.notifyChanges' setting's
++// default): a list with no stored value yet has never been turned off.
++export const isListNotifyEnabled = async (db: ListsDatabase, listId: string): Promise<boolean> => {
++	const value = await db.getMeta(metaKey(listId));
++	return value !== '0';
++};
++
++export const setListNotifyEnabled = async (db: ListsDatabase, listId: string, enabled: boolean): Promise<void> => {
++	await db.setMeta(metaKey(listId), enabled ? '1' : '0');
++};
+diff --git a/packages/app-mobile/lists/notify/notifyManager.ts b/packages/app-mobile/lists/notify/notifyManager.ts
+new file mode 100644
+index 0000000..4e86e3f
+--- /dev/null
++++ b/packages/app-mobile/lists/notify/notifyManager.ts
+@@ -0,0 +1,110 @@
++// Wires remote list changes (see ../core/remoteChanges.ts, fed from
++// ListsStore#applyRemoteItem -- both the relay sync pass and Bluetooth
++// nearby sync go through it) into "someone changed your list" notifications:
++// aggregates per list for 30s (see ./aggregator.ts), resolves a display name
++// from the member directory, and skips showing anything the suppression
++// rules in ./suppression.ts say to skip. Call startNotifyManager() once at
++// startup (see utils/buildStartupTasks.ts); calling it again is a no-op.
++import { AppState } from 'react-native';
++import { _, _n } from '@joplin/lib/locale';
++import { ListsDatabase } from '../core/db';
++import { onRemoteChange, RemoteChangeEvent } from '../core/remoteChanges';
++import { showNativeNotification } from '../nearby/nativeBle';
++import { debugLog } from '../../utils/debugLog';
++import { getActiveListId } from './activeScreen';
++import { isListNotifyEnabled } from './listSettings';
++import { AggregatedEntry, formatAggregatedText, NotifyAggregator } from './aggregator';
++import { decideNotify } from './suppression';
++
++const log = debugLog('lists.notify');
++
++const AGGREGATION_WINDOW_MS = 30 * 1000;
++
++// Best-effort: Setting may not be initialized yet in tests or very early
++// startup (same pattern as lists/nearby/nearbyManager.ts's readAutoOffMinutes).
++const globalNotifyEnabled = (): boolean => {
++	try {
++		// eslint-disable-next-line @typescript-eslint/no-var-requires -- optional, avoids a hard dependency for this module's own tests
++		const Setting = require('@joplin/lib/models/Setting').default;
++		return Setting.value('lists.notifyChanges') !== false;
++	} catch (error) {
++		return true;
++	}
++};
++
++export class NotifyManager {
++	private db: ListsDatabase;
++	private aggregator: NotifyAggregator;
++	private unsubRemoteChange: (()=> void) | null = null;
++	private nextNotificationId = 1;
++
++	public constructor(db: ListsDatabase) {
++		this.db = db;
++		this.aggregator = new NotifyAggregator((listId, entries) => { void this.flush(listId, entries); }, AGGREGATION_WINDOW_MS);
++	}
++
++	public start(): void {
++		if (this.unsubRemoteChange) return;
++		this.unsubRemoteChange = onRemoteChange(event => this.onRemoteChange(event));
++	}
++
++	public stop(): void {
++		this.unsubRemoteChange?.();
++		this.unsubRemoteChange = null;
++		this.aggregator.dispose();
++	}
++
++	private onRemoteChange(event: RemoteChangeEvent): void {
++		const entry: AggregatedEntry = { device: event.device, itemName: event.itemName, kind: event.kind };
++		this.aggregator.add(event.listId, entry);
++		log.debug('Queued remote change for notification aggregation', { listId: event.listId.slice(0, 8), device: event.device, kind: event.kind });
++	}
++
++	private async flush(listId: string, entries: AggregatedEntry[]): Promise<void> {
++		if (entries.length === 0) return;
++		const listNotifyEnabled = await isListNotifyEnabled(this.db, listId);
++		const decision = decideNotify({
++			globalNotifyEnabled: globalNotifyEnabled(),
++			listNotifyEnabled,
++			isActiveListScreen: getActiveListId() === listId,
++			appInForeground: AppState.currentState === 'active',
++		});
++		if (decision.notify === false) {
++			log.info('Suppressed notification', { listId: listId.slice(0, 8), reason: decision.reason, entryCount: entries.length });
++			return;
++		}
++
++		const list = await this.db.list(listId);
++		if (!list) return;
++		const members = await this.db.members(listId);
++		const resolveName = (device: string): string | null => members.find(m => m.pubkey.slice(0, 8) === device)?.name ?? null;
++		const text = formatAggregatedText(
++			list.name, entries, resolveName, _('Someone'),
++			count => _n('+ %d more', '+ %d more', count, count),
++		);
++
++		log.info('Showing notification', { listId: listId.slice(0, 8), entryCount: entries.length });
++		try {
++			await showNativeNotification({
++				id: this.nextNotificationId++,
++				title: _('Shopping list changes'),
++				text,
++				deepLink: `joplintiles://list/${listId}`,
++			});
++		} catch (error) {
++			log.warn('Failed to show notification', { error: String(error) });
++		}
++	}
++}
++
++let singleton: NotifyManager | null = null;
++
++export const startNotifyManager = (db: ListsDatabase): void => {
++	if (!singleton) singleton = new NotifyManager(db);
++	singleton.start();
++};
++
++export const stopNotifyManager = (): void => {
++	singleton?.stop();
++	singleton = null;
++};
+diff --git a/packages/app-mobile/lists/notify/suppression.test.ts b/packages/app-mobile/lists/notify/suppression.test.ts
+new file mode 100644
+index 0000000..ee3af60
+--- /dev/null
++++ b/packages/app-mobile/lists/notify/suppression.test.ts
+@@ -0,0 +1,34 @@
++import { decideNotify, SuppressionInput } from './suppression';
++
++const base: SuppressionInput = {
++	globalNotifyEnabled: true,
++	listNotifyEnabled: true,
++	isActiveListScreen: false,
++	appInForeground: true,
++};
++
++describe('lists/notify/suppression', () => {
++	test('notifies when nothing suppresses it', () => {
++		expect(decideNotify(base)).toEqual({ notify: true });
++	});
++
++	test('suppresses when notifications are off globally', () => {
++		expect(decideNotify({ ...base, globalNotifyEnabled: false })).toEqual({ notify: false, reason: 'globalDisabled' });
++	});
++
++	test('suppresses when notifications are off for this list, even if global is on', () => {
++		expect(decideNotify({ ...base, listNotifyEnabled: false })).toEqual({ notify: false, reason: 'listDisabled' });
++	});
++
++	test('suppresses when the list\'s screen is open and the app is foregrounded', () => {
++		expect(decideNotify({ ...base, isActiveListScreen: true, appInForeground: true })).toEqual({ notify: false, reason: 'listScreenOpen' });
++	});
++
++	test('does not suppress for an active screen while the app is backgrounded (e.g. left mid-screen)', () => {
++		expect(decideNotify({ ...base, isActiveListScreen: true, appInForeground: false })).toEqual({ notify: true });
++	});
++
++	test('global takes priority over the per-list reason when both would suppress', () => {
++		expect(decideNotify({ ...base, globalNotifyEnabled: false, listNotifyEnabled: false })).toEqual({ notify: false, reason: 'globalDisabled' });
++	});
++});
+diff --git a/packages/app-mobile/lists/notify/suppression.ts b/packages/app-mobile/lists/notify/suppression.ts
+new file mode 100644
+index 0000000..c54d156
+--- /dev/null
++++ b/packages/app-mobile/lists/notify/suppression.ts
+@@ -0,0 +1,21 @@
++// Pure "should this notification actually be shown" decision, kept separate
++// from notifyManager.ts's DB/native-module wiring so it's directly testable.
++export interface SuppressionInput {
++	globalNotifyEnabled: boolean;
++	listNotifyEnabled: boolean;
++	// True when this list's screen is the one currently on screen.
++	isActiveListScreen: boolean;
++	// True when the app itself is in the foreground (AppState.currentState === 'active').
++	appInForeground: boolean;
++}
++
++export type SuppressionResult =
++	| { notify: true }
++	| { notify: false; reason: 'globalDisabled' | 'listDisabled' | 'listScreenOpen' };
++
++export const decideNotify = (input: SuppressionInput): SuppressionResult => {
++	if (!input.globalNotifyEnabled) return { notify: false, reason: 'globalDisabled' };
++	if (!input.listNotifyEnabled) return { notify: false, reason: 'listDisabled' };
++	if (input.isActiveListScreen && input.appInForeground) return { notify: false, reason: 'listScreenOpen' };
++	return { notify: true };
++};
+diff --git a/packages/app-mobile/lists/sync/listSync.test.ts b/packages/app-mobile/lists/sync/listSync.test.ts
+index 0ba5939..3bca293 100644
+--- a/packages/app-mobile/lists/sync/listSync.test.ts
++++ b/packages/app-mobile/lists/sync/listSync.test.ts
+@@ -257,4 +257,60 @@ describe('lists/sync/listSync', () => {
+ 		const members = await admin.db.members(list.id);
+ 		expect(members.some(m => m.pubkey === outsiderIdentity.publicKey)).toBe(false);
+ 	});
++
++	test('a device that renames itself (lists.deviceName) has the new name reach another device', async () => {
++		const a = await addDevice();
++		const b = await addDevice();
++		const list = await a.store.createOpenList('Groceries');
++		await a.sync.syncList(list.id);
++		await b.store.joinFromInvite((await a.store.inviteFor(list.id)).link);
++		await b.sync.syncList(list.id);
++		await a.sync.syncList(list.id);
++
++		const changedAt = Date.now();
++		await a.db.setDeviceName('Küchen-Tablet', changedAt);
++		await a.sync.syncList(list.id); // publishes the profile event
++		await b.sync.syncList(list.id); // fetches it
++
++		const aIdentity = await a.db.deviceIdentity();
++		expect(await b.db.profileName(list.id, aIdentity.publicKey)).toEqual({ name: 'Küchen-Tablet', t: changedAt });
++
++		// An unchanged sync pass doesn't republish (nothing new to say).
++		const identity = await a.db.deviceIdentity();
++		for (const url of defaultRelays) network.drop(url, identity.publicKey, LIST_EVENT_KIND, `profile:${list.id}`);
++		await a.sync.syncList(list.id);
++		expect(await a.db.profilePublishedAt(list.id)).toBe(changedAt);
++	});
++
++	test('a profile event from a removed member is ignored', async () => {
++		const admin = await addDevice();
++		const member = await addDevice();
++		const list = await admin.store.createManagedList('Household');
++		await admin.sync.syncList(list.id);
++		const invite = await admin.store.inviteFor(list.id);
++		const joinResult = await member.store.joinFromInvite(invite.link);
++		if (joinResult.type !== 'managed') throw new Error('expected a managed join');
++		await member.sync.publishJoinRequest(list.id, joinResult.joinRequest);
++		await admin.sync.syncList(list.id);
++		await member.sync.syncList(list.id);
++
++		// Same pattern as "a removed member's later events are ignored" above:
++		// publish an updated directory removing the member, signed by the
++		// admin, without waiting for member.sync to catch up.
++		const memberIdentity = await member.db.deviceIdentity();
++		const adminMembers = await admin.db.members(list.id);
++		const updatedMembers = adminMembers.map(m => (m.pubkey === memberIdentity.publicKey ? { ...m, removedAt: Date.now() } : m));
++		for (const m of updatedMembers) await admin.db.upsertMember(m);
++		const adminList = await admin.db.list(list.id);
++		const directoryPayload = { members: updatedMembers, settings: adminList!.settings };
++		const directoryEvent = buildManagedDirectoryEvent(hexToBytes(adminList!.listKey!), hexToBytes(adminList!.contentKey!), directoryPayload, undefined, list.id);
++		for (const url of defaultRelays) network.relay(url).publish(directoryEvent);
++		await admin.db.setMeta(`directory:${list.id}`, JSON.stringify(directoryPayload));
++
++		await member.db.setDeviceName('Verdächtiges Gerät', Date.now());
++		await member.sync.syncList(list.id);
++		await admin.sync.syncList(list.id);
++
++		expect(await admin.db.profileName(list.id, memberIdentity.publicKey)).toBeNull();
++	});
+ });
+diff --git a/packages/app-mobile/lists/sync/listSync.ts b/packages/app-mobile/lists/sync/listSync.ts
+index c27e25c..e405a3f 100644
+--- a/packages/app-mobile/lists/sync/listSync.ts
++++ b/packages/app-mobile/lists/sync/listSync.ts
+@@ -4,7 +4,7 @@
+ import { AppState, AppStateStatus, NativeEventSubscription } from 'react-native';
+ import { Filter, VerifiedEvent } from 'nostr-tools';
+ import { ListsDatabase, DeviceIdentity } from '../core/db';
+-import { ListsStore, itemRecordToPayload } from '../core/store';
++import { ListsStore, itemEventCreatedAt, itemRecordToPayload } from '../core/store';
+ import {
+ 	buildItemEvent,
+ 	buildManagedDirectoryEvent,
+@@ -19,9 +19,11 @@ import {
+ 	parseOpenDirectoryEvent,
+ 	unwrapManagedContentKey,
+ } from '../core/events';
++import { buildProfileEvent, isProfileDTag, parseProfileEvent } from '../core/profile';
++import { debugLog } from '../../utils/debugLog';
+ import { deriveOpenListKeys, hexToBytes } from '../core/crypto';
+ import { isInviteExpired, ListInvite, parseInvite, verifyManagedInviteToken } from '../core/invite';
+-import { ItemPayload, ItemRecord, ListRecord, MemberRecord } from '../core/types';
++import { ItemPayload, ListRecord, MemberRecord } from '../core/types';
+ import { defaultRelayPoolFactory, publishSucceeded, RelayPoolFactory, RelayPoolLike, RelayPublishResult } from './relayPool';
+ import { currentRelays } from './defaultRelays';
+ 
+@@ -45,14 +47,14 @@ export interface SyncStatus {
+ 
+ export type StatusListener = (status: SyncStatus)=> void;
+ 
+-const itemEventCreatedAt = (item: ItemRecord): number => {
+-	const times = [item.openT, item.detailT, item.categoryT, item.deletedT].filter((t): t is number => t !== null);
+-	const maxMs = times.length > 0 ? Math.max(...times) : Date.now();
+-	return Math.floor(maxMs / 1000);
+-};
++// itemEventCreatedAt() lives in core/store.ts (also used by
++// lists/nearby/nearbyManager.ts), so qty's per-device times only need to
++// participate in one place.
+ 
+ const eventDTag = (event: VerifiedEvent): string | undefined => event.tags.find(tag => tag[0] === 'd')?.[1];
+ 
++const log = debugLog('lists.sync');
++
+ // Syncs shopping lists over Nostr relays: fetches and applies the member
+ // directory and item events for a list, publishes local pending changes, and
+ // (for managed lists) lets an admin device accept join requests. No UI or
+@@ -172,6 +174,7 @@ export class ListsSync {
+ 			await this.syncItems(list, pool);
+ 			await this.publishPending(list, identity, pool);
+ 			await this.ensureSelfInDirectory(list, identity, pool);
++			await this.publishOwnProfile(list, identity, pool);
+ 			await this.maybeRepublish(list, identity, pool);
+ 
+ 			const now = Date.now();
+@@ -408,9 +411,14 @@ export class ListsSync {
+ 		const events = await pool.queryAll(filter);
+ 		for (const event of events) {
+ 			const dTagValue = eventDTag(event);
+-			// The author filter above also matches this member's own directory
+-			// or join-request events (same kind, same 'L' tag); skip them here.
++			// The author filter above also matches this member's own directory,
++			// join-request or profile events (same kind, same 'L' tag); route
++			// profile events to their own handler and skip the rest here.
+ 			if (!dTagValue || dTagValue === DIRECTORY_D_TAG || dTagValue.startsWith('join:')) continue;
++			if (isProfileDTag(dTagValue)) {
++				await this.handleProfileEvent(list, event);
++				continue;
++			}
+ 			await this.handleItemEvent(list, event);
+ 		}
+ 	}
+@@ -430,6 +438,47 @@ export class ListsSync {
+ 		await this.store.applyRemoteItem(list.id, dTagValue, payload);
+ 	}
+ 
++	// --- profiles (per-device display name, see core/profile.ts) -----------
++
++	// Applies an incoming profile event: the newest name a member has
++	// published for itself for this list, kept in the local `profiles` table
++	// (see core/db.ts) and read by the UI (MembersScreen) alongside the
++	// directory's own name field as a fallback.
++	private async handleProfileEvent(list: ListRecord, event: VerifiedEvent): Promise<void> {
++		if (!list.contentKey) return;
++		const members = await this.db.members(list.id);
++		if (!members.some(m => m.pubkey === event.pubkey && !m.removedAt)) return;
++		let parsed;
++		try {
++			parsed = parseProfileEvent(event, hexToBytes(list.contentKey));
++		} catch (error) {
++			return; // wrong/rotated content key, or a tampered event
++		}
++		const applied = await this.db.upsertProfileName(list.id, parsed.devicePubkey, parsed.name, parsed.t);
++		if (applied) log.info('Applied profile event', { list: list.id.slice(0, 8), member: parsed.devicePubkey.slice(0, 8) });
++	}
++
++	// Publishes this device's own profile event for `list` if its name has
++	// changed (lists.deviceName, see lists/ui/deviceNameSettings.ts) since the
++	// last profile it successfully published for this list -- so a change
++	// made while offline is simply queued and picked up by the next normal
++	// sync pass, same as a pending item.
++	private async publishOwnProfile(list: ListRecord, identity: DeviceIdentity, pool: RelayPoolLike): Promise<void> {
++		if (!list.contentKey) return;
++		const changedAt = await this.db.deviceNameChangedAt();
++		if (!changedAt) return; // never explicitly renamed -- directory name is still current
++		const publishedAt = await this.db.profilePublishedAt(list.id);
++		if (publishedAt >= changedAt) return;
++
++		const contentKey = hexToBytes(list.contentKey);
++		const event = buildProfileEvent(identity.secretKey, list.id, contentKey, identity.name, changedAt, Math.floor(changedAt / 1000));
++		const results = await pool.publishAll(event);
++		if (publishSucceeded(results)) {
++			await this.db.setProfilePublishedAt(list.id, changedAt);
++			log.info('Published own profile event', { list: list.id.slice(0, 8) });
++		}
++	}
++
+ 	private async publishPending(list: ListRecord, identity: DeviceIdentity, pool: RelayPoolLike): Promise<void> {
+ 		if (!list.contentKey) return;
+ 		const contentKey = hexToBytes(list.contentKey);
+@@ -522,6 +571,10 @@ export class ListsSync {
+ 			await this.handleDirectoryEvent(list, identity, event);
+ 			return;
+ 		}
++		if (isProfileDTag(dTagValue)) {
++			await this.handleProfileEvent(list, event);
++			return;
++		}
+ 		await this.handleItemEvent(list, event);
+ 	}
+ 
+diff --git a/packages/app-mobile/lists/ui/ListScreen.tsx b/packages/app-mobile/lists/ui/ListScreen.tsx
+index 68838dc..b440c90 100644
+--- a/packages/app-mobile/lists/ui/ListScreen.tsx
++++ b/packages/app-mobile/lists/ui/ListScreen.tsx
+@@ -15,8 +15,10 @@ import PromptModal from './components/PromptModal';
+ import { getListsSync } from './syncApi';
+ import { parseItemInput } from './parseItemInput';
+ import { groupOpenItems, sortRecentlyBought } from './groupItems';
++import { formatQty, parseQuantityToken, REOPEN_UNDO_WINDOW_MS } from '../core/qty';
+ import { clampTileColumns, tileZoomStep, DEFAULT_TILE_COLUMNS } from './listTileZoom';
+ import NearbyStatusCircle from './components/NearbyStatusCircle';
++import { isListNotifyEnabled, setListNotifyEnabled } from '../notify/listSettings';
+ import ItemEditModal from './components/ItemEditModal';
+ import { ItemRecord, ListRecord, CatalogMatch } from '../core/types';
+ 
+@@ -168,6 +170,7 @@ const useTileMetrics = (themeId: number, columns: number) => {
+ 			},
+ 			tileEmoji: { fontSize: emojiSize },
+ 			tileName: { fontSize: nameFontSize, color: theme.color, textAlign: 'center', marginTop: 4 },
++			tileQty: { fontSize: detailFontSize, color: theme.color, textAlign: 'center' },
+ 			tileDetail: { fontSize: detailFontSize, color: theme.colorFaded, textAlign: 'center' },
+ 		});
+ 	}, [themeId, windowWidth, columns]);
+@@ -189,6 +192,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 	const [online, setOnline] = useState(true);
+ 	const [renaming, setRenaming] = useState(false);
+ 	const [tileColumns, setTileColumns] = useState(DEFAULT_TILE_COLUMNS);
++	const [notifyEnabled, setNotifyEnabled] = useState(true);
+ 	const tileStyles = useTileMetrics(props.themeId, tileColumns);
+ 	const pinchStateRef = useRef<{ lastDistance: number } | null>(null);
+ 
+@@ -250,14 +254,33 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		return () => { cancelled = true; };
+ 	}, []);
+ 
++	// Loads the per-list "Notifications: on/off" menu toggle (see
++	// lists/notify/listSettings.ts).
++	useEffect(() => {
++		let cancelled = false;
++		void (async () => {
++			const db = await getListsDatabase();
++			const enabled = await isListNotifyEnabled(db, listId);
++			if (!cancelled) setNotifyEnabled(enabled);
++		})();
++		return () => { cancelled = true; };
++	}, [listId]);
++
++	const onToggleNotifications = useCallback(async () => {
++		const db = await getListsDatabase();
++		const next = !notifyEnabled;
++		await setListNotifyEnabled(db, listId, next);
++		setNotifyEnabled(next);
++		log.info('List notifications toggled', { listId: listId.slice(0, 8), enabled: next });
++	}, [listId, notifyEnabled]);
++
+ 	const addItemByName = useCallback(async (rawText: string, source: 'typed' | 'chip') => {
+ 		const trimmed = rawText.trim();
+ 		if (!trimmed) return;
+ 		const parsed = parseItemInput(trimmed);
+ 		if (!parsed.name) return;
+-		const record = await store.addItem(listId, parsed.name);
+-		if (parsed.detail) await store.setDetail(listId, record.dTag, parsed.detail);
+-		log.info('Item added', { source, name: parsed.name, hasDetail: !!parsed.detail });
++		await store.addItem(listId, parsed.name, parsed.quantity ?? undefined);
++		log.info('Item added', { source, name: parsed.name, hasQuantity: !!parsed.quantity });
+ 		// Cleared but the keyboard is left open (no Keyboard.dismiss()/blur here) so several
+ 		// items can be typed in quick succession.
+ 		setInputText('');
+@@ -336,6 +359,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		{ title: _('Members'), onPress: (): void => goTo('ListsMembers') },
+ 		{ title: _('Rename'), onPress: (): void => setRenaming(true) },
+ 		{ title: _('Clean up bought items'), onPress: (): void => { void onCleanUpBought(); }, style: MenuOptionStyle.Normal },
++		{ title: notifyEnabled ? _('Notifications: on') : _('Notifications: off'), onPress: (): void => { void onToggleNotifications(); } },
+ 	];
+ 
+ 	const syncLine = !online
+@@ -344,24 +368,33 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 			? _('Last synced %s', time.formatMsToLocal(lastSyncedAt))
+ 			: _('Not synced yet');
+ 
+-	const renderTile = (item: ItemRecord, bought: boolean) => (
+-		<TouchableOpacity
+-			key={item.dTag}
+-			style={[tileStyles.tile, bought ? styles.tileBought : null]}
+-			onPress={() => onToggleItem(item)}
+-			onLongPress={() => setEditingItem(item)}
+-		>
+-			{item.icon ? (
+-				<Text style={tileStyles.tileEmoji}>{item.icon}</Text>
+-			) : (
+-				<View style={[styles.letterCircle, tileStyles.letterCircle]}>
+-					<Text style={[styles.letterCircleText, tileStyles.letterCircleText]}>{item.name.charAt(0).toUpperCase()}</Text>
+-				</View>
+-			)}
+-			<Text style={tileStyles.tileName} numberOfLines={2} ellipsizeMode='tail'>{item.name}</Text>
+-			{!!item.detail && <Text style={tileStyles.tileDetail} numberOfLines={1}>{item.detail}</Text>}
+-		</TouchableOpacity>
+-	);
++	const renderTile = (item: ItemRecord, bought: boolean) => {
++		const qtyText = formatQty(item.qty);
++		// Once bought, the quantity is only shown while still inside the
++		// undo window (see core/qty.ts#epochForReopen) -- past it, re-opening
++		// the item would start a fresh (empty) quantity anyway, so showing the
++		// stale one here would be misleading.
++		const showQty = !!qtyText && (!bought || Date.now() - item.openT <= REOPEN_UNDO_WINDOW_MS);
++		return (
++			<TouchableOpacity
++				key={item.dTag}
++				style={[tileStyles.tile, bought ? styles.tileBought : null]}
++				onPress={() => onToggleItem(item)}
++				onLongPress={() => setEditingItem(item)}
++			>
++				{item.icon ? (
++					<Text style={tileStyles.tileEmoji}>{item.icon}</Text>
++				) : (
++					<View style={[styles.letterCircle, tileStyles.letterCircle]}>
++						<Text style={[styles.letterCircleText, tileStyles.letterCircleText]}>{item.name.charAt(0).toUpperCase()}</Text>
++					</View>
++				)}
++				<Text style={tileStyles.tileName} numberOfLines={2} ellipsizeMode='tail'>{item.name}</Text>
++				{showQty && <Text style={tileStyles.tileQty} numberOfLines={1}>{qtyText}</Text>}
++				{!!item.detail && <Text style={tileStyles.tileDetail} numberOfLines={1}>{item.detail}</Text>}
++			</TouchableOpacity>
++		);
++	};
+ 
+ 	const isEmpty = !openItems.length && !boughtItems.length;
+ 
+@@ -450,10 +483,12 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 			<ItemEditModal
+ 				item={editingItem}
+ 				onClose={() => setEditingItem(null)}
+-				onSave={async (detail, category) => {
++				onSave={async (detail, category, quantityText) => {
+ 					if (!editingItem) return;
+ 					await store.setDetail(listId, editingItem.dTag, detail);
+ 					if (category !== editingItem.category) await setItemCategory(editingItem, category);
++					const parsedQty = quantityText ? parseQuantityToken(quantityText) : null;
++					if (parsedQty) await store.setQuantity(listId, editingItem.dTag, parsedQty.unit, Math.max(0, parsedQty.amount));
+ 					setEditingItem(null);
+ 				}}
+ 				onDelete={async () => {
+diff --git a/packages/app-mobile/lists/ui/MembersScreen.tsx b/packages/app-mobile/lists/ui/MembersScreen.tsx
+index 75df707..5fa2a6c 100644
+--- a/packages/app-mobile/lists/ui/MembersScreen.tsx
++++ b/packages/app-mobile/lists/ui/MembersScreen.tsx
+@@ -10,8 +10,14 @@ import { BaseScreenComponent } from '../../components/base-screen';
+ import { themeStyle } from '../../components/global-style';
+ import { getListsDatabase, getListsStore } from './listsRuntime';
+ import { getListsSync, PendingJoinRequest } from './syncApi';
++import { displayName } from '../core/profile';
+ import { ListRecord, MemberRecord } from '../core/types';
+ 
++// dd.mm.yyyy hh:mm, independent of the app's global date/time format
++// setting: a member's "joined since" date is short-lived, list-local
++// context, not a note timestamp, so it's always shown the same way.
++const MEMBER_SINCE_FORMAT = 'DD.MM.YYYY HH:mm';
++
+ interface Props {
+ 	navigation: { state: { listId: string } };
+ 	themeId: number;
+@@ -54,18 +60,22 @@ const MembersScreenComponent: React.FC<Props> = props => {
+ 
+ 	const [list, setList] = useState<ListRecord | null>(null);
+ 	const [members, setMembers] = useState<MemberRecord[]>([]);
++	const [profileNames, setProfileNames] = useState<Map<string, { name: string; t: number }>>(new Map());
++	const [selfPubkey, setSelfPubkey] = useState<string | null>(null);
+ 	const [isAdmin, setIsAdmin] = useState(false);
+ 	const [pendingRequests, setPendingRequests] = useState<PendingJoinRequest[]>([]);
+ 	const [pendingRequestsSupported, setPendingRequestsSupported] = useState(false);
+ 
+ 	const reload = useCallback(async () => {
+ 		const [store, db] = await Promise.all([getListsStore(), getListsDatabase()]);
+-		const [lists, memberRows, identity] = await Promise.all([
+-			store.lists(), db.members(listId), db.deviceIdentity(),
++		const [lists, memberRows, identity, names] = await Promise.all([
++			store.lists(), db.members(listId), db.deviceIdentity(), db.profileNames(listId),
+ 		]);
+ 		const current = lists.find(l => l.id === listId) ?? null;
+ 		setList(current);
+ 		setMembers(memberRows.filter(m => !m.removedAt));
++		setProfileNames(names);
++		setSelfPubkey(identity.publicKey);
+ 		const self = memberRows.find(m => m.pubkey === identity.publicKey && !m.removedAt);
+ 		setIsAdmin(current?.kind === 'managed' && self?.role === 'admin');
+ 
+@@ -134,26 +144,35 @@ const MembersScreenComponent: React.FC<Props> = props => {
+ 			<FlatList
+ 				data={members}
+ 				keyExtractor={m => m.pubkey}
+-				renderItem={({ item }) => (
+-					<View style={styles.row}>
+-						<Text style={styles.name} numberOfLines={1}>{item.name || item.pubkey.slice(0, 8)}</Text>
+-						<Text style={styles.meta}>
+-							{list?.kind === 'managed' ? (item.role === 'admin' ? _('Admin') : _('Member')) : ''}
+-							{'  ·  '}
+-							{time.formatMsToLocal(item.since)}
+-						</Text>
+-						{isAdmin && (
+-							<>
+-								<TouchableOpacity onPress={() => void onToggleRole(item)}>
+-									<Text style={styles.actionText}>{item.role === 'admin' ? _('Make member') : _('Make admin')}</Text>
+-								</TouchableOpacity>
+-								<TouchableOpacity onPress={() => void onRemoveMember(item)}>
+-									<Text style={styles.actionText}>{_('Remove')}</Text>
+-								</TouchableOpacity>
+-							</>
+-						)}
+-					</View>
+-				)}
++				renderItem={({ item }) => {
++					// The newest name this member has published for itself (see
++					// core/profile.ts), falling back to the directory's own name
++					// field (set at invite/join time) and then a shortened pubkey.
++					const shownName = displayName(profileNames.get(item.pubkey) ?? null, item.name) || item.pubkey.slice(0, 8);
++					const isSelf = item.pubkey === selfPubkey;
++					return (
++						<View style={styles.row}>
++							<Text style={styles.name} numberOfLines={1}>
++								{shownName}{isSelf ? ` ${_('(you)')}` : ''}
++							</Text>
++							<Text style={styles.meta}>
++								{list?.kind === 'managed' ? (item.role === 'admin' ? _('Admin') : _('Member')) : ''}
++								{'  ·  '}
++								{time.formatMsToLocal(item.since, MEMBER_SINCE_FORMAT)}
++							</Text>
++							{isAdmin && (
++								<>
++									<TouchableOpacity onPress={() => void onToggleRole(item)}>
++										<Text style={styles.actionText}>{item.role === 'admin' ? _('Make member') : _('Make admin')}</Text>
++									</TouchableOpacity>
++									<TouchableOpacity onPress={() => void onRemoveMember(item)}>
++										<Text style={styles.actionText}>{_('Remove')}</Text>
++									</TouchableOpacity>
++								</>
++							)}
++						</View>
++					);
++				}}
+ 			/>
+ 		</View>
+ 	);
+diff --git a/packages/app-mobile/lists/ui/ShareScreen.test.tsx b/packages/app-mobile/lists/ui/ShareScreen.test.tsx
+new file mode 100644
+index 0000000..66a8b4e
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/ShareScreen.test.tsx
+@@ -0,0 +1,89 @@
++import * as React from 'react';
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import { Share } from 'react-native';
++import { Store } from 'redux';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import TestProviderStack from '../../components/testing/TestProviderStack';
++import createMockReduxStore from '../../utils/testing/createMockReduxStore';
++import setupGlobalStore from '../../utils/testing/setupGlobalStore';
++import { fireEvent, render, screen, waitFor } from '../../utils/testing/testingLibrary';
++import { AppState } from '../../utils/types';
++import { ListsDatabase } from '../core/db';
++import { INVITE_LINK_PREFIX } from '../core/invite';
++import { ListsStore } from '../core/store';
++
++// Same approach as ListScreen.test.tsx: swap in a Node-backed ListsStore/
++// ListsDatabase instead of listsRuntime's real (expo-sqlite) one.
++let testStore: ListsStore;
++let testDatabase: ListsDatabase;
++
++jest.mock('./listsRuntime', () => ({
++	getListsStore: () => testStore,
++	getListsDatabase: async () => { await testDatabase.openOrCreate('ignored'); return testDatabase; },
++	getListsDatabaseInstance: () => testDatabase,
++}));
++
++import { ShareScreenComponent } from './ShareScreen';
++
++let reduxStore: Store<AppState>;
++let dbPath: string;
++
++const WrappedShareScreen: React.FC<{ listId: string }> = ({ listId }) => {
++	return <TestProviderStack store={reduxStore}>
++		<ShareScreenComponent navigation={{ state: { listId } }} themeId={reduxStore.getState().settings.theme} dispatch={reduxStore.dispatch} />
++	</TestProviderStack>;
++};
++
++describe('lists/ui/ShareScreen', () => {
++	beforeEach(async () => {
++		dbPath = join(tmpdir(), `tiles-lists-share-test-${uuid.createNano()}.sqlite`);
++		testDatabase = new ListsDatabase(new Database(new DatabaseDriverNode()));
++		testStore = new ListsStore(testDatabase, dbPath);
++
++		reduxStore = createMockReduxStore();
++		setupGlobalStore(reduxStore);
++	});
++
++	afterEach(async () => {
++		await rm(dbPath, { force: true });
++		jest.restoreAllMocks();
++	});
++
++	test('renders a normal header (title + back button) above the invite, not inside it', async () => {
++		const list = await testStore.createOpenList('Groceries');
++
++		render(<WrappedShareScreen listId={list.id} />);
++
++		await waitFor(() => {
++			expect(screen.getByText('Share list')).toBeTruthy();
++		});
++		expect(screen.getByLabelText('Back')).toBeTruthy();
++		// The QR code and invite link only show up once the invite has loaded.
++		await waitFor(() => {
++			expect(screen.getByText('Copy link')).toBeTruthy();
++		});
++	});
++
++	test('pressing "Share…" opens the share sheet with an invite message including the list name and link', async () => {
++		const list = await testStore.createOpenList('Groceries');
++		const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
++
++		render(<WrappedShareScreen listId={list.id} />);
++
++		await waitFor(() => {
++			expect(screen.getByText('Share…')).toBeTruthy();
++		});
++		fireEvent.press(screen.getByText('Share…'));
++
++		await waitFor(() => {
++			expect(shareSpy).toHaveBeenCalledTimes(1);
++		});
++		const [{ message }] = shareSpy.mock.calls[0];
++		expect(message).toContain('Groceries');
++		expect(message).toContain(INVITE_LINK_PREFIX);
++	});
++});
+diff --git a/packages/app-mobile/lists/ui/ShareScreen.tsx b/packages/app-mobile/lists/ui/ShareScreen.tsx
+index eaf7cc8..a86aa3e 100644
+--- a/packages/app-mobile/lists/ui/ShareScreen.tsx
++++ b/packages/app-mobile/lists/ui/ShareScreen.tsx
+@@ -1,16 +1,19 @@
+ import * as React from 'react';
+ import { useEffect, useMemo, useState } from 'react';
+-import { Alert, Share as RNShare, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { Alert, Share as RNShare, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+ import { Dispatch } from 'redux';
+ import Clipboard from '@react-native-clipboard/clipboard';
+ import { _ } from '@joplin/lib/locale';
+ import { ScreenHeader } from '../../components/ScreenHeader';
+ import { BaseScreenComponent } from '../../components/base-screen';
+ import { themeStyle } from '../../components/global-style';
++import { debugLog } from '../../utils/debugLog';
+ import { getListsDatabase, getListsStore } from './listsRuntime';
+ import QrCode from './components/QrCode';
+ import { EncodedInvite } from '../core/invite';
+-import { Role } from '../core/types';
++import { ListRecord, Role } from '../core/types';
++
++const log = debugLog('lists.invite');
+ 
+ interface Props {
+ 	navigation: { state: { listId: string } };
+@@ -22,7 +25,13 @@ const useStyles = (themeId: number) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
+ 		return StyleSheet.create({
+-			container: { flex: 1, alignItems: 'center', padding: theme.margin },
++			// Plain flex column: the header needs to stay a normal fixed-width
++			// bar (see ScreenHeader/index.tsx), so `alignItems: 'center'` and
++			// the screen's padding must live on the scrolling content below it,
++			// not on this outer container -- putting them here instead shrinks
++			// the header to its own content width and breaks its layout.
++			container: { flex: 1 },
++			content: { alignItems: 'center', padding: theme.margin },
+ 			qrWrapper: { marginTop: 24, padding: 12, backgroundColor: '#ffffff', borderRadius: 8 },
+ 			roleRow: { flexDirection: 'row', marginTop: 16 },
+ 			roleOption: {
+@@ -58,6 +67,7 @@ const ShareScreenComponent: React.FC<Props> = props => {
+ 	const styles = useStyles(props.themeId);
+ 	const store = useMemo(() => getListsStore(), []);
+ 
++	const [list, setList] = useState<ListRecord | null>(null);
+ 	const [managed, setManaged] = useState(false);
+ 	const [isAdmin, setIsAdmin] = useState(true);
+ 	const [role, setRole] = useState<Role>('member');
+@@ -68,6 +78,7 @@ const ShareScreenComponent: React.FC<Props> = props => {
+ 		void (async () => {
+ 			const [lists, db] = await Promise.all([store.lists(), getListsDatabase()]);
+ 			const list = lists.find(l => l.id === listId);
++			setList(list ?? null);
+ 			setManaged(list?.kind === 'managed');
+ 			if (list?.kind === 'managed') {
+ 				const identity = await db.deviceIdentity();
+@@ -96,59 +107,76 @@ const ShareScreenComponent: React.FC<Props> = props => {
+ 		Alert.alert(_('Copied'));
+ 	};
+ 
++	// Opens the Android/iOS share sheet (WhatsApp, Messages, ...) with a
++	// friendly invite message rather than the bare link, so whoever receives
++	// it knows what it's for even without app context.
++	const shareInvite = async () => {
++		if (!invite) return;
++		const message = _('Join my shopping list "%s": %s', list?.name ?? '', invite.link);
++		log.info('Opening share sheet for list invite', { listId: listId.slice(0, 8) });
++		try {
++			const result = await RNShare.share({ message });
++			log.info('Share sheet closed', { action: result.action });
++		} catch (e) {
++			log.warn('Share sheet failed', e);
++		}
++	};
++
+ 	return (
+ 		<View style={styles.container}>
+ 			<ScreenHeader title={_('Share list')} showBackButton />
+ 
+-			{managed && !isAdmin && (
+-				<Text style={styles.errorText}>{_('Only an admin can invite people to this list.')}</Text>
+-			)}
+-
+-			{(!managed || isAdmin) && (
+-				<>
+-					{managed && (
+-						<View style={styles.roleRow}>
+-							{(['member', 'admin'] as Role[]).map(r => (
+-								<TouchableOpacity
+-									key={r}
+-									style={[styles.roleOption, role === r ? styles.roleOptionSelected : null]}
+-									onPress={() => setRole(r)}
+-								>
+-									<Text style={styles.roleOptionText}>{r === 'admin' ? _('Admin') : _('Member')}</Text>
+-								</TouchableOpacity>
+-							))}
+-						</View>
+-					)}
+-
+-					{!!error && <Text style={styles.errorText}>{error}</Text>}
+-
+-					{!!invite && (
+-						<>
+-							<View style={styles.qrWrapper}>
+-								<QrCode value={invite.link} size={220} />
+-							</View>
+-
+-							<Text style={styles.linkText} numberOfLines={2} selectable>{invite.link}</Text>
+-
+-							<View style={styles.codeBox}>
+-								<Text style={styles.codeText} selectable>{invite.code}</Text>
+-							</View>
+-
+-							<View style={styles.buttonRow}>
+-								<TouchableOpacity style={styles.button} onPress={() => copy(invite.link)}>
+-									<Text style={styles.buttonText}>{_('Copy link')}</Text>
+-								</TouchableOpacity>
+-								<TouchableOpacity style={styles.button} onPress={() => copy(invite.code)}>
+-									<Text style={styles.buttonText}>{_('Copy code')}</Text>
+-								</TouchableOpacity>
+-								<TouchableOpacity style={styles.button} onPress={() => void RNShare.share({ message: invite.link })}>
+-									<Text style={styles.buttonText}>{_('Share')}</Text>
+-								</TouchableOpacity>
++			<ScrollView contentContainerStyle={styles.content}>
++				{managed && !isAdmin && (
++					<Text style={styles.errorText}>{_('Only an admin can invite people to this list.')}</Text>
++				)}
++
++				{(!managed || isAdmin) && (
++					<>
++						{managed && (
++							<View style={styles.roleRow}>
++								{(['member', 'admin'] as Role[]).map(r => (
++									<TouchableOpacity
++										key={r}
++										style={[styles.roleOption, role === r ? styles.roleOptionSelected : null]}
++										onPress={() => setRole(r)}
++									>
++										<Text style={styles.roleOptionText}>{r === 'admin' ? _('Admin') : _('Member')}</Text>
++									</TouchableOpacity>
++								))}
+ 							</View>
+-						</>
+-					)}
+-				</>
+-			)}
++						)}
++
++						{!!error && <Text style={styles.errorText}>{error}</Text>}
++
++						{!!invite && (
++							<>
++								<View style={styles.qrWrapper}>
++									<QrCode value={invite.link} size={220} />
++								</View>
++
++								<Text style={styles.linkText} numberOfLines={2} selectable>{invite.link}</Text>
++
++								<View style={styles.codeBox}>
++									<Text style={styles.codeText} selectable>{invite.code}</Text>
++								</View>
++
++								<View style={styles.buttonRow}>
++									<TouchableOpacity style={styles.button} onPress={() => copy(invite.link)}>
++										<Text style={styles.buttonText}>{_('Copy link')}</Text>
++									</TouchableOpacity>
++									<TouchableOpacity style={styles.button} onPress={() => copy(invite.code)}>
++										<Text style={styles.buttonText}>{_('Copy code')}</Text>
++									</TouchableOpacity>
++									<TouchableOpacity style={styles.button} onPress={() => void shareInvite()}>
++										<Text style={styles.buttonText}>{_('Share…')}</Text>
++									</TouchableOpacity>
++								</View>
++							</>
++						)}
++					</>
++				)}
++			</ScrollView>
+ 		</View>
+ 	);
+ };
+diff --git a/packages/app-mobile/lists/ui/components/ItemEditModal.tsx b/packages/app-mobile/lists/ui/components/ItemEditModal.tsx
+index 5c3c229..44f0b51 100644
+--- a/packages/app-mobile/lists/ui/components/ItemEditModal.tsx
++++ b/packages/app-mobile/lists/ui/components/ItemEditModal.tsx
+@@ -3,11 +3,12 @@ import { useEffect, useState } from 'react';
+ import { Modal, View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+ import { _ } from '@joplin/lib/locale';
+ import { categoryOrder } from '../../core/normalize';
+-import { ItemRecord } from '../../core/types';
++import { formatQtyUnit, QTY_UNITS, qtyTotal } from '../../core/qty';
++import { ItemRecord, QtyUnit } from '../../core/types';
+ 
+ interface Props {
+ 	item: ItemRecord | null;
+-	onSave: (detail: string | null, category: string | null)=> void;
++	onSave: (note: string | null, category: string | null, quantityText: string)=> void;
+ 	onDelete: ()=> void;
+ 	onClose: ()=> void;
+ }
+@@ -78,14 +79,27 @@ const styles = StyleSheet.create({
+ 	},
+ });
+ 
+-// Long-press editor for a single tile: quantity/note ("detail"), category and
+-// delete. Rendered for every ListScreen instance but only visible while
++// The unit shown (and edited) by the single quantity field below: the first
++// unit with a non-zero total, in the same order the tile displays them --
++// see core/qty.ts#QTY_UNITS/formatQty. Other units, if also present (e.g.
++// "2 Pck + 1 l"), are left untouched by this field.
++const primaryQtyUnit = (item: ItemRecord | null): QtyUnit => {
++	if (item) for (const unit of QTY_UNITS) if (qtyTotal(item.qty, unit) > 0) return unit;
++	return 'count';
++};
++
++// Long-press editor for a single tile: quantity, note ("detail"), category
++// and delete. Rendered for every ListScreen instance but only visible while
+ // `item` is set.
+ const ItemEditModal: React.FC<Props> = ({ item, onSave, onDelete, onClose }) => {
++	const [quantityText, setQuantityText] = useState('');
+ 	const [detail, setDetail] = useState('');
+ 	const [category, setCategory] = useState<string | null>(null);
+ 
+ 	useEffect(() => {
++		const unit = primaryQtyUnit(item);
++		const total = qtyTotal(item?.qty ?? null, unit);
++		setQuantityText(total > 0 ? formatQtyUnit(unit, total) : '');
+ 		setDetail(item?.detail ?? '');
+ 		setCategory(item?.category ?? null);
+ 	}, [item]);
+@@ -99,8 +113,11 @@ const ItemEditModal: React.FC<Props> = ({ item, onSave, onDelete, onClose }) =>
+ 					<ScrollView keyboardShouldPersistTaps='handled'>
+ 						<Text style={styles.title}>{item.name}</Text>
+ 
+-						<Text style={styles.label}>{_('Quantity / note')}</Text>
+-						<TextInput style={styles.input} value={detail} onChangeText={setDetail} placeholder={_('e.g. 2, 1 kg')} />
++						<Text style={styles.label}>{_('Quantity')}</Text>
++						<TextInput style={styles.input} value={quantityText} onChangeText={setQuantityText} placeholder={_('e.g. 2, 1 kg')} />
++
++						<Text style={styles.label}>{_('Note')}</Text>
++						<TextInput style={styles.input} value={detail} onChangeText={setDetail} placeholder={_('e.g. Bio, Freiland')} />
+ 
+ 						<Text style={styles.label}>{_('Category')}</Text>
+ 						<View style={styles.categoryRow}>
+@@ -123,7 +140,7 @@ const ItemEditModal: React.FC<Props> = ({ item, onSave, onDelete, onClose }) =>
+ 								<TouchableOpacity style={styles.button} onPress={onClose}>
+ 									<Text style={styles.buttonText}>{_('Cancel')}</Text>
+ 								</TouchableOpacity>
+-								<TouchableOpacity style={styles.button} onPress={() => onSave(detail.trim() || null, category)}>
++								<TouchableOpacity style={styles.button} onPress={() => onSave(detail.trim() || null, category, quantityText.trim())}>
+ 									<Text style={styles.buttonText}>{_('Save')}</Text>
+ 								</TouchableOpacity>
+ 							</View>
+diff --git a/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx b/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx
+index 688462e..03b5aa3 100644
+--- a/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx
++++ b/packages/app-mobile/lists/ui/components/NearbyStatusCircle.tsx
+@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
+ import { Alert, Animated, Easing, PermissionsAndroid, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+ import { _ } from '@joplin/lib/locale';
+ import { getNearbyTransport, NearbyStatus } from '../syncApi';
++import { setActiveListId } from '../../notify/activeScreen';
+ import NearbyPeersModal from './NearbyPeersModal';
+ 
+ interface Props {
+@@ -49,6 +50,13 @@ const styles = StyleSheet.create({
+ // connect; below that, scanning for BLE devices also requires location
+ // permission. See PROTOCOL.md and the Android docs for
+ // BLUETOOTH_SCAN/BLUETOOTH_ADVERTISE/BLUETOOTH_CONNECT.
++//
++// POST_NOTIFICATIONS (33+) is requested alongside them: without it neither
++// the foreground service's ongoing notification (NearbyForegroundService.kt)
++// nor a "someone changed your list" notification (../../notify/) can show --
++// both are meaningless without Bluetooth already granted, so asking together
++// here (rather than only when the first notification would fire) avoids a
++// second permission prompt right after this one.
+ const requestNearbyPermissions = async (): Promise<boolean> => {
+ 	if (Platform.OS !== 'android') return true;
+ 	const apiLevel = typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10);
+@@ -59,8 +67,14 @@ const requestNearbyPermissions = async (): Promise<boolean> => {
+ 			PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+ 		]
+ 		: [PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION];
++	// Requested together with the Bluetooth permissions above (a single
++	// prompt), but not required: a "no" here should only mean no
++	// notifications, not "Bluetooth sync doesn't turn on".
++	if (apiLevel >= 33) permissions.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+ 	const results = await PermissionsAndroid.requestMultiple(permissions);
+-	return Object.values(results).every(result => result === PermissionsAndroid.RESULTS.GRANTED);
++	return permissions
++		.filter(permission => permission !== PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS)
++		.every(permission => results[permission] === PermissionsAndroid.RESULTS.GRANTED);
+ };
+ 
+ // The "circle in the top right" from docs/KONZEPT.md section 3: shows and
+@@ -81,6 +95,15 @@ const NearbyStatusCircle: React.FC<Props> = ({ listId }) => {
+ 		return transport.onStateChange(setStatus);
+ 	}, [transport]);
+ 
++	// This component is mounted for exactly as long as the list's screen is on
++	// screen (see ListScreen.tsx's rightElement) -- used by lists/notify to
++	// suppress a change notification for a list the person is already looking
++	// at.
++	useEffect(() => {
++		setActiveListId(listId);
++		return () => setActiveListId(null);
++	}, [listId]);
++
+ 	const spin = useRef(new Animated.Value(0)).current;
+ 	useEffect(() => {
+ 		if (status.state !== 'searching') {
+diff --git a/packages/app-mobile/lists/ui/components/QrCode.tsx b/packages/app-mobile/lists/ui/components/QrCode.tsx
+index 012e067..9ea364c 100644
+--- a/packages/app-mobile/lists/ui/components/QrCode.tsx
++++ b/packages/app-mobile/lists/ui/components/QrCode.tsx
+@@ -1,6 +1,6 @@
+ import * as React from 'react';
+ import { useMemo } from 'react';
+-import Svg, { Rect } from 'react-native-svg';
++import Svg, { Path, Rect } from 'react-native-svg';
+ import qrcode = require('qrcode-generator');
+ 
+ interface Props {
+@@ -10,6 +10,12 @@ interface Props {
+ 	backgroundColor?: string;
+ }
+ 
++// Modules (including the quiet zone) per side; kept an integer count so a
++// requested pixel `size` always divides into whole-pixel module cells --
++// otherwise adjacent <Rect>s land on fractional boundaries and anti-aliasing
++// draws visible hairline gaps between them.
++const QUIET_ZONE_MODULES = 4;
++
+ const QrCode: React.FC<Props> = ({ value, size = 220, color = '#000000', backgroundColor = '#ffffff' }) => {
+ 	const modules = useMemo(() => {
+ 		const qr = qrcode(0, 'M');
+@@ -26,29 +32,32 @@ const QrCode: React.FC<Props> = ({ value, size = 220, color = '#000000', backgro
+ 		return { count, dark };
+ 	}, [value]);
+ 
+-	const cellSize = size / modules.count;
++	// One SVG <Path> combining every dark module, rather than one <Rect> per
++	// module: avoids the hairline seams that show between thousands of
++	// individually-rounded adjacent rectangles on some renderers, and is
++	// lighter to draw. The quiet zone (a plain-color margin at least 4
++	// modules wide, per the QR spec) is left around the code so scanners can
++	// find its finder patterns.
++	const totalModules = modules.count + QUIET_ZONE_MODULES * 2;
++	const moduleSize = size / totalModules;
+ 
+-	const rects = [];
+-	for (let row = 0; row < modules.count; row++) {
+-		for (let col = 0; col < modules.count; col++) {
+-			if (!modules.dark[row][col]) continue;
+-			rects.push(
+-				<Rect
+-					key={`${row}-${col}`}
+-					x={col * cellSize}
+-					y={row * cellSize}
+-					width={cellSize}
+-					height={cellSize}
+-					fill={color}
+-				/>,
+-			);
++	const pathData = useMemo(() => {
++		let d = '';
++		for (let row = 0; row < modules.count; row++) {
++			for (let col = 0; col < modules.count; col++) {
++				if (!modules.dark[row][col]) continue;
++				const x = (col + QUIET_ZONE_MODULES) * moduleSize;
++				const y = (row + QUIET_ZONE_MODULES) * moduleSize;
++				d += `M${x},${y}h${moduleSize}v${moduleSize}h${-moduleSize}z`;
++			}
+ 		}
+-	}
++		return d;
++	}, [modules, moduleSize]);
+ 
+ 	return (
+ 		<Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+ 			<Rect x={0} y={0} width={size} height={size} fill={backgroundColor} />
+-			{rects}
++			<Path d={pathData} fill={color} />
+ 		</Svg>
+ 	);
+ };
+diff --git a/packages/app-mobile/lists/ui/deviceNameSettings.test.ts b/packages/app-mobile/lists/ui/deviceNameSettings.test.ts
+new file mode 100644
+index 0000000..a4a4a63
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/deviceNameSettings.test.ts
+@@ -0,0 +1,78 @@
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import { setupDatabaseAndSynchronizer } from '@joplin/lib/testing/test-utils';
++import Setting from '@joplin/lib/models/Setting';
++import { ListsDatabase } from '../core/db';
++import { ListsStore } from '../core/store';
++
++let testStore: ListsStore;
++let testDatabase: ListsDatabase;
++let dbPath: string;
++let refreshAllCalls: number;
++
++// Same swap-in as ListScreen.test.tsx/ShareScreen.test.tsx: a Node-backed
++// ListsStore/ListsDatabase instead of listsRuntime's real (expo-sqlite) one,
++// and a sync API whose refreshAll() is just counted, not a real relay pass.
++jest.mock('./listsRuntime', () => ({
++	getListsStore: () => testStore,
++	getListsDatabase: async () => { await testDatabase.openOrCreate('ignored'); return testDatabase; },
++	getListsDatabaseInstance: () => testDatabase,
++}));
++
++jest.mock('./syncApi', () => ({
++	getListsSync: () => ({
++		refreshAll: async () => { refreshAllCalls++; },
++	}),
++}));
++
++import { isListsDeviceNameSettingKey, LISTS_DEVICE_NAME_SETTING_KEY, onListsDeviceNameSettingChanged } from './deviceNameSettings';
++
++describe('lists/ui/deviceNameSettings', () => {
++	beforeEach(async () => {
++		await setupDatabaseAndSynchronizer(0);
++		dbPath = join(tmpdir(), `tiles-lists-devicename-test-${uuid.createNano()}.sqlite`);
++		testDatabase = new ListsDatabase(new Database(new DatabaseDriverNode()));
++		testStore = new ListsStore(testDatabase, dbPath);
++		refreshAllCalls = 0;
++	});
++
++	afterEach(async () => {
++		await rm(dbPath, { force: true });
++	});
++
++	test('isListsDeviceNameSettingKey matches only lists.deviceName', () => {
++		expect(isListsDeviceNameSettingKey('lists.deviceName')).toBe(true);
++		expect(isListsDeviceNameSettingKey('lists.relays')).toBe(false);
++	});
++
++	test('changing the setting updates the device identity and every list\'s own member row', async () => {
++		const db = await testDatabase.openOrCreate(dbPath).then(() => testDatabase);
++		const listA = await testStore.createOpenList('Groceries');
++		const listB = await testStore.createOpenList('Household');
++		const identity = await db.deviceIdentity();
++
++		Setting.setValue(LISTS_DEVICE_NAME_SETTING_KEY, 'Küchen-Tablet');
++		await onListsDeviceNameSettingChanged();
++
++		expect((await db.deviceIdentity()).name).toBe('Küchen-Tablet');
++		expect(await db.deviceNameChangedAt()).toBeGreaterThan(0);
++		expect(await db.profileName(listA.id, identity.publicKey)).toMatchObject({ name: 'Küchen-Tablet' });
++		expect(await db.profileName(listB.id, identity.publicKey)).toMatchObject({ name: 'Küchen-Tablet' });
++		expect(refreshAllCalls).toBe(1);
++	});
++
++	test('is a no-op when the setting value equals the current device name', async () => {
++		const db = await testDatabase.openOrCreate(dbPath).then(() => testDatabase);
++		const identity = await db.deviceIdentity();
++
++		Setting.setValue(LISTS_DEVICE_NAME_SETTING_KEY, identity.name);
++		await onListsDeviceNameSettingChanged();
++
++		expect(await db.deviceNameChangedAt()).toBe(0);
++		expect(refreshAllCalls).toBe(0);
++	});
++});
+diff --git a/packages/app-mobile/lists/ui/deviceNameSettings.ts b/packages/app-mobile/lists/ui/deviceNameSettings.ts
+new file mode 100644
+index 0000000..a9a544d
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/deviceNameSettings.ts
+@@ -0,0 +1,53 @@
++// Bridges the lists.deviceName setting (packages/lib/models/settings/builtInMetadata.ts,
++// section 'lists') to the shopping-list feature: propagating a rename to every list this
++// device is a member of. Modelled on utils/debugLogSettings.ts's bridge for the "Test
++// logging" settings -- see there for the general pattern (isXSettingKey() + a handler,
++// wired up from root.tsx's redux middleware whenever a matching setting changes).
++//
++// A managed list's directory can only be re-signed by an admin (see core/events.ts), so a
++// rename can't simply update the directory's `name` field the way an admin's own edits do.
++// Instead, each device publishes its own signed "profile" event per list (core/profile.ts)
++// with its current name; every device merges the newest one it's seen (by device time) into
++// its local `profiles` table and prefers it over the directory name when displaying a member
++// (see MembersScreen.tsx). Publishing itself is the sync layer's job (ListsSync#publishOwnProfile,
++// run as part of every normal sync pass) so a rename made while offline is simply queued,
++// the same way a pending item is.
++
++import Setting from '@joplin/lib/models/Setting';
++import { debugLog } from '../../utils/debugLog';
++import { getListsDatabase } from './listsRuntime';
++import { getListsSync } from './syncApi';
++
++const log = debugLog('lists.store');
++
++export const LISTS_DEVICE_NAME_SETTING_KEY = 'lists.deviceName';
++
++export const isListsDeviceNameSettingKey = (key: string): boolean => key === LISTS_DEVICE_NAME_SETTING_KEY;
++
++// Applies the current lists.deviceName setting value: updates the device's own identity and
++// this device's own row in every list's local `profiles` table (so MembersScreen reflects the
++// new name immediately, without waiting for a sync round trip), then kicks off a sync pass to
++// publish the change -- best-effort, since the device may be offline (the next natural sync
++// picks it up regardless, see ListsSync#publishOwnProfile).
++export const onListsDeviceNameSettingChanged = async (): Promise<void> => {
++	const db = await getListsDatabase();
++	const identity = await db.deviceIdentity();
++	// An empty setting means "use the default" (the device model, see
++	// core/db.ts#defaultDeviceName) -- but that default was already generated and persisted the
++	// first time deviceIdentity() ran, so there's nothing to change here in that case.
++	const newName = (Setting.value(LISTS_DEVICE_NAME_SETTING_KEY) as string || '').trim() || identity.name;
++	if (newName === identity.name) return;
++
++	const changedAt = Date.now();
++	await db.setDeviceName(newName, changedAt);
++
++	const lists = await db.lists();
++	for (const list of lists) await db.upsertProfileName(list.id, identity.publicKey, newName, changedAt);
++
++	log.info('Device name changed, queued profile republish', { lists: lists.length });
++	try {
++		await getListsSync().refreshAll();
++	} catch (error) {
++		log.warn('Could not publish the new device name right away (will retry on the next sync)', error);
++	}
++};
+diff --git a/packages/app-mobile/lists/ui/groupItems.test.ts b/packages/app-mobile/lists/ui/groupItems.test.ts
+index 7712d7c..a6fa3b4 100644
+--- a/packages/app-mobile/lists/ui/groupItems.test.ts
++++ b/packages/app-mobile/lists/ui/groupItems.test.ts
+@@ -17,6 +17,7 @@ const makeItem = (overrides: Partial<ItemRecord>): ItemRecord => ({
+ 	deletedT: null,
+ 	device: 'device1',
+ 	pending: false,
++	qty: null,
+ 	...overrides,
+ });
+ 
+diff --git a/packages/app-mobile/lists/ui/parseItemInput.test.ts b/packages/app-mobile/lists/ui/parseItemInput.test.ts
+index cbf9855..c624cf7 100644
+--- a/packages/app-mobile/lists/ui/parseItemInput.test.ts
++++ b/packages/app-mobile/lists/ui/parseItemInput.test.ts
+@@ -2,15 +2,21 @@ import { parseItemInput } from './parseItemInput';
+ 
+ describe('lists/ui/parseItemInput', () => {
+ 	test.each([
+-		['2 Milch', { name: 'Milch', detail: '2' }],
+-		['Milch 2l', { name: 'Milch', detail: '2l' }],
+-		['3x Eier', { name: 'Eier', detail: '3x' }],
+-		['3 x Eier', { name: 'Eier', detail: '3 x' }],
+-		['Äpfel 1 kg', { name: 'Äpfel', detail: '1 kg' }],
+-		['1,5 kg Hackfleisch', { name: 'Hackfleisch', detail: '1,5 kg' }],
+-		['Milch', { name: 'Milch', detail: null }],
+-		['  Bio-Milch   H  ', { name: 'Bio-Milch H', detail: null }],
+-		['', { name: '', detail: null }],
++		['3 Eier', { name: 'Eier', quantity: { unit: 'count', amount: 3 } }],
++		['Eier 7', { name: 'Eier', quantity: { unit: 'count', amount: 7 } }],
++		['-4 Eier', { name: 'Eier', quantity: { unit: 'count', amount: -4 } }],
++		['2 l Milch', { name: 'Milch', quantity: { unit: 'ml', amount: 2000 } }],
++		['500ml Milch', { name: 'Milch', quantity: { unit: 'ml', amount: 500 } }],
++		['Milch 1,5l', { name: 'Milch', quantity: { unit: 'ml', amount: 1500 } }],
++		['Bio Eier 6', { name: 'Bio Eier', quantity: { unit: 'count', amount: 6 } }],
++		['3x Eier', { name: 'Eier', quantity: { unit: 'count', amount: 3 } }],
++		['3 x Eier', { name: 'Eier', quantity: { unit: 'count', amount: 3 } }],
++		['Äpfel 1 kg', { name: 'Äpfel', quantity: { unit: 'g', amount: 1000 } }],
++		['1,5 kg Hackfleisch', { name: 'Hackfleisch', quantity: { unit: 'g', amount: 1500 } }],
++		['Milch', { name: 'Milch', quantity: null }],
++		['Salat', { name: 'Salat', quantity: null }],
++		['  Bio-Milch   H  ', { name: 'Bio-Milch H', quantity: null }],
++		['', { name: '', quantity: null }],
+ 	])('parses %s', (input, expected) => {
+ 		expect(parseItemInput(input)).toEqual(expected);
+ 	});
+diff --git a/packages/app-mobile/lists/ui/parseItemInput.ts b/packages/app-mobile/lists/ui/parseItemInput.ts
+index d49f5d2..3c7e636 100644
+--- a/packages/app-mobile/lists/ui/parseItemInput.ts
++++ b/packages/app-mobile/lists/ui/parseItemInput.ts
+@@ -1,40 +1,25 @@
+-// Simple quantity heuristic for the "add item" field: pulls a leading or
+-// trailing amount (with an optional unit) out of free-typed text, e.g.
+-// "2 Milch", "Milch 2l", "3x Eier", "Äpfel 1 kg". The amount becomes the
+-// item's `detail`; the rest is passed on to the catalog matcher (normalize.ts)
+-// as the name. No autocomplete or catalog lookup happens here -- see
+-// docs/KONZEPT.md section 2 for why quantity itself stays free text.
++// Pulls a leading or trailing quantity out of the "add item" field's free
++// text, e.g. "2 Milch", "Milch 2l", "3x Eier", "Äpfel 1 kg". The rest is the
++// item's name, kept exactly as typed -- no renaming against the catalog, see
++// docs/KONZEPT.md section 2 and core/normalize.ts#resolveCatalog, which is
++// only consulted for an emoji/category match, not for the name itself.
++// The actual amount/unit parsing lives in core/qty.ts, shared with the item
++// editor's quantity field and the old detail->qty migration in core/db.ts.
++
++import { splitQuantityFromText } from '../core/qty';
++import { QuantityDelta } from '../core/types';
+ 
+ export interface ParsedItemInput {
+ 	name: string;
+-	detail: string | null;
++	quantity: QuantityDelta | null;
+ }
+ 
+-const UNIT_WORDS = ['kg', 'g', 'l', 'ml', 'stk', 'stück', 'st', 'pkg', 'pck', 'dose', 'dosen', 'flasche', 'flaschen', 'packung', 'packungen', 'bund', 'bündel'];
+-
+-const NUMBER = '\\d+(?:[.,]\\d+)?';
+-const UNIT = UNIT_WORDS.join('|');
+-
+-// "<amount>[x|<unit>] <name>", e.g. "2 Milch", "3x Eier", "2kg Möhren".
+-const LEADING_AMOUNT = new RegExp(`^(${NUMBER}\\s*(?:x|${UNIT})?)\\s+(.+)$`, 'i');
+-// "<name> <amount>[<unit>]", e.g. "Milch 2l", "Äpfel 1 kg".
+-const TRAILING_AMOUNT = new RegExp(`^(.+?)\\s+(${NUMBER}\\s*(?:${UNIT})?)$`, 'i');
+-
+ export const parseItemInput = (text: string): ParsedItemInput => {
+ 	const trimmed = text.trim().replace(/\s+/g, ' ');
+-	if (!trimmed) return { name: '', detail: null };
+-
+-	const leading = trimmed.match(LEADING_AMOUNT);
+-	if (leading) {
+-		const [, amount, name] = leading;
+-		return { name: name.trim(), detail: amount.trim() };
+-	}
++	if (!trimmed) return { name: '', quantity: null };
+ 
+-	const trailing = trimmed.match(TRAILING_AMOUNT);
+-	if (trailing) {
+-		const [, name, amount] = trailing;
+-		return { name: name.trim(), detail: amount.trim() };
+-	}
++	const split = splitQuantityFromText(trimmed);
++	if (split) return { name: split.rest, quantity: split.quantity };
+ 
+-	return { name: trimmed, detail: null };
++	return { name: trimmed, quantity: null };
+ };
+diff --git a/packages/app-mobile/root.tsx b/packages/app-mobile/root.tsx
+index 4df059a..4d463a9 100644
+--- a/packages/app-mobile/root.tsx
++++ b/packages/app-mobile/root.tsx
+@@ -98,6 +98,7 @@ import ProfileEditor from './components/ProfileSwitcher/ProfileEditor';
+ import sensorInfo, { SensorInfo } from './components/biometrics/sensorInfo';
+ import { setDispatch } from './services/profiles';
+ import { initDebugLog, isDebugLogSettingKey, updateDebugLogConfig } from './utils/debugLogSettings';
++import { isListsDeviceNameSettingKey, onListsDeviceNameSettingChanged } from './lists/ui/deviceNameSettings';
+ import { ReactNode } from 'react';
+ import autodetectTheme, { onSystemColorSchemeChange } from './utils/autodetectTheme';
+ import PluginRunnerWebView from './components/plugins/PluginRunnerWebView';
+@@ -120,6 +121,8 @@ import ListsShareScreen from './lists/ui/ShareScreen';
+ import ListsJoinScreen from './lists/ui/JoinScreen';
+ import ListsMembersScreen from './lists/ui/MembersScreen';
+ import { startListsSyncLifecycle } from './lists/ui/syncApi';
++import { getListsDatabaseInstance } from './lists/ui/listsRuntime';
++import { startNotifyManager } from './lists/notify/notifyManager';
+ import { INVITE_LINK_PREFIX } from './lists/core/invite';
+ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+ import appReducer from './utils/appReducer';
+@@ -196,6 +199,10 @@ const generalMiddleware = (store: any) => (next: any) => async (action: any) =>
+ 		updateDebugLogConfig();
+ 	}
+ 
++	if (action.type === 'SETTING_UPDATE_ONE' && isListsDeviceNameSettingKey(action.key)) {
++		void onListsDeviceNameSettingChanged();
++	}
++
+ 	if ((action.type === 'SETTING_UPDATE_ONE' && (action.key === 'dateFormat' || action.key === 'timeFormat')) || (action.type === 'SETTING_UPDATE_ALL')) {
+ 		time.setDateFormat(Setting.value('dateFormat'));
+ 		time.setTimeFormat(Setting.value('timeFormat'));
+@@ -318,9 +325,15 @@ async function initialize(dispatch: Dispatch) {
+ // link handled by the Android intent filter in AndroidManifest.xml (see
+ // lists/core/invite.ts for the encoding).
+ const isListsInviteUrl = (url: string): boolean => {
+-	return url.startsWith('joplintiles://') || url.startsWith(INVITE_LINK_PREFIX);
++	return (url.startsWith('joplintiles://') && !isListsOpenUrl(url)) || url.startsWith(INVITE_LINK_PREFIX);
+ };
+ 
++// A "someone changed your list" notification's tap target (lists/notify/),
++// not an invite -- opens the list directly instead of the join screen.
++const LISTS_OPEN_URL_PREFIX = 'joplintiles://list/';
++const isListsOpenUrl = (url: string): boolean => url.startsWith(LISTS_OPEN_URL_PREFIX);
++const listsOpenUrlListId = (url: string): string => url.slice(LISTS_OPEN_URL_PREFIX.length);
++
+ interface AppComponentProps {
+ 	dispatch: Dispatch;
+ 	themeId: number;
+@@ -352,6 +365,7 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 	private dropdownAlert_: (data?: DropdownAlertData)=> Promise<DropdownAlertData> = (_data?: DropdownAlertData) => new Promise<DropdownAlertData>(res => res);
+ 	private callbackUrl: string|null = null;
+ 	private listsInviteUrl: string|null = null;
++	private listsOpenListId: string|null = null;
+ 
+ 	private lastSyncStarted_ = false;
+ 	private quickActionShortcutListener_: EmitterSubscription|undefined;
+@@ -399,6 +413,12 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 				if (this.props.biometricsDone) {
+ 					void this.handleCallbackUrl();
+ 				}
++			} else if (isListsOpenUrl(event.url)) {
++				logger.info('received shopping list open url');
++				this.listsOpenListId = listsOpenUrlListId(event.url);
++				if (this.props.biometricsDone) {
++					void this.handleListsOpenUrl();
++				}
+ 			} else if (isListsInviteUrl(event.url)) {
+ 				logger.info('received shopping list invite url');
+ 				this.listsInviteUrl = event.url;
+@@ -486,6 +506,10 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 			// lifecycle (relay subscriptions, periodic refresh) can start now that
+ 			// Joplin's own startup has completed.
+ 			startListsSyncLifecycle();
++			// "Someone changed your list" notifications (lists/notify/): needs no
++			// screen to be open, only the sync passes startListsSyncLifecycle()
++			// above already triggers.
++			startNotifyManager(getListsDatabaseInstance());
+ 
+ 			// https://reactnative.dev/docs/linking#handling-deep-links
+ 			//
+@@ -500,6 +524,9 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 			if (url && isCallbackUrl(url)) {
+ 				logger.info('received initial callback url: ', url);
+ 				this.callbackUrl = url;
++			} else if (url && isListsOpenUrl(url)) {
++				logger.info('received initial shopping list open url');
++				this.listsOpenListId = listsOpenUrlListId(url);
+ 			} else if (url && isListsInviteUrl(url)) {
+ 				logger.info('received initial shopping list invite url');
+ 				this.listsInviteUrl = url;
+@@ -634,6 +661,7 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 			void this.handleShareData();
+ 			void this.handleCallbackUrl();
+ 			void this.handleListsInviteUrl();
++			void this.handleListsOpenUrl();
+ 		}
+ 	}
+ 
+@@ -740,6 +768,21 @@ class AppComponent extends React.Component<AppComponentProps, AppComponentState>
+ 		});
+ 	}
+ 
++	// Tapping a "someone changed your list" notification (lists/notify/).
++	private async handleListsOpenUrl() {
++		const listId = this.listsOpenListId;
++		this.listsOpenListId = null;
++		if (listId === null) return;
++
++		this.props.dispatch({ type: 'NAV_BACK' });
++		this.props.dispatch({ type: 'SIDE_MENU_CLOSE' });
++		this.props.dispatch({
++			type: 'NAV_GO',
++			routeName: 'ListsList',
++			listId,
++		} as never);
++	}
++
+ 	private async handleScreenWidthChange_() {
+ 		this.setState({ sideMenuWidth: this.getSideMenuWidth() });
+ 	}
+diff --git a/packages/app-mobile/utils/debugLog.ts b/packages/app-mobile/utils/debugLog.ts
+index fcfaf39..9c2bfaa 100644
+--- a/packages/app-mobile/utils/debugLog.ts
++++ b/packages/app-mobile/utils/debugLog.ts
+@@ -28,10 +28,11 @@ export type DebugLogCategory =
+ 	'lists.nearby' | // Bluetooth: advertising, scanning, connections, handshake, transfer
+ 	'lists.invite' | // creating and parsing invites, deep links
+ 	'lists.ui' | // list screens: input, suggestions, taps
++	'lists.notify' | // "someone changed your list" notifications: aggregation, suppression
+ 	'tiles'; // note tile view: zoom, filter, layout
+ 
+ export const debugLogCategories: DebugLogCategory[] = [
+-	'lists.store', 'lists.relays', 'lists.sync', 'lists.nearby', 'lists.invite', 'lists.ui', 'tiles',
++	'lists.store', 'lists.relays', 'lists.sync', 'lists.nearby', 'lists.invite', 'lists.ui', 'lists.notify', 'tiles',
+ ];
+ 
+ export type DebugLogLevel = 'debug' | 'info' | 'warn' | 'error';
+diff --git a/packages/lib/locales/de_DE.json b/packages/lib/locales/de_DE.json
+index cd6f79d..4f8e05b 100644
+--- a/packages/lib/locales/de_DE.json
++++ b/packages/lib/locales/de_DE.json
+@@ -192,6 +192,12 @@
+ 	"(You may disable this prompt in the options)": [
+ 		"(Diese Meldung kann in den Einstellungen deaktiviert werden)"
+ 	],
++	"(you)": [
++		"(du)"
++	],
++	"+ %d more": [
++		"+ %d weitere"
++	],
+ 	"+ Group": [
+ 		""
+ 	],
+@@ -1518,6 +1524,9 @@
+ 	"e.g. 2, 1 kg": [
+ 		"z. B. 2, 1 kg"
+ 	],
++	"e.g. Bio, Freiland": [
++		"z. B. Bio, Freiland"
++	],
+ 	"Edit": [
+ 		"Bearbeiten"
+ 	],
+@@ -2326,6 +2335,9 @@
+ 	"Join a list": [
+ 		"Liste beitreten"
+ 	],
++	"Join my shopping list \"%s\": %s": [
++		"Tritt meiner Einkaufsliste „%s“ bei: %s"
++	],
+ 	"Join request sent": [
+ 		"Beitrittsanfrage gesendet"
+ 	],
+@@ -2782,6 +2794,9 @@
+ 	"Name shown to other members of your shopping lists. Leave empty to use the default.": [
+ 		"Name, der anderen Mitgliedern deiner Einkaufslisten angezeigt wird. Leer lassen, um die Voreinstellung zu verwenden."
+ 	],
++	"Name shown to other members of your shopping lists. Leave empty to use this device's model name.": [
++		"Name, der anderen Mitgliedern deiner Einkaufslisten angezeigt wird. Leer lassen, um den Modellnamen dieses Geräts zu verwenden."
++	],
+ 	"Nearby (Bluetooth) sync automatically turns off after this many minutes, to save battery.": [
+ 		"Der Nahbereichs-Abgleich (Bluetooth) schaltet sich nach dieser Anzahl Minuten automatisch aus, um Akku zu sparen."
+ 	],
+@@ -3097,6 +3112,21 @@
+ 	"Notifications": [
+ 		"Benachrichtigungen"
+ 	],
++	"Notifications: off": [
++		"Benachrichtigungen: aus"
++	],
++	"Notifications: on": [
++		"Benachrichtigungen: an"
++	],
++	"Notifies you when another member changes a shared list.": [
++		"Benachrichtigt dich, wenn ein anderes Mitglied eine gemeinsame Liste ändert."
++	],
++	"Notifies you while Bluetooth sync is searching for or connected to nearby list members.": [
++		"Benachrichtigt dich, während der Bluetooth-Abgleich nach Listenmitgliedern in der Nähe sucht oder mit ihnen verbunden ist."
++	],
++	"Notify me when others change a list": [
++		"Bei Änderungen durch andere benachrichtigen"
++	],
+ 	"Numbered List": [
+ 		"Nummerierte Liste"
+ 	],
+@@ -3539,6 +3569,9 @@
+ 	"QR Code": [
+ 		"QR-Code"
+ 	],
++	"Quantity": [
++		"Menge"
++	],
+ 	"Quantity / note": [
+ 		"Menge / Notiz"
+ 	],
+@@ -3917,6 +3950,9 @@
+ 	"Searches for the given <pattern> in all the notes.": [
+ 		"Sucht in allen Notizen nach dem angegebenen <pattern>."
+ 	],
++	"Searching for list members nearby": [
++		"Suche nach Listenmitgliedern in der Nähe"
++	],
+ 	"Searching for nearby devices…": [
+ 		"Suche nach Geräten in der Nähe …"
+ 	],
+@@ -4037,9 +4073,15 @@
+ 	"Shares or unshares the specified [notebook] with [user]. Requires Joplin Cloud or Joplin Server.": [
+ 		"Gibt das angegebene [Notizbuch] für [Benutzer] frei oder hebt diese Freigabe auf. Erfordert Joplin Cloud oder Joplin Server."
+ 	],
++	"Share…": [
++		"Teilen …"
++	],
+ 	"Sharing notebook...": [
+ 		"Notizbuch freigeben..."
+ 	],
++	"Shopping list changes": [
++		"Änderungen an Einkaufslisten"
++	],
+ 	"Shopping lists": [
+ 		"Einkaufslisten"
+ 	],
+@@ -4052,6 +4094,9 @@
+ 	"Shopping lists: local database": [
+ 		"Einkaufslisten: lokale Datenbank"
+ 	],
++	"Shopping lists: notifications": [
++		"Einkaufslisten: Benachrichtigungen"
++	],
+ 	"Shopping lists: relays": [
+ 		"Einkaufslisten: Relays"
+ 	],
+@@ -4175,6 +4220,9 @@
+ 	"Some items could not be synchronised. Please try to synchronise them first.": [
+ 		"Manche Einträge konnten nicht synchronisiert werden. Bitte versuche zuerst, diese zu synchronisieren."
+ 	],
++	"Someone": [
++		"Jemand"
++	],
+ 	"Something went wrong.": [
+ 		""
+ 	],
+diff --git a/packages/lib/models/settings/builtInMetadata.ts b/packages/lib/models/settings/builtInMetadata.ts
+index 6fd54e5..2563d5a 100644
+--- a/packages/lib/models/settings/builtInMetadata.ts
++++ b/packages/lib/models/settings/builtInMetadata.ts
+@@ -2628,7 +2628,7 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			public: true,
+ 			appTypes: [AppType.Mobile],
+ 			label: () => _('Device name'),
+-			description: () => _('Name shown to other members of your shopping lists. Leave empty to use the default.'),
++			description: () => _('Name shown to other members of your shopping lists. Leave empty to use this device\'s model name.'),
+ 			storage: SettingStorage.File,
+ 			isGlobal: true,
+ 		},
+@@ -2651,6 +2651,17 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			isGlobal: true,
+ 		},
+ 
++		'lists.notifyChanges': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'lists',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Notify me when others change a list'),
++			storage: SettingStorage.File,
++			isGlobal: true,
++		},
++
+ 		'debugLog.enabled': {
+ 			value: false,
+ 			type: SettingItemType.Bool,
+@@ -2737,6 +2748,18 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			isGlobal: false,
+ 		},
+ 
++		'debugLog.category.lists.notify': {
++			value: true,
++			type: SettingItemType.Bool,
++			section: 'testLogging',
++			public: true,
++			appTypes: [AppType.Mobile],
++			show: settings => !!settings['debugLog.enabled'],
++			label: () => _('Shopping lists: notifications'),
++			storage: SettingStorage.File,
++			isGlobal: false,
++		},
++
+ 		'debugLog.category.tiles': {
+ 			value: true,
+ 			type: SettingItemType.Bool,
+diff --git a/packages/tools/locales/de_DE.po b/packages/tools/locales/de_DE.po
+index 1e6ee9b..e05d5b5 100644
+--- a/packages/tools/locales/de_DE.po
++++ b/packages/tools/locales/de_DE.po
+@@ -10588,3 +10588,51 @@ msgstr "RSSI: %d dBm · verbunden seit %s"
+ 
+ msgid "Connected for %s"
+ msgstr "Verbunden seit %s"
++
++msgid "Someone"
++msgstr "Jemand"
++
++msgid "Searching for list members nearby"
++msgstr "Suche nach Listenmitgliedern in der Nähe"
++
++msgid "Shopping list changes"
++msgstr "Änderungen an Einkaufslisten"
++
++msgid "Notifies you while Bluetooth sync is searching for or connected to nearby list members."
++msgstr "Benachrichtigt dich, während der Bluetooth-Abgleich nach Listenmitgliedern in der Nähe sucht oder mit ihnen verbunden ist."
++
++msgid "Notifies you when another member changes a shared list."
++msgstr "Benachrichtigt dich, wenn ein anderes Mitglied eine gemeinsame Liste ändert."
++
++msgid "Notify me when others change a list"
++msgstr "Bei Änderungen durch andere benachrichtigen"
++
++msgid "Notifications: on"
++msgstr "Benachrichtigungen: an"
++
++msgid "Notifications: off"
++msgstr "Benachrichtigungen: aus"
++
++msgid "Shopping lists: notifications"
++msgstr "Einkaufslisten: Benachrichtigungen"
++
++msgid "+ %d more"
++msgstr "+ %d weitere"
++
++msgid "Share…"
++msgstr "Teilen …"
++
++msgid "Join my shopping list \"%s\": %s"
++msgstr "Tritt meiner Einkaufsliste „%s“ bei: %s"
++
++msgid "(you)"
++msgstr "(du)"
++
++msgid "Name shown to other members of your shopping lists. Leave empty to use this device's model name."
++msgstr "Name, der anderen Mitgliedern deiner Einkaufslisten angezeigt wird. Leer lassen, um den Modellnamen dieses Geräts zu verwenden."
++
++msgid "Quantity"
++msgstr "Menge"
++
++msgid "e.g. Bio, Freiland"
++msgstr "z. B. Bio, Freiland"

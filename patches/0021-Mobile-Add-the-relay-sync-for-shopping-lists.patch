@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Wed, 23 Sep 2026 17:13:33 +0000
-Subject: [PATCH 21/27] Mobile: Add the relay sync for shopping lists
+Subject: [PATCH 21/29] Mobile: Add the relay sync for shopping lists
 
 Nostr relay transport (NIP-01 client over WebSocket, relay pool with
 reconnect): per-list member directory, item events, join requests for

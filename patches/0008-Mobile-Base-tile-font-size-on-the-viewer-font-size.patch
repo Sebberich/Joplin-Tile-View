@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tile-view <tile-view@localhost>
 Date: Sun, 13 Sep 2026 18:46:06 +0000
-Subject: [PATCH 08/27] Mobile: Base tile font size on the viewer font size
+Subject: [PATCH 08/29] Mobile: Base tile font size on the viewer font size
 
 Tile titles were rendered at theme.fontSize, noticeably larger than the
 body text of the note shown in the viewer. Read style.viewer.fontSize

@@ -10,7 +10,9 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Einkaufsliste: Kern (Datenmodell, SQLite, Merge pro Feld, Krypto, Einladungen) | Umgesetzt, 71 Tests | Patch 0020, `packages/app-mobile/lists/core/` |
 | Einkaufsliste: Relay-Sync (offene und verwaltete Listen, Verzeichnis, Beitritt, Neuveröffentlichung) | Umgesetzt, Tests mit Fake-Relay; gegen öffentliche Relays noch nicht gelaufen | Patch 0021, `lists/sync/` |
 | Einkaufsliste: Oberfläche (Übersicht, Kacheln, Teilen per QR/Link/Code, Beitritt per Scan, Mitglieder, Statuskreis, Einstellungen) | Umgesetzt; Gerätetest steht aus | Patch 0022, `lists/ui/` |
-| Bluetooth-Abgleich | **Offen.** Schnittstelle `NearbyTransport` existiert, Statuskreis bleibt grau | `lists/sync/nearby.ts` |
+| Bluetooth-Abgleich (Android) | Umgesetzt: natives Modul, Protokoll (`lists/nearby/PROTOCOL.md`), Vordergrunddienst; CI kompiliert, Gerätetest mit zwei Handys steht aus | Patches 0026, 0028, `lists/nearby/` |
+| Mengen (addierend, pro Gerät gezählt, 5-Minuten-Regel), Namen über Profil-Events, Benachrichtigungen bei Änderungen, Test-Logging | Umgesetzt | Patches 0024, 0028, 0029 |
+| Chat pro Liste mit Benachrichtigungen, optional UnifiedPush (ntfy) für sofortige Zustellung übers Internet | **Geplant** nach dem Bluetooth-Gerätetest | – |
 
 Abweichungen vom Konzept in der Umsetzung:
 - **Icons sind Emoji** des Systemfonts (Katalog mit 449 Artikeln, 15 Kategorien, deutschen Synonymen in

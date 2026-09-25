@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Fri, 25 Sep 2026 01:11:44 +0000
-Subject: [PATCH 26/27] Mobile: Add Bluetooth nearby sync for shopping lists
+Subject: [PATCH 26/29] Mobile: Add Bluetooth nearby sync for shopping lists
  (Android)
 
 Native module that advertises a rotating per-list token, scans, and runs
