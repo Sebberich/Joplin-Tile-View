@@ -13,6 +13,7 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Bluetooth-Abgleich (Android) | Umgesetzt: natives Modul, Protokoll (`lists/nearby/PROTOCOL.md`), Vordergrunddienst; CI kompiliert, Gerätetest mit zwei Handys steht aus | Patches 0026, 0028, `lists/nearby/` |
 | Mengen (addierend, pro Gerät gezählt, 5-Minuten-Regel), Namen über Profil-Events, Benachrichtigungen bei Änderungen, Test-Logging | Umgesetzt | Patches 0024, 0028, 0029 |
 | Chat pro Liste mit Benachrichtigungen, optional UnifiedPush (ntfy) für sofortige Zustellung übers Internet | **Geplant** nach dem Bluetooth-Gerätetest | – |
+| Statistik für Artikel ohne Icon (Häufigkeit, abschaltbar, exportierbar) | **Geplant**, siehe Abschnitt 2 „Artikel ohne Icon zählen“ | – |
 
 Abweichungen vom Konzept in der Umsetzung:
 - **Icons sind Emoji** des Systemfonts (Katalog mit 449 Artikeln, 15 Kategorien, deutschen Synonymen in
@@ -215,6 +216,26 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- eigener Geräteschlüs
   mit Einladung oder Mitgliedschaft lässt sich die Liste von Relays oder anderen Mitgliedern neu laden.
 - Geräteschlüssel und Listen-Schlüssel liegen wie Joplins eigene E2EE-Schlüssel in der Datenbank.
   Android-Keystore (`expo-secure-store`) wäre sicherer, ist aber eine neue native Abhängigkeit – später.
+
+### Artikel ohne Icon zählen (geplant)
+
+Ziel: über die Zeit sehen, welche Artikel ohne Katalog-Treffer (Anfangsbuchstabe statt Emoji)
+häufig vorkommen, um zu entscheiden, welche Icons und Katalogeinträge sich lohnen.
+
+- **Was gezählt wird:** jedes Hinzufügen oder Zurückholen eines Artikels, für den `resolveCatalog`
+  kein Emoji liefert. Schlüssel ist der normalisierte Name (klein, NFC), dazu Anzeigename,
+  Anzahl, erstes und letztes Vorkommen, Anzahl verschiedener Listen.
+- **Wo:** eigene Tabelle `icon_misses` in `tiles-lists.sqlite`, nur lokal, nicht synchronisiert und
+  nicht über Relays verschickt. Bekommt ein Name später ein Icon (Katalog-Update), fällt er aus der
+  Auswertung heraus, bleibt aber gespeichert.
+- **Schalter:** Einstellungen → Einkaufslisten → „Artikel ohne Icon zählen“ (Standard: aus).
+  Ausschalten stoppt das Zählen; „Statistik löschen“ leert die Tabelle.
+- **Auswertung:** Ansicht in den Einstellungen, sortiert nach Häufigkeit, und Export als CSV
+  (`name;anzahl;listen;erstmals;zuletzt`) über das Android-Teilen-Menü, damit sich die Daten
+  mehrerer Nutzer später zusammenführen lassen.
+- **Offen:** ob Artikel mit Emoji-Fallback aus der Kategorie (Treffer ohne eigenes Emoji) auch
+  gezählt werden sollen; ob sich Nutzer freiwillig an einer gemeinsamen Auswertung beteiligen
+  können (dann nur mit ausdrücklichem Export, nie automatisch).
 
 ### Offen
 
