@@ -14,6 +14,7 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Mengen (addierend, pro Gerät gezählt, 5-Minuten-Regel), Namen über Profil-Events, Benachrichtigungen bei Änderungen, Test-Logging | Umgesetzt | Patches 0024, 0028, 0029 |
 | Chat pro Liste mit Benachrichtigungen, optional UnifiedPush (ntfy) für sofortige Zustellung übers Internet | **Geplant** nach dem Bluetooth-Gerätetest | – |
 | Statistik für Artikel ohne Icon (Häufigkeit, abschaltbar, exportierbar) | **Geplant**, siehe Abschnitt 2 „Artikel ohne Icon zählen“ | – |
+| Bluetooth-Mesh (Reichweite über mehrere Handys strecken) | **Geplant**, siehe Abschnitt 3 „Bluetooth-Mesh“ | – |
 
 Abweichungen vom Konzept in der Umsetzung:
 - **Icons sind Emoji** des Systemfonts (Katalog mit 449 Artikeln, 15 Kategorien, deutschen Synonymen in
@@ -369,6 +370,41 @@ auf 1M PHY gesendet werden, sonst sehen iPhones und ältere Androids nichts. Auf
 **Mehr als zwei Mitglieder:** Jedes Gerät gleicht mit jedem in Reichweite ab; alle senden denselben
 Listen-Token und unterscheiden sich erst beim Verbinden über den Geräteschlüssel. C bekommt A's
 Änderungen auch über B. Die Reihenfolge ist egal, weil pro Feld die neuere Änderung gewinnt.
+
+### Bluetooth-Mesh (geplant)
+
+Ziel: Sind mehrere Handys im Laden, soll eine Änderung auch Geräte erreichen, die außerhalb der
+direkten Bluetooth-Reichweite des Absenders sind – jedes Handy dazwischen reicht weiter.
+
+**Stufe 1 – Mesh unter Listenmitgliedern.** Das Datenmodell trägt das bereits (Merge pro Feld,
+Reihenfolge egal, jedes Mitglied darf Artikel-Events signieren). Stand heute (Patch 0026/0029):
+Ein Gerät pusht live nur *eigene* Änderungen (`pendingItems`); was es von A empfangen hat, erreicht
+C erst beim nächsten Verbindungsaufbau mit Übersichtsabgleich. Umsetzung: empfangene Änderungen
+sofort an alle anderen verbundenen Mitglieder weiterreichen (außer an den Absender), Duplikate über
+d-Tag + Feld-Zeitstempel erkennen, damit nichts im Kreis läuft. Aufwand klein; Nutzen z. B. für eine
+Familie mit drei Handys, die sich im Laden verteilt.
+
+**Stufe 2 – Weiterleitung über fremde Handys.** Andere Nutzer der App, die *nicht* Mitglied der
+Liste sind, leiten verschlüsselte Events blind weiter („Store and Forward“). Sie können nichts
+lesen (NIP-44), prüfen nur die Signatur.
+- **Freiwillig:** Einstellung „Als Weiterleitung für andere helfen“, Standard aus. Nur aktiv, solange
+  der eigene Kreis gelb/grün ist (kein Dauerbetrieb im Hintergrund).
+- **Erkennung:** Zusätzlich zum Listen-Token ein allgemeines Weiterleitungs-Signal (feste
+  Service-Kennung); Mitglieder einer Liste senden ihre Events auch an Weiterleiter in Reichweite.
+- **Begrenzung:** Hop-Limit (z. B. 4), Lebensdauer (z. B. 30 min), Zwischenspeicher pro Weiterleiter
+  (z. B. 200 Events / 256 KB), Ratenlimit pro Quelle, Duplikaterkennung über Event-ID.
+- **Datenschutz:** Weiterleiter sehen, dass eine Liste aktiv ist. Damit man eine Liste nicht über
+  Tage an ihrem festen öffentlichen Schlüssel wiedererkennt, bekommen weitergeleitete Events eine
+  zusätzliche Hülle mit rotierender Kennung (aus dem Listen-Schlüssel abgeleitet, wie das Token);
+  nur Mitglieder können sie auspacken.
+- **Missbrauch/Akku:** Ohne Mitgliedschaft keine Priorität; Weiterleitung wird bei niedrigem Akku
+  (< 20 %) ausgesetzt.
+- **Voraussetzung:** Es muss genug App-Nutzer im selben Laden geben. Solange die App wenige nutzen,
+  bringt Stufe 2 praktisch nichts – daher erst Stufe 1, Stufe 2 nach Bedarf.
+
+**Offen:** Hop-Limit und Speichergrenzen nach dem Gerätetest festlegen (hängt von gemessener
+Verbindungsdauer und Durchsatz ab); ob iPhones (Hintergrund-Advertising nur eingeschränkt) als
+Weiterleiter taugen.
 
 ### Ideen, bewusst nicht umgesetzt
 
