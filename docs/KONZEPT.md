@@ -223,7 +223,8 @@ Ziel: über die Zeit sehen, welche Artikel ohne Katalog-Treffer (Anfangsbuchstab
 häufig vorkommen, um zu entscheiden, welche Icons und Katalogeinträge sich lohnen.
 
 - **Was gezählt wird:** jedes Hinzufügen oder Zurückholen eines Artikels, für den `resolveCatalog`
-  kein Emoji liefert. Schlüssel ist der normalisierte Name (klein, NFC), dazu Anzeigename,
+  kein eigenes Emoji liefert – also auch Treffer, die nur das Kategorie-Emoji bekommen
+  (entschieden 28.09.2026). Schlüssel ist der normalisierte Name (klein, NFC), dazu Anzeigename,
   Anzahl, erstes und letztes Vorkommen, Anzahl verschiedener Listen.
 - **Wo:** eigene Tabelle `icon_misses` in `tiles-lists.sqlite`, nur lokal, nicht synchronisiert und
   nicht über Relays verschickt. Bekommt ein Name später ein Icon (Katalog-Update), fällt er aus der
@@ -233,9 +234,8 @@ häufig vorkommen, um zu entscheiden, welche Icons und Katalogeinträge sich loh
 - **Auswertung:** Ansicht in den Einstellungen, sortiert nach Häufigkeit, und Export als CSV
   (`name;anzahl;listen;erstmals;zuletzt`) über das Android-Teilen-Menü, damit sich die Daten
   mehrerer Nutzer später zusammenführen lassen.
-- **Offen:** ob Artikel mit Emoji-Fallback aus der Kategorie (Treffer ohne eigenes Emoji) auch
-  gezählt werden sollen; ob sich Nutzer freiwillig an einer gemeinsamen Auswertung beteiligen
-  können (dann nur mit ausdrücklichem Export, nie automatisch).
+- **Später entscheiden** (nach der Testphase): ob sich Nutzer freiwillig an einer gemeinsamen
+  Auswertung beteiligen können (dann nur mit ausdrücklichem Export, nie automatisch).
 
 ### Offen
 
