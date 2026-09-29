@@ -16,6 +16,7 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Statistik für Artikel ohne Icon (Häufigkeit, abschaltbar, exportierbar) | **Geplant**, siehe Abschnitt 2 „Artikel ohne Icon zählen“ | – |
 | Bluetooth-Mesh (Reichweite über mehrere Handys strecken) | **Geplant**, siehe Abschnitt 3 „Bluetooth-Mesh“ | – |
 | Emoji von Hand festlegen (auch über die Emoji-Tastatur) | **Geplant**, siehe Abschnitt 2 „Emoji von Hand festlegen“ | – |
+| Herunterziehen zum Aktualisieren (mit Kreisel) | **Geplant**, siehe Abschnitt 2 „Herunterziehen zum Aktualisieren“ | – |
 
 Abweichungen vom Konzept in der Umsetzung:
 - **Icons sind Emoji** des Systemfonts (Katalog mit 449 Artikeln, 15 Kategorien, deutschen Synonymen in
@@ -218,6 +219,18 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- eigener Geräteschlüs
   mit Einladung oder Mitgliedschaft lässt sich die Liste von Relays oder anderen Mitgliedern neu laden.
 - Geräteschlüssel und Listen-Schlüssel liegen wie Joplins eigene E2EE-Schlüssel in der Datenbank.
   Android-Keystore (`expo-secure-store`) wäre sicherer, ist aber eine neue native Abhängigkeit – später.
+
+### Herunterziehen zum Aktualisieren (geplant)
+
+- In der Liste und in der Listenübersicht: nach unten ziehen zeigt den üblichen Android-Kreisel
+  (`RefreshControl` am ScrollView, Farben aus dem Theme) und startet sofort einen Abgleich.
+- **Was passiert:** Relay-Abgleich der Liste (bzw. aller Listen in der Übersicht) wie beim Öffnen;
+  ist der Bluetooth-Kreis an, zusätzlich ein neuer Übersichtsabgleich mit allen verbundenen Geräten.
+- **Kreisel endet**, wenn der Abgleich fertig ist, spätestens nach 15 s. Danach kurze Meldung in der
+  Statuszeile: „Aktualisiert“, „Offline – Änderungen werden später gesendet“ oder der Fehler.
+- **Gesten:** Pinch-Zoom (zwei Finger) und Herunterziehen (ein Finger, nur ganz oben in der Liste)
+  kommen sich nicht in die Quere.
+- **Test-Logging:** Start, Dauer, Ergebnis je Weg (Relays, Bluetooth).
 
 ### Emoji von Hand festlegen (geplant)
 
