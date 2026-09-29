@@ -17,6 +17,8 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Bluetooth-Mesh (Reichweite über mehrere Handys strecken) | **Geplant**, siehe Abschnitt 3 „Bluetooth-Mesh“ | – |
 | Emoji von Hand festlegen (auch über die Emoji-Tastatur) | **Geplant**, siehe Abschnitt 2 „Emoji von Hand festlegen“ | – |
 | Herunterziehen zum Aktualisieren (mit Kreisel) | **Geplant**, siehe Abschnitt 2 „Herunterziehen zum Aktualisieren“ | – |
+| Sicherung der Listen (Export/Import als Datei) | **Nächstes Release**, siehe Abschnitt 4 | – |
+| Weitere Funktionen (Rezepte, „Ich hol das“, Läden, Widget, Teilen in die App, Aktivitätsleiste, Wiederkauf-Vorschläge, Listen als Kacheln, Kacheln anheften/färben, Summenzeile/CSV) | **Notiert**, siehe Abschnitt 4 | – |
 
 Abweichungen vom Konzept in der Umsetzung:
 - **Icons sind Emoji** des Systemfonts (Katalog mit 449 Artikeln, 15 Kategorien, deutschen Synonymen in
@@ -506,3 +508,61 @@ danach mit `--keep` / `--check` über mehrere Tage prüfen, wie lange Relays die
 - Eigene Icons teilen: später evtl. verschlüsselt über Blossom (Nostr-Dateiablage) oder gar nicht.
 - Reihenfolge der Umsetzung: Datenmodell + lokale DB + Oberfläche → Relays → Einladungen/Rollen →
   Bluetooth → Long Range.
+
+## 4. Weitere Funktionen (notiert 29.09.2026)
+
+Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-Gerätetest festlegen.
+
+### Nächstes Release
+
+- **Sicherung der Listen.** JEX-Export und Joplin-Sync enthalten die Einkaufslisten nicht. In der
+  Listenübersicht (⋮) „Listen exportieren“ → eine Datei (`joplin-tiles-listen-<datum>.json`, optional
+  mit Passwort verschlüsselt, da sie Listen-Schlüssel enthält) über das Teilen-Menü; „Listen
+  importieren“ liest sie wieder ein und führt mit vorhandenen Listen zusammen (gleicher Merge wie
+  beim Sync, nichts wird überschrieben). Enthalten: Listen, Artikel, Mitglieder, eigene
+  Einstellungen, Geräteschlüssel nur auf ausdrücklichen Wunsch (Umzug aufs neue Handy).
+
+### Einkaufslisten
+
+- **Rezepte aus Joplin-Notizen.** In einer Notiz mit Zutaten (Checkliste oder Liste) ein Befehl
+  „Zutaten auf Einkaufsliste“ → Auswahl der Liste, Vorschau mit Häkchen pro Zutat, Mengen werden
+  addiert (gleiche Eingabe-Logik wie beim Tippen). Einstieg über das ⋮-Menü der Notiz.
+- **„Ich hol das“.** Kachel lange drücken → „Ich hol das“; die anderen sehen den Namen klein auf der
+  Kachel. Beim Abhaken oder nach 2 h verfällt die Markierung. Feld mit Zeitstempel wie die anderen,
+  also ohne Protokolländerung.
+- **Laufweg pro Laden.** Mehrere Läden mit eigener Kategorie-Reihenfolge. Bewusst versteckt: ein
+  Symbol oben in der Kopfzeile wie Joplins Sortier-/Filter-Symbol, dahinter Ladenauswahl und
+  „Reihenfolge bearbeiten“ (Kategorien ziehen). Die Läden liegen in den Listen-Einstellungen und
+  werden synchronisiert; welcher Laden gerade gewählt ist, bleibt pro Gerät.
+- **Android-Widget.** Liste auf dem Startbildschirm (offene Artikel mit Emoji, Antippen hakt ab) und
+  Schnell-Eingabe; Auswahl der Liste beim Einrichten. Nativer Teil (AppWidgetProvider), Daten aus
+  der Listen-Datenbank.
+- **Teilen in die App.** Text aus anderen Apps (z. B. WhatsApp „bring Milch und Eier mit“) über das
+  Android-Teilen-Menü an „Einkaufsliste“ schicken → Vorschau, welche Artikel erkannt wurden
+  (Trennung an Kommas, „und“, Zeilen), Liste wählen, übernehmen.
+- **Aktivitätsleiste.** Statt „Rückgängig“: ein schmales Band am unteren Rand (Snackbar), das
+  Änderungen anderer anzeigt – „Karl hat Milch 🥛 entfernt“, „Julia hat Spaghetti 🍝 hinzugefügt“.
+  Mehrere Änderungen kurz hintereinander werden zusammengefasst oder nacheinander gezeigt
+  (je ~3 s), Antippen zeigt die letzten Änderungen als Liste. Gleiche Quelle wie die
+  Benachrichtigungen (`remoteChanges`), aber nur solange die Liste offen ist.
+- **Wiederkauf-Vorschläge.** Aus dem lokalen Verlauf lernen, in welchem Abstand etwas gekauft wird
+  („Milch etwa alle 5 Tage“); fällige Artikel erscheinen als Vorschlags-Chips über der Eingabe
+  („Milch fällig?“). Nur lokal, baut auf derselben Zähltabelle wie die Icon-Statistik auf.
+- **Listen als Kacheln.** Die Listenübersicht als Kachelraster wie die Notizen: pro Liste eine Kachel
+  mit Name, Anzahl offener Artikel und den ersten Emoji als Vorschau.
+- *Verworfen:* Checklisten direkt in der Notiz-Kachel abhaken (führt zu versehentlichem Abhaken).
+
+### Kachelansicht und Notizen
+
+- **Kacheln anheften und einfärben** wie in Google Keep: angeheftete Notizen oben, Farbe über ein Tag
+  (z. B. `farbe:gelb`), damit sie mit Joplin synchron bleibt und auf dem Desktop sichtbar ist.
+
+### Formel-Tabellen (Plugin)
+
+- **Automatische Summenzeile** (Befehl „Summenzeile einfügen“, erkennt Spaltentyp) und
+  **CSV-Export** einer Tabelle mit berechneten Werten, z. B. für die Stempeluhr-Abrechnung.
+
+### Noch nicht entschieden
+
+- Eigener Signaturschlüssel für die APK (bisher Debug-Keystore; ein späterer Wechsel erzwingt eine
+  Neuinstallation) und ein automatischer App-Test im Emulator in CI.
