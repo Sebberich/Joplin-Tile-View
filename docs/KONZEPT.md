@@ -619,7 +619,12 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
     Store schwer auffindbar.
   - **Vor der Entscheidung von Hand prüfen:** TMview (tmdn.org/tmview, deckt EU und nationale Ämter
     inkl. DPMA ab), Suche „tiles“ und „tile“ in Klassen 9 und 42; Play Store nach gleichnamigen Apps.
-- **To-do:** Namen und Icon festlegen; README, Release-Notes und „Über“-Dialog mit Hinweis
+- **Arbeitsname (29.09.2026): „Tiles – Notes“.** Vor der Umbenennung noch die TMview-Prüfung
+  (s. o.). Beide Wortteile sind beschreibend, der Name bleibt also schwach unterscheidungskräftig und
+  kaum selbst schützbar; das Risiko gegenüber „Tile“ (Tile, Inc.) sinkt durch den Zusatz, ist aber
+  nicht null. Vorschlag App-ID: `io.github.sebberich.tilesnotes` (eigene Domain über GitHub Pages,
+  passt zu den Einladungslinks). Kurzname auf dem Startbildschirm: „Tiles“.
+- **To-do:** Icon festlegen; README, Release-Notes und „Über“-Dialog mit Hinweis
   „Inoffizielle, veränderte Version von Joplin (AGPL-3.0-or-later). Joplin ist eine Marke der
   JOPLIN SAS.“; Lizenz fürs Plugin festlegen (derzeit MIT); Umbenennung, neue App-ID und eigener
   Signaturschlüssel in einem Release bündeln.
