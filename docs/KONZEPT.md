@@ -18,6 +18,7 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Emoji von Hand festlegen (auch über die Emoji-Tastatur) | **Geplant**, siehe Abschnitt 2 „Emoji von Hand festlegen“ | – |
 | Herunterziehen zum Aktualisieren (mit Kreisel) | **Geplant**, siehe Abschnitt 2 „Herunterziehen zum Aktualisieren“ | – |
 | Sicherung der Listen (Export/Import als Datei), automatischer App-Test im Emulator in CI | **Nächstes Release**, siehe Abschnitt 4 | – |
+| Lizenz festlegen, Marke Joplin (Name, Icon, App-ID) | **To-do**, siehe Abschnitt 4 „Lizenz und Marke“ | – |
 | Weitere Funktionen (Rezepte, „Ich hol das“, Läden, Widget, Teilen in die App, Aktivitätsleiste, Wiederkauf-Vorschläge, Listen als Kacheln, Kacheln anheften/färben, Summenzeile/CSV) | **Notiert**, siehe Abschnitt 4 | – |
 
 Abweichungen vom Konzept in der Umsetzung:
@@ -566,6 +567,48 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
 
 - **Automatische Summenzeile** (Befehl „Summenzeile einfügen“, erkennt Spaltentyp) und
   **CSV-Export** einer Tabelle mit berechneten Werten, z. B. für die Stempeluhr-Abrechnung.
+
+### Lizenz und Marke (To-do)
+
+**Lizenz – Stand der Klärung (keine Rechtsberatung):**
+- Die App ist ein abgeleitetes Werk von Joplin und muss **AGPL-3.0-or-later** bleiben
+  (`joplin/LICENSE`). Keine zusätzlichen Einschränkungen möglich, also auch kein „kommerzielle
+  Nutzung nur gegen Bezahlung“. Pflichten: Quellcode zu jedem Release verfügbar halten (öffentliches
+  Repo mit Submodule, Patches, Skripten, Tags), Änderungen kennzeichnen, Joplins Copyright- und
+  Lizenzhinweise erhalten.
+- Frei lizenzierbar sind nur eigene, abtrennbare Teile: das Formel-Tabellen-Plugin (spricht Joplin
+  nur über die Plugin-API an) und später komplett neu geschriebene Teile ohne Joplin-Code
+  (z. B. eine eigenständige Listen-App für iOS).
+- Kandidaten für diese Teile: **AGPL-3.0 + kommerzielle Lizenz** (Dual Licensing, echte Open Source,
+  Firmen ohne Offenlegung zahlen; braucht eine CLA für fremde Beiträge) oder **PolyForm
+  Noncommercial 1.0** / **BSL 1.1** (jede kommerzielle Nutzung zahlt, aber nicht Open Source und nicht
+  mit der AGPL-App kombinierbar).
+- Vorbehalt: Ob rein KI-erzeugter Code urheberrechtlich geschützt ist, ist ungeklärt – das schwächt
+  jedes Bezahlmodell. Vor einem kommerziellen Lizenzmodell rechtlich beraten lassen.
+
+**Marke Joplin – Ergebnis der Recherche (29.09.2026):**
+- „Joplin®“ ist eine **eingetragene EU-Marke der JOPLIN SAS**, Anmeldenummer 018544315
+  (`joplin/readme/licenses.md`).
+- **Logos und Icons:** „copyright (c) Laurent Cozic, all rights reserved, and may not be used without
+  a permission“ (ebd.). Die AGPL gibt keine Markenrechte (§ 7e erlaubt Lizenzgebern ausdrücklich,
+  Markenrechte zurückzuhalten). Joplins Markenrichtlinien stehen unter joplinapp.org/brand
+  (aus dieser Umgebung nicht abrufbar, beim nächsten Mal lesen).
+- **Folgen für uns:**
+  - Der App-Name **„Joplin Tiles (Beta)“** nutzt die Marke als Teil des Produktnamens. Für den
+    privaten Test unkritisch, vor breiterer Verteilung (Obtainium-Link weitergeben, F-Droid,
+    Play Store) **umbenennen** in einen eigenen Namen. Beschreibend bleibt erlaubt, z. B.
+    „<Name> – basierend auf Joplin“ bzw. „kompatibel mit Joplin“.
+  - Das **App-Icon** ist unverändert Joplins Icon (die Patches ändern keine Launcher-Icons). Das ist
+    ohne Erlaubnis nicht gedeckt → **eigenes Icon** vor breiterer Verteilung.
+  - Die App-ID `net.cozic.joplin.tileview` enthält Laurents Domain; keine Marke im engen Sinn, wirkt
+    aber offiziell → mit dem Umbenennen auf eine eigene ID wechseln (erzwingt wie der
+    Schlüsselwechsel eine Neuinstallation – beides zusammen machen).
+  - Alternative: Laurent Cozic um Erlaubnis fragen (z. B. für „Joplin Tiles“ als inoffiziellen Fork
+    mit Hinweis) – oder die Kachelansicht wie ursprünglich geplant als Upstream-PR einbringen.
+- **To-do:** Namen und Icon festlegen; README, Release-Notes und „Über“-Dialog mit Hinweis
+  „Inoffizielle, veränderte Version von Joplin (AGPL-3.0-or-later). Joplin ist eine Marke der
+  JOPLIN SAS.“; Lizenz fürs Plugin festlegen (derzeit MIT); Umbenennung, neue App-ID und eigener
+  Signaturschlüssel in einem Release bündeln.
 
 ### Bald, von Hand
 
