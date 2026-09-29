@@ -17,7 +17,7 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Bluetooth-Mesh (Reichweite über mehrere Handys strecken) | **Geplant**, siehe Abschnitt 3 „Bluetooth-Mesh“ | – |
 | Emoji von Hand festlegen (auch über die Emoji-Tastatur) | **Geplant**, siehe Abschnitt 2 „Emoji von Hand festlegen“ | – |
 | Herunterziehen zum Aktualisieren (mit Kreisel) | **Geplant**, siehe Abschnitt 2 „Herunterziehen zum Aktualisieren“ | – |
-| Sicherung der Listen (Export/Import als Datei) | **Nächstes Release**, siehe Abschnitt 4 | – |
+| Sicherung der Listen (Export/Import als Datei), automatischer App-Test im Emulator in CI | **Nächstes Release**, siehe Abschnitt 4 | – |
 | Weitere Funktionen (Rezepte, „Ich hol das“, Läden, Widget, Teilen in die App, Aktivitätsleiste, Wiederkauf-Vorschläge, Listen als Kacheln, Kacheln anheften/färben, Summenzeile/CSV) | **Notiert**, siehe Abschnitt 4 | – |
 
 Abweichungen vom Konzept in der Umsetzung:
@@ -521,6 +521,11 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
   importieren“ liest sie wieder ein und führt mit vorhandenen Listen zusammen (gleicher Merge wie
   beim Sync, nichts wird überschrieben). Enthalten: Listen, Artikel, Mitglieder, eigene
   Einstellungen, Geräteschlüssel nur auf ausdrücklichen Wunsch (Umzug aufs neue Handy).
+- **Automatischer App-Test in CI.** Nach dem APK-Build startet ein Android-Emulator im Workflow
+  die App und spielt einen kurzen Ablauf durch (z. B. mit Maestro): App startet, Kachelansicht
+  erscheint, Einkaufslisten öffnen, Liste anlegen, Artikel hinzufügen und abhaken, Einstellungen →
+  Test-Protokoll öffnen. Schlägt ein Schritt fehl oder stürzt die App ab, entsteht kein Release;
+  Screenshots und Logcat hängen am Lauf. Bluetooth und Relays sind im Emulator nicht testbar.
 
 ### Einkaufslisten
 
@@ -562,7 +567,10 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
 - **Automatische Summenzeile** (Befehl „Summenzeile einfügen“, erkennt Spaltentyp) und
   **CSV-Export** einer Tabelle mit berechneten Werten, z. B. für die Stempeluhr-Abrechnung.
 
-### Noch nicht entschieden
+### Bald, von Hand
 
-- Eigener Signaturschlüssel für die APK (bisher Debug-Keystore; ein späterer Wechsel erzwingt eine
-  Neuinstallation) und ein automatischer App-Test im Emulator in CI.
+- **Eigener Signaturschlüssel für die APK** (bisher Debug-Keystore). Richtet der Projektinhaber
+  selbst ein: Keystore erzeugen und als Secrets `TILES_KEYSTORE_BASE64`, `TILES_KEYSTORE_PASSWORD`,
+  `TILES_KEY_ALIAS`, `TILES_KEY_PASSWORD` im Repo hinterlegen (Anleitung in docs/BUILD.md, „Own
+  Keystore“). Der Workflow nutzt sie automatisch. Der Wechsel erzwingt einmalig eine Neuinstallation –
+  vorher Notizen synchronisieren und, sobald verfügbar, die Listen sichern.
