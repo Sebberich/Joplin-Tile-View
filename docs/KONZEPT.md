@@ -19,6 +19,7 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Herunterziehen zum Aktualisieren (mit Kreisel) | **Geplant**, siehe Abschnitt 2 „Herunterziehen zum Aktualisieren“ | – |
 | Sicherung der Listen (Export/Import als Datei), automatischer App-Test im Emulator in CI | **Nächstes Release**, siehe Abschnitt 4 | – |
 | Lizenz festlegen, Marke Joplin (Name, Icon, App-ID) | **To-do**, siehe Abschnitt 4 „Lizenz und Marke“ | – |
+| Einkaufslisten als Notiz-Art in Joplin integrieren, Ziel Upstream | **Richtung entschieden** (29.09.2026), siehe Abschnitt 5 | – |
 | Weitere Funktionen (Rezepte, „Ich hol das“, Läden, Widget, Teilen in die App, Aktivitätsleiste, Wiederkauf-Vorschläge, Listen als Kacheln, Kacheln anheften/färben, Summenzeile/CSV) | **Notiert**, siehe Abschnitt 4 | – |
 
 Abweichungen vom Konzept in der Umsetzung:
@@ -636,3 +637,47 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
   `TILES_KEY_ALIAS`, `TILES_KEY_PASSWORD` im Repo hinterlegen (Anleitung in docs/BUILD.md, „Own
   Keystore“). Der Workflow nutzt sie automatisch. Der Wechsel erzwingt einmalig eine Neuinstallation –
   vorher Notizen synchronisieren und, sobald verfügbar, die Listen sichern.
+
+## 5. Richtung: in Joplin integrieren statt eigene App (entschieden 29.09.2026)
+
+- **Keine separate App.** Ziel ist, dass Joplin die Funktionen übernimmt, pflegt und weiterentwickelt.
+  Bis dahin läuft der Fork unter eigenem Namen (Arbeitsname „Tiles – Notes“, siehe Abschnitt 4) und
+  darf an andere weitergegeben werden.
+- **Lizenz:** alles AGPL-3.0-or-later wie Joplin; keine Bezahllizenz. Das Formel-Tabellen-Plugin
+  darf MIT bleiben (mit AGPL vereinbar, Joplin könnte es übernehmen).
+
+### Einkaufsliste als Notiz-Art
+
+Sobald die Listen-Funktionen stehen, wird eine Einkaufsliste wie eine Notiz angelegt: im „Neu“-Menü
+neben „Notiz“ und „To-do“ ein Eintrag „Einkaufsliste“, in jedem Notizbuch.
+
+- **Darstellung:** In der Kachelansicht eine Kachel mit Name, Anzahl offener Artikel und Emoji-Vorschau;
+  Öffnen zeigt die Listen-Oberfläche statt des Editors. Die eigene Übersicht „Einkaufslisten“ im
+  Seitenmenü entfällt oder wird zum Filter („alle Einkaufslisten“).
+- **Speicherung (Vorschlag, noch zu klären):** Die Notiz ist eine normale Joplin-Notiz mit Kennzeichen
+  (z. B. versteckter Kommentar `<!-- joplin-shopping-list v1 id=<listPubkey> -->` am Anfang oder eine
+  Eigenschaft in `user_data`) und enthält eine lesbare Markdown-Checkliste als Schnappschuss. Vorteile:
+  Desktop und andere Joplin-Apps zeigen eine normale Checkliste; Joplin-Sync sichert die Liste mit
+  (löst die Sicherungsfrage aus Abschnitt 4 zum Teil); die eigenen Geräte eines Nutzers bekommen die
+  Liste automatisch. Der Live-Zustand (Mengen pro Gerät, Zeitstempel) bleibt in `tiles-lists.sqlite`,
+  das Teilen mit anderen läuft weiter über Nostr und Bluetooth.
+- **Offen:** Wo der Listen-Schlüssel liegt (in der Notiz würde er ohne Joplin-E2EE im Klartext auf dem
+  Sync-Ziel landen); wie Konflikte vermieden werden, wenn zwei eigene Geräte den Schnappschuss
+  gleichzeitig schreiben (z. B. nur beim Schließen der Liste schreiben, Joplin-Konflikte ignorieren,
+  weil der Live-Zustand die Wahrheit ist); Umgang mit bestehenden Listen (Migration: je Liste eine
+  Notiz im Standard-Notizbuch anlegen).
+
+### Weg nach Upstream
+
+- **Joplins CLA (`joplin/readme/cla.md`, Punkt 5):** Beiträge müssen „a work of human authorship“ sein;
+  KI-Werkzeuge dürfen helfen, aber der Einreichende muss „creative judgment in reviewing, selecting,
+  modifying, or arranging“ ausgeübt haben, und nichts darf „generated entirely by automated means
+  without meaningful human involvement“ sein. Für dieses vibe-coded Projekt heißt das: Vor einem
+  Upstream-PR muss der Code von einem Menschen durchgesehen, verstanden und verantwortet werden.
+- **Reihenfolge:** 1) Kachelansicht als eigener, kleiner PR (am leichtesten zu begutachten).
+  2) Einkaufslisten zuerst im Joplin-Forum als Vorschlag/Spezifikation vorstellen, bevor Code
+  eingereicht wird – die Abhängigkeiten (Nostr-Relays, natives Bluetooth-Modul, eigene Kryptografie,
+  eigene Datenbankdatei) sind für Upstream große Entscheidungen, die die Maintainer mittragen müssen.
+  3) Formel-Tabellen können als Plugin im offiziellen Plugin-Verzeichnis erscheinen, ganz ohne PR.
+- **Realistisch:** Ob Joplin die Einkaufslisten übernimmt, ist offen; bis dahin bleibt der Fork der
+  Weg, sie zu nutzen.
