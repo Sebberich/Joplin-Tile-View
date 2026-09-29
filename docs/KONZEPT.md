@@ -605,6 +605,20 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
     Schlüsselwechsel eine Neuinstallation – beides zusammen machen).
   - Alternative: Laurent Cozic um Erlaubnis fragen (z. B. für „Joplin Tiles“ als inoffiziellen Fork
     mit Hinweis) – oder die Kachelansicht wie ursprünglich geplant als Upstream-PR einbringen.
+- **Name „Tiles“ – Recherche 29.09.2026** (Register EUIPO/TMview, DPMA und USPTO sind aus der
+  Cloud-Umgebung gesperrt, daher nur Websuche, keine vollständige Registerrecherche):
+  - Kein Treffer für eine eingetragene Wortmarke „TILES“ für Software gefunden – das heißt nicht,
+    dass es keine gibt.
+  - **„TILE“ ist eine eingetragene Marke von Tile, Inc.** (heute Life360), u. a. US-Reg. 5561759,
+    Klasse 9, *einschließlich Software zum Orten von Gegenständen per Bluetooth*. „Tiles“ ist nur der
+    Plural, gleiche Klasse, und unsere App nutzt ebenfalls Bluetooth → Verwechslungsgefahr möglich,
+    auch wenn der Zweck (Notizen/Einkaufslisten statt Ortung) ein anderer ist. Ob Tile eine EU-Marke
+    hat, war nicht zu klären.
+  - „Tiles“ ist in Software ein beschreibender Begriff (Kacheln, Live Tiles, Quick-Settings-Tiles);
+    viele Apps tragen ihn im Namen („App Tiles“, „Piano Tiles“). Folge: kaum selbst schützbar, im
+    Store schwer auffindbar.
+  - **Vor der Entscheidung von Hand prüfen:** TMview (tmdn.org/tmview, deckt EU und nationale Ämter
+    inkl. DPMA ab), Suche „tiles“ und „tile“ in Klassen 9 und 42; Play Store nach gleichnamigen Apps.
 - **To-do:** Namen und Icon festlegen; README, Release-Notes und „Über“-Dialog mit Hinweis
   „Inoffizielle, veränderte Version von Joplin (AGPL-3.0-or-later). Joplin ist eine Marke der
   JOPLIN SAS.“; Lizenz fürs Plugin festlegen (derzeit MIT); Umbenennung, neue App-ID und eigener
