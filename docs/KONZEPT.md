@@ -654,18 +654,50 @@ neben „Notiz“ und „To-do“ ein Eintrag „Einkaufsliste“, in jedem Noti
 - **Darstellung:** In der Kachelansicht eine Kachel mit Name, Anzahl offener Artikel und Emoji-Vorschau;
   Öffnen zeigt die Listen-Oberfläche statt des Editors. Die eigene Übersicht „Einkaufslisten“ im
   Seitenmenü entfällt oder wird zum Filter („alle Einkaufslisten“).
-- **Speicherung (Vorschlag, noch zu klären):** Die Notiz ist eine normale Joplin-Notiz mit Kennzeichen
-  (z. B. versteckter Kommentar `<!-- joplin-shopping-list v1 id=<listPubkey> -->` am Anfang oder eine
-  Eigenschaft in `user_data`) und enthält eine lesbare Markdown-Checkliste als Schnappschuss. Vorteile:
-  Desktop und andere Joplin-Apps zeigen eine normale Checkliste; Joplin-Sync sichert die Liste mit
-  (löst die Sicherungsfrage aus Abschnitt 4 zum Teil); die eigenen Geräte eines Nutzers bekommen die
-  Liste automatisch. Der Live-Zustand (Mengen pro Gerät, Zeitstempel) bleibt in `tiles-lists.sqlite`,
-  das Teilen mit anderen läuft weiter über Nostr und Bluetooth.
-- **Offen:** Wo der Listen-Schlüssel liegt (in der Notiz würde er ohne Joplin-E2EE im Klartext auf dem
-  Sync-Ziel landen); wie Konflikte vermieden werden, wenn zwei eigene Geräte den Schnappschuss
-  gleichzeitig schreiben (z. B. nur beim Schließen der Liste schreiben, Joplin-Konflikte ignorieren,
-  weil der Live-Zustand die Wahrheit ist); Umgang mit bestehenden Listen (Migration: je Liste eine
-  Notiz im Standard-Notizbuch anlegen).
+- **Speicherung – Markdown als beschreibbare Projektion (Vorschlag „Weg B“, 29.09.2026):**
+  - Wahrheit bleibt das bisherige Datenmodell (ein Datensatz pro Artikel, Merge pro Feld, Mengen als
+    Zähler pro Gerät); geteilt wird weiter pro Artikel über Nostr und Bluetooth.
+  - Die App schreibt den Stand zusätzlich als lesbare Checkliste in die Joplin-Notiz, gruppiert nach
+    Kategorien, z. B. `- [ ] 🍎 Äpfel — 1 kg (Elstar)`; Checkliste statt Tabelle, weil Joplin-Desktop
+    Checkboxen direkt anklickbar macht. Kennzeichen der Notiz: versteckter Kommentar am Anfang oder
+    `user_data`.
+  - Änderungen an der Notiz von anderswo (Desktop, Web, anderes Gerät) übernimmt die App per Vergleich
+    mit der zuletzt selbst geschriebenen Fassung: Häkchen → gekauft, neue Zeile → hinzugefügt,
+    gelöschte Zeile → entfernt, geänderte Menge → Menge setzen. Zeilen werden über den Artikelnamen
+    zugeordnet (wie der d-Tag), keine versteckten IDs. Umbenennen = entfernen + hinzufügen; Freitext,
+    der kein Eintrag ist, bleibt am Ende erhalten und wird ignoriert.
+  - Joplin-Konflikte entstehen nur noch zwischen eigenen Geräten; die App erkennt Konfliktkopien der
+    Listen-Notiz, übernimmt die Änderungen beider Fassungen und löscht die Kopie.
+  - Nutzen: Joplin-Sync sichert die Liste mit, eigene Geräte haben sie automatisch, Desktop ohne Fork
+    kann lesen und abhaken.
+  - **Verworfen – „Weg A“ (Markdown ist die Wahrheit, App nur Oberfläche):** gleichzeitige Änderungen
+    mehrerer Personen bräuchten Text-Merges ohne Menschen (Joplin-Sync erzeugt Konfliktkopien),
+    addierende Mengen pro Gerät lassen sich in einer lesbaren Datei nicht abbilden, Nostr müsste ganze
+    Dokumente oder Diffs verschicken und verlöre das Ersetzen pro Artikel.
+- **Offen:** Wo der Listen-Schlüssel liegt (in der Notiz stünde er ohne Joplin-E2EE im Klartext auf
+  dem Sync-Ziel); wann der Schnappschuss geschrieben wird (entprellt, nur bei Änderung); Übernahme
+  bestehender Listen (je Liste eine Notiz im Standard-Notizbuch).
+
+### Desktop: Einkaufslisten als Joplin-Plugin
+
+Desktop-Plugins sind nicht nur kosmetisch (Plugin-API in `packages/lib/services/plugins/api`):
+- Lesen und Schreiben von Notizen (`joplin.data`), eigene Panels mit beliebigem HTML/JS
+  (`joplin.views.panels`), Dialoge, Befehle, Menüs, Einstellungen, Content-Scripts für Viewer und
+  Editor, eigene Notizlisten-Darstellung (`joplin.views.noteList.registerRenderer`, nur Desktop).
+- Eigener Datenordner (`joplin.plugins.dataDir()`), auf dem Desktop zusätzlich `sqlite3` und
+  `fs-extra` über `joplin.require()`.
+- Netzwerk: WebSocket/fetch im Plugin-Prozess bzw. Panel → Nostr-Relays erreichbar; `nostr-tools` und
+  `@noble/*` sind reines JS und lassen sich bündeln.
+- **Nicht möglich:** Bluetooth-Advertising/GATT-Server, Vordergrunddienst, native Benachrichtigungen
+  im Hintergrund. Auf dem Desktop auch nicht nötig.
+
+Folge: Ein **Desktop-Plugin „Einkaufslisten“** kann vollwertiges Mitglied sein (Listen-Panel,
+Nostr-Sync, Einladungen per Code/Link) und nutzt denselben Kern (`lists/core`, `lists/sync`), wenn
+dieser von `@joplin/lib` gelöst wird (Datenbank-Hülle als Schnittstelle, `sqlite3` via
+`joplin.require`). Plugins veröffentlicht man selbst im Joplin-Plugin-Verzeichnis (npm-Paket mit
+Schlüsselwort `joplin-plugin`), **ohne PR und ohne Maintainer-Entscheidung** – der schnellste Weg,
+die Funktion in „echtes“ Joplin zu bringen. Mobile Joplin-Plugins laufen in einer WebView: Liste und
+Nostr gingen dort auch, Bluetooth, Hintergrund und Benachrichtigungen nicht – dafür bleibt der Fork.
 
 ### Weg nach Upstream
 
@@ -678,6 +710,7 @@ neben „Notiz“ und „To-do“ ein Eintrag „Einkaufsliste“, in jedem Noti
   2) Einkaufslisten zuerst im Joplin-Forum als Vorschlag/Spezifikation vorstellen, bevor Code
   eingereicht wird – die Abhängigkeiten (Nostr-Relays, natives Bluetooth-Modul, eigene Kryptografie,
   eigene Datenbankdatei) sind für Upstream große Entscheidungen, die die Maintainer mittragen müssen.
-  3) Formel-Tabellen können als Plugin im offiziellen Plugin-Verzeichnis erscheinen, ganz ohne PR.
+  3) Formel-Tabellen und ein Desktop-Plugin „Einkaufslisten“ im offiziellen Plugin-Verzeichnis
+  veröffentlichen, ganz ohne PR (siehe „Desktop: Einkaufslisten als Joplin-Plugin“).
 - **Realistisch:** Ob Joplin die Einkaufslisten übernimmt, ist offen; bis dahin bleibt der Fork der
   Weg, sie zu nutzen.
