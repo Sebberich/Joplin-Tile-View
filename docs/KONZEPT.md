@@ -435,6 +435,25 @@ lesen (NIP-44), prüfen nur die Signatur.
 - **Voraussetzung:** Es muss genug App-Nutzer im selben Laden geben. Solange die App wenige nutzen,
   bringt Stufe 2 praktisch nichts – daher erst Stufe 1, Stufe 2 nach Bedarf.
 
+**Bestehende Mesh-Protokolle (Recherche 29.09.2026):**
+- *Bluetooth Mesh (Bluetooth SIG):* für IoT (Lampen, Sensoren) mit Provisioning; Handys sind dort
+  nur Proxy, keine frei weiterleitenden Knoten. Passt nicht.
+- *bitchat* (permissionlesstech, gemeinfrei, Android und iOS): BLE-Mesh mit Weiterleitung über bis
+  zu 7 Sprünge, Duplikaterkennung, Fragmente zu ~469 Byte, Noise-Verschlüsselung, Nostr als
+  Internet-Weg. Am nächsten an unserer Idee. Aber: laut Whitepaper nicht für Fremd-Apps gedacht
+  („interoperates only with BitChat clients“), keine Aussage, ob unbekannte Nachrichtentypen
+  weitergeleitet werden; eigene Pakete als bitchat-Nachrichten zu tarnen wäre fragil und würde bei
+  öffentlichen Typen in deren Chats auftauchen. Wir müssten zudem ihren kompletten Stack sprechen und
+  fremden Verkehr weiterleiten (Akku, Verantwortung). Nutzen nur, wo viele bitchat-Nutzer mit
+  laufender App im selben Laden sind.
+- *Briar/Bramble, Berty/Wesh, Bridgefy:* Briar synchronisiert direkt ohne fremde Weiterleiter;
+  Berty ist ein schwerer Go-Stack mit kleiner Nutzerbasis; Bridgefy ist ein kostenpflichtiges,
+  proprietäres SDK.
+- **Folgerung:** eigenes Protokoll (wie oben), Parameter an bitchat angelehnt (TTL, Duplikate,
+  Fragmentgröße). Eine optionale „bitchat-Brücke“ erst prüfen, wenn deren Weiterleitungscode
+  (`BluetoothMeshService` im Android-Repo) gelesen ist und klar ist, ob gerichtete Pakete an
+  unbekannte Empfänger-IDs weitergeleitet werden.
+
 **Offen:** Hop-Limit und Speichergrenzen nach dem Gerätetest festlegen (hängt von gemessener
 Verbindungsdauer und Durchsatz ab); ob iPhones (Hintergrund-Advertising nur eingeschränkt) als
 Weiterleiter taugen.
