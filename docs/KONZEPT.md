@@ -15,6 +15,7 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Chat pro Liste mit Benachrichtigungen, optional UnifiedPush (ntfy) für sofortige Zustellung übers Internet | **Geplant** nach dem Bluetooth-Gerätetest | – |
 | Statistik für Artikel ohne Icon (Häufigkeit, abschaltbar, exportierbar) | **Geplant**, siehe Abschnitt 2 „Artikel ohne Icon zählen“ | – |
 | Bluetooth-Mesh (Reichweite über mehrere Handys strecken) | **Geplant**, siehe Abschnitt 3 „Bluetooth-Mesh“ | – |
+| Emoji von Hand festlegen (auch über die Emoji-Tastatur) | **Geplant**, siehe Abschnitt 2 „Emoji von Hand festlegen“ | – |
 
 Abweichungen vom Konzept in der Umsetzung:
 - **Icons sind Emoji** des Systemfonts (Katalog mit 449 Artikeln, 15 Kategorien, deutschen Synonymen in
@@ -217,6 +218,25 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);  -- eigener Geräteschlüs
   mit Einladung oder Mitgliedschaft lässt sich die Liste von Relays oder anderen Mitgliedern neu laden.
 - Geräteschlüssel und Listen-Schlüssel liegen wie Joplins eigene E2EE-Schlüssel in der Datenbank.
   Android-Keystore (`expo-secure-store`) wäre sicherer, ist aber eine neue native Abhängigkeit – später.
+
+### Emoji von Hand festlegen (geplant)
+
+- **Wo:** Kachel lange drücken → Bearbeiten → Feld „Symbol“. Antippen öffnet die normale Tastatur;
+  über deren Emoji-Taste (Gboard, Samsung, SwiftKey …) wählt man ein beliebiges Emoji. Darunter eine
+  Zeile mit Vorschlägen aus dem Katalog (Emoji der erkannten Kategorie und ähnlicher Artikel) für
+  schnelle Auswahl ohne Tastatur. „Zurücksetzen“ stellt das automatische Emoji wieder her.
+- **Prüfung:** genau ein Emoji-Graphem (inkl. Varianten mit Hautton, ZWJ-Sequenzen wie 🧑‍🍳 und
+  Flaggen); normale Buchstaben werden abgelehnt. Zählung über `Intl.Segmenter`, falls Hermes es
+  kann, sonst über eine kleine Regex für Emoji-Grapheme.
+- **Gilt für:** diesen Artikel sofort; Option „Für ‚<Name>‘ immer verwenden“ (Standard an) merkt die
+  Zuordnung in den Listen-Einstellungen (`settings.customIcons: { normalisierterName: emoji }`).
+  Die Listen-Einstellungen werden synchronisiert, also sehen alle Mitglieder dasselbe Symbol, auch
+  bei künftigen Artikeln mit dem Namen. Reihenfolge beim Bestimmen des Symbols: Artikel-Feld `icon`
+  (von Hand gesetzt) → `customIcons` der Liste → Katalog → Kategorie-Emoji → Anfangsbuchstabe.
+- **Sync:** Das Feld `icon` ist schon ein Feld mit eigenem Zeitstempel (neuere Änderung gewinnt),
+  braucht also keine Änderung am Protokoll.
+- **Statistik:** Von Hand gesetzte Emoji werden in der Icon-Statistik (siehe unten) mit gezählt –
+  sie zeigen direkt, welches Emoji Nutzer für einen fehlenden Katalogeintrag wählen.
 
 ### Artikel ohne Icon zählen (geplant)
 
