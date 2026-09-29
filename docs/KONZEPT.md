@@ -707,10 +707,7 @@ Nostr gingen dort auch, Bluetooth, Hintergrund und Benachrichtigungen nicht – 
   without meaningful human involvement“ sein. Für dieses vibe-coded Projekt heißt das: Vor einem
   Upstream-PR muss der Code von einem Menschen durchgesehen, verstanden und verantwortet werden.
 - **Reihenfolge:** 1) Kachelansicht als eigener, kleiner PR (am leichtesten zu begutachten).
-  2) Einkaufslisten zuerst im Joplin-Forum als Vorschlag/Spezifikation vorstellen, bevor Code
-  eingereicht wird – die Abhängigkeiten (Nostr-Relays, natives Bluetooth-Modul, eigene Kryptografie,
-  eigene Datenbankdatei) sind für Upstream große Entscheidungen, die die Maintainer mittragen müssen.
-  3) Formel-Tabellen und ein Desktop-Plugin „Einkaufslisten“ im offiziellen Plugin-Verzeichnis
+  2) Formel-Tabellen und ein Desktop-Plugin „Einkaufslisten“ im offiziellen Plugin-Verzeichnis
   veröffentlichen, ganz ohne PR (siehe „Desktop: Einkaufslisten als Joplin-Plugin“).
 - **Realistisch:** Ob Joplin die Einkaufslisten übernimmt, ist offen; bis dahin bleibt der Fork der
   Weg, sie zu nutzen.
