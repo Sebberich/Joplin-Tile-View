@@ -10,17 +10,18 @@ Stand: 23.09.2026. Arbeitsnotiz. Entscheidungen, die noch offen sind, stehen am 
 | Einkaufsliste: Kern (Datenmodell, SQLite, Merge pro Feld, Krypto, Einladungen) | Umgesetzt, 71 Tests | Patch 0020, `packages/app-mobile/lists/core/` |
 | Einkaufsliste: Relay-Sync (offene und verwaltete Listen, Verzeichnis, Beitritt, Neuveröffentlichung) | Umgesetzt, Tests mit Fake-Relay; gegen öffentliche Relays noch nicht gelaufen | Patch 0021, `lists/sync/` |
 | Einkaufsliste: Oberfläche (Übersicht, Kacheln, Teilen per QR/Link/Code, Beitritt per Scan, Mitglieder, Statuskreis, Einstellungen) | Umgesetzt; Gerätetest steht aus | Patch 0022, `lists/ui/` |
-| Bluetooth-Abgleich (Android) | Umgesetzt: natives Modul, Protokoll (`lists/nearby/PROTOCOL.md`), Vordergrunddienst; CI kompiliert, Gerätetest mit zwei Handys steht aus | Patches 0026, 0028, `lists/nearby/` |
+| Bluetooth-Abgleich (Android) | Umgesetzt: natives Modul, Protokoll (`lists/nearby/PROTOCOL.md`), Vordergrunddienst. Erster Gerätetest (30.09.2026) ohne Verbindung; behoben (Werbung zu groß, PHY, Mehrfachverbindungen, Rollen per Nonce, Puffer), zweiter Gerätetest steht aus. Long Range nur noch als experimentelle Einstellung | Patches 0026, 0028, Fix in der Forklin-Umstellung, `lists/nearby/` |
 | Mengen (addierend, pro Gerät gezählt, 5-Minuten-Regel), Namen über Profil-Events, Benachrichtigungen bei Änderungen, Test-Logging | Umgesetzt | Patches 0024, 0028, 0029 |
 | Chat pro Liste mit Benachrichtigungen, optional UnifiedPush (ntfy) für sofortige Zustellung übers Internet | **Geplant** nach dem Bluetooth-Gerätetest | – |
-| Statistik für Artikel ohne Icon (Häufigkeit, abschaltbar, exportierbar) | **Geplant**, siehe Abschnitt 2 „Artikel ohne Icon zählen“ | – |
+| Statistik für Artikel ohne Icon (Häufigkeit, abschaltbar, exportierbar) | Umgesetzt (Einstellung, Standard aus; Übersicht ⋮ → Icon-Statistik, CSV-Export) | `lists/core/iconStats.ts`, `lists/ui/IconStatsScreen.tsx` |
 | Bluetooth-Mesh (Reichweite über mehrere Handys strecken) | **Geplant**, siehe Abschnitt 3 „Bluetooth-Mesh“ | – |
-| Emoji von Hand festlegen (auch über die Emoji-Tastatur) | **Geplant**, siehe Abschnitt 2 „Emoji von Hand festlegen“ | – |
-| Herunterziehen zum Aktualisieren (mit Kreisel) | **Geplant**, siehe Abschnitt 2 „Herunterziehen zum Aktualisieren“ | – |
-| Sicherung der Listen (Export/Import als Datei), automatischer App-Test im Emulator in CI | **Nächstes Release**, siehe Abschnitt 4 | – |
-| Lizenz festlegen, Marke Joplin (Name, Icon, App-ID) | **To-do**, siehe Abschnitt 4 „Lizenz und Marke“ | – |
+| Emoji von Hand festlegen (auch über die Emoji-Tastatur) | Umgesetzt (Feld „Symbol“ im Bearbeiten-Dialog, „Immer für … verwenden“ wird pro Liste geteilt) | `lists/core/icons.ts` |
+| Herunterziehen zum Aktualisieren (mit Kreisel) | Umgesetzt (Liste und Übersicht, 15 s Zeitlimit) | `lists/ui/pullRefresh.ts` |
+| Sicherung der Listen (Export/Import als Datei), automatischer App-Test im Emulator in CI | Umgesetzt (Sicherung optional mit Passwort, AES-256-GCM; App-Test mit Maestro, vorerst nicht blockierend) | `lists/core/backup.ts`, `.maestro/` |
+| Lizenz festlegen, Marke Joplin (Name, Icon, App-ID) | Umgesetzt: Name Forklin, App-ID `io.github.sebberich.forklin`, eigenes Icon, eigener Signaturschlüssel, Hinweis in README/Release/„Über“. Offen: Repo umbenennen, Joplin-Logos innerhalb der App | Abschnitt 4 „Lizenz und Marke“ |
 | Einkaufslisten als Notiz-Art in Joplin integrieren, Ziel Upstream | **Richtung entschieden** (29.09.2026), siehe Abschnitt 5 | – |
-| Weitere Funktionen (Rezepte, „Ich hol das“, Läden, Widget, Teilen in die App, Aktivitätsleiste, Wiederkauf-Vorschläge, Listen als Kacheln, Kacheln anheften/färben, Summenzeile/CSV) | **Notiert**, siehe Abschnitt 4 | – |
+| Notiz-Kacheln anheften und einfärben | Umgesetzt (über Schlagwörter, damit es mit Joplin synchronisiert) | Patch der Forklin-Umstellung |
+| Weitere Funktionen (Rezepte, „Ich hol das“, Läden, Widget, Teilen in die App, Aktivitätsleiste, Wiederkauf-Vorschläge, Listen als Kacheln, Summenzeile/CSV) | **Notiert**, Umsetzung wird vorher besprochen, siehe Abschnitt 4 | – |
 
 Abweichungen vom Konzept in der Umsetzung:
 - **Icons sind Emoji** des Systemfonts (Katalog mit 449 Artikeln, 15 Kategorien, deutschen Synonymen in

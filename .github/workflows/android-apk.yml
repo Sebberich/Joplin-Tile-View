@@ -1,8 +1,8 @@
-# Baut das Android-APK (Release-Variante, mit Debug-Keystore signiert) aus dem
+# Baut das Forklin-Android-APK (Release-Variante, mit dem Projekt-Keystore signiert, ersatzweise Debug) aus dem
 # Submodule joplin/ plus patches/. Orientiert sich an joplin/.github/workflows/build-android.yml.
 # Läuft bei jedem Push und manuell (workflow_dispatch). Das APK liegt danach als
-# Artefakt "joplin-tile-view-apk" am Workflow-Lauf und als GitHub-Release
-# "v<Joplin-Version>-tiles.<Build-Nr>" (Quelle für Obtainium).
+# Artefakt "forklin-apk" am Workflow-Lauf und als GitHub-Release
+# "v<Joplin-Version>-forklin.<Build-Nr>" (Quelle für Obtainium).
 name: android-apk
 
 on:
@@ -126,11 +126,10 @@ jobs:
           cd joplin
           retry yarn install
 
-      # Eigener Keystore aus den Repo-Secrets. Benutzt wird er erst, wenn die Repo-Variable
-      # TILES_USE_RELEASE_KEYSTORE auf "true" steht: Der Wechsel vom Debug- zum eigenen Schlüssel
-      # erzwingt eine Neuinstallation, soll also bewusst geschaltet werden. Solange der Schalter aus
-      # ist, wird ein vorhandener Keystore nur geprüft (Alias, Passwörter) und sein Fingerabdruck
-      # ausgegeben, damit die Einrichtung vorab kontrolliert werden kann.
+      # Eigener Keystore aus den Repo-Secrets. Seit der Umstellung auf Forklin (neue App-ID, also
+      # ohnehin Neuinstallation) wird er immer benutzt, wenn die Secrets da sind. Notbremse: Repo-
+      # Variable TILES_USE_RELEASE_KEYSTORE auf "false" setzen, dann wird der Keystore nur geprüft
+      # (Alias, Passwörter, Fingerabdruck) und mit dem Debug-Keystore gebaut.
       - name: Keystore aus Secrets bereitstellen
         id: keystore
         env:
@@ -155,8 +154,8 @@ jobs:
           FINGERPRINT="$(keytool -list -v -keystore "$RUNNER_TEMP/tiles.keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | sed -n 's/^[[:space:]]*SHA256: //p')"
           echo "Keystore geprüft. Zertifikat SHA-256: $FINGERPRINT"
           echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
-          if [ "$USE_RELEASE_KEYSTORE" != "true" ]; then
-            echo "::notice::Eigener Keystore ist eingerichtet und geprüft, aber noch nicht aktiv (Repo-Variable TILES_USE_RELEASE_KEYSTORE != true) – Build mit Debug-Keystore."
+          if [ "$USE_RELEASE_KEYSTORE" = "false" ]; then
+            echo "::notice::Eigener Keystore ist eingerichtet und geprüft, aber abgeschaltet (Repo-Variable TILES_USE_RELEASE_KEYSTORE = false) – Build mit Debug-Keystore."
             rm -f "$RUNNER_TEMP/tiles.keystore"
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -190,14 +189,14 @@ jobs:
       - name: Version ermitteln
         id: version
         run: |
-          BASE="$(sed -n 's/.*versionName tileViewBuildNumber > 0 ? "\([0-9.]*\)-tiles.*/\1/p' joplin/packages/app-mobile/android/app/build.gradle)"
-          VERSION="${BASE}-tiles.${{ github.run_number }}"
+          BASE="$(sed -n 's/.*versionName tileViewBuildNumber > 0 ? "\([0-9.]*\)-forklin.*/\1/p' joplin/packages/app-mobile/android/app/build.gradle)"
+          VERSION="${BASE}-forklin.${{ github.run_number }}"
           echo "Version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: joplin-tile-view-apk
+          name: forklin-apk
           path: joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
@@ -215,7 +214,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: joplin-tile-view-apk
+          name: forklin-apk
           path: apk
 
       - uses: actions/setup-java@v5
@@ -276,7 +275,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: joplin-tile-view-apk
+          name: forklin-apk
           path: apk
 
       - uses: actions/download-artifact@v4
@@ -291,13 +290,14 @@ jobs:
           KEYSTORE_FINGERPRINT: ${{ needs.build.outputs.keystore_fingerprint }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          if [ "$KEYSTORE_AVAILABLE" = "true" ]; then SIG="project keystore (SHA-256 ${KEYSTORE_FINGERPRINT})"; else SIG="debug keystore (test phase, reinstall required when switching to the project keystore)"; fi
+          if [ "$KEYSTORE_AVAILABLE" = "true" ]; then SIG="project keystore (SHA-256 ${KEYSTORE_FINGERPRINT})"; else SIG="debug keystore (fallback, not installable over project-keystore builds)"; fi
           APK=apk/app-release.apk
-          cp "$APK" "joplin-tiles-${VERSION}.apk"
+          cp "$APK" "forklin-${VERSION}.apk"
+          NOTICE="Forklin is an unofficial, modified version of Joplin (AGPL-3.0-or-later), not affiliated with the Joplin project. Joplin is a trademark of JOPLIN SAS."
           DISCLAIMER="Vibe-coded: the code is mostly written by an AI assistant (Claude Code) and has not been reviewed line by line by hand. Private hobby project in the test phase, no warranty and no liability. Back up your data before using this with real notes (JEX export)."
           PLUGIN="$(ls plugin-release/*.jpl | head -n1)"
-          NOTES="$(printf '%s\n\n%s\n\n%s\n' "Build #${{ github.run_number }} from ${GITHUB_SHA::7}. Signature: ${SIG}. Installable as an update over builds with the same signature." "Also attached: the Formula Tables plugin (\`$(basename "$PLUGIN")\`) – install it in Joplin via Settings → Plugins → Install from file. See plugins/formula-tables/README.md." "⚠️ **${DISCLAIMER}**")"
-          gh release create "v${VERSION}" "joplin-tiles-${VERSION}.apk" "$PLUGIN" \
+          NOTES="$(printf '%s\n\n%s\n\n%s\n\n%s\n' "${NOTICE}" "Build #${{ github.run_number }} from ${GITHUB_SHA::7}. Signature: ${SIG}. Installable as an update over builds with the same signature." "Also attached: the Formula Tables plugin (\`$(basename "$PLUGIN")\`) – install it in Joplin via Settings → Plugins → Install from file. See plugins/formula-tables/README.md." "⚠️ **${DISCLAIMER}**")"
+          gh release create "v${VERSION}" "forklin-${VERSION}.apk" "$PLUGIN" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Joplin Tiles Beta ${VERSION}" \
+            --title "Forklin ${VERSION}" \
             --notes "$NOTES"

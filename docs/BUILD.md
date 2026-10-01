@@ -109,7 +109,7 @@ Variables) controls whether the smoke test blocks it:
 scripts/smoke-test.sh                       # uses the release APK from scripts/build-android.sh
 scripts/smoke-test.sh path/to/app.apk       # or a specific APK
 # only the flows, app already installed:
-maestro test -e APP_ID=net.cozic.joplin.tileview .maestro
+maestro test -e APP_ID=io.github.sebberich.forklin .maestro
 ```
 
 Results land in `smoke-test-results/`. The Maestro version used in CI is pinned via
@@ -131,9 +131,9 @@ Results land in `smoke-test-results/`. The Maestro version used in CI is pinned 
 ## Updates with Obtainium
 
 Every push (except pure documentation changes) creates a GitHub release
-`v<Joplin-version>-tiles.<build number>` with the APK as an asset, alongside the workflow
+`v<Joplin-version>-forklin.<build number>` with the APK as an asset, alongside the workflow
 artifact. The build number (`github.run_number`) flows through `-PTILE_VIEW_BUILD_NUMBER` into
-`versionCode` (`2097819 + N`) and `versionName` (`3.7.10-tiles.N`), so Android accepts every new
+`versionCode` (`2097819 + N`) and `versionName` (`3.7.10-forklin.N`; up to the rename to Forklin `3.7.10-tiles.N`), so Android accepts every new
 build as an update and Obtainium recognizes the version.
 
 Setup in Obtainium:
@@ -190,12 +190,12 @@ Repo secrets (Settings → Secrets and variables → Actions → Secrets):
 | `TILES_KEY_ALIAS` | `joplintiles` (or whichever alias you chose) |
 | `TILES_KEY_PASSWORD` | Key password (same as the keystore password) |
 
-**Switch:** The keystore is only used once the repository *variable* `TILES_USE_RELEASE_KEYSTORE`
-is set to `true` (Settings → Secrets and variables → Actions → Variables). Until then every build
-checks the secrets (file, password, alias) and prints the certificate's SHA-256 fingerprint in the
-"Keystore aus Secrets bereitstellen" step, but still signs with the debug keystore. This lets you
-set the secrets up early and switch at a planned moment, because the first build with the own key
-cannot be installed as an update over debug-signed builds. Delete `joplin-tiles.jks.b64` after
+**Switch:** Since the rename to Forklin (new app ID, so a fresh install anyway) every build signs
+with the own keystore as soon as the secrets exist. Each build checks the secrets (file, password,
+alias) and prints the certificate's SHA-256 fingerprint in the "Keystore aus Secrets bereitstellen"
+step. Emergency switch: set the repository *variable* `TILES_USE_RELEASE_KEYSTORE` to `false`
+(Settings → Secrets and variables → Actions → Variables) to fall back to the debug keystore; such
+builds cannot be installed as an update over project-signed builds. Delete `joplin-tiles.jks.b64` after
 copying it into the secret.
 
 Keep the keystore and passwords safe: if the keystore is lost, all future builds require a

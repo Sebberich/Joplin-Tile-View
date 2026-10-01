@@ -13,7 +13,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APK="${1:-$ROOT/joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk}"
-export APP_ID="${APP_ID:-net.cozic.joplin.tileview}"
+export APP_ID="${APP_ID:-io.github.sebberich.forklin}"
 OUT="${SMOKE_RESULTS_DIR:-$ROOT/smoke-test-results}"
 mkdir -p "$OUT/screenshots"
 

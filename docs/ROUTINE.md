@@ -68,7 +68,7 @@ eigenen Änderungen liegen **nicht** als Commits im Submodule, sondern als Patch
 - `scripts/apply-patches.sh` – Branch `tile-view` im Submodule aus `patches/` neu aufsetzen
 - `scripts/export-patches.sh` – Branch `tile-view` zurück nach `patches/` schreiben
 - `.github/workflows/android-apk.yml` – baut bei jedem Push das APK und legt ein GitHub-Release
-  `v<Joplin-Version>-tiles.<Lauf-Nr>` an (Quelle für Obtainium). Dauer: 30–40 Minuten.
+  `v<Joplin-Version>-forklin.<Lauf-Nr>` an (Quelle für Obtainium). Dauer: 30–40 Minuten.
 
 Details in `docs/BUILD.md`, offene Punkte in `docs/ISSUES.md`.
 

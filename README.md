@@ -1,7 +1,9 @@
-# Joplin Tile View
+# Forklin
 
-Joplin Mobile (Android) with a built-in Google-Keep-style tile view as the start screen
-instead of the note list. The project is a fork of [laurent22/joplin](https://github.com/laurent22/joplin)
+Forklin (formerly "Joplin Tile View" / "Joplin Tiles Beta") is an unofficial fork of Joplin
+Mobile (Android) with a Google-Keep-style tile view as the start screen and shared shopping
+lists. It is not affiliated with or endorsed by the Joplin project; Joplin® is a trademark of
+JOPLIN SAS. App ID: `io.github.sebberich.forklin`. The project is a fork of [laurent22/joplin](https://github.com/laurent22/joplin)
 in the form of a submodule + patch series, so the changes can be rebased onto every Joplin
 release and later submitted as an upstream PR.
 
@@ -32,7 +34,7 @@ APK and attaches it as an artifact to the run. Details in [docs/BUILD.md](docs/B
 - [x] Step 2: Entry points – see [docs/ANALYSE.md](docs/ANALYSE.md) (German)
 - [x] Step 3: Tile component with title/preview/first image, notebook filter (patches 0002, 0003)
 - [x] Step 4: Setting and button for list/tiles, tiles as default (patches 0001, 0004)
-- [x] Step 5: Pinch zoom, column count, font size (patch 0005); own app ID `net.cozic.joplin.tileview` (patch 0006)
+- [x] Step 5: Pinch zoom, column count, font size (patch 0005); own app ID (patch 0006; `net.cozic.joplin.tileview` until the rename, now `io.github.sebberich.forklin`)
 - [x] Device test issues 1–14 (patches 0007–0019): masonry layout, zoom ladder, OLED theme, filter follows the side menu, controls moved into the header
 - [x] Shared shopping lists (patches 0020–0022): emoji tiles, invite by QR code/link/code, open or admin-managed lists, sync over Nostr relays – concept in [docs/KONZEPT.md](docs/KONZEPT.md) (German)
 - [x] Formula Tables plugin ([plugins/formula-tables](plugins/formula-tables/README.md)) – formulas with explicit date/time/currency types in Markdown tables; the `.jpl` is attached to every release
