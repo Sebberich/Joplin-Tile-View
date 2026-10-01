@@ -1,0 +1,895 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 09:27:38 +0000
+Subject: [PATCH 30/33] Mobile: Pin and colour note tiles
+
+Pinned notes come first in the tile view (with Pinned/Others labels and a
+pin icon), and tiles can be tinted with one of ten colours that keep
+4.5:1 text contrast in light, dark and OLED themes. Both are stored as
+regular Joplin tags ("pinned", "color:<name>"), so they sync and are
+visible on other devices. Actions are available in selection mode.
+
+diff --git a/packages/app-mobile/components/NoteTile.tsx b/packages/app-mobile/components/NoteTile.tsx
+index ca068bc..70dffc3 100644
+--- a/packages/app-mobile/components/NoteTile.tsx
++++ b/packages/app-mobile/components/NoteTile.tsx
+@@ -20,6 +20,7 @@ import NoteLockSession from '@joplin/lib/services/noteLock/NoteLockSession';
+ import { DialogContext } from './DialogManager';
+ import Icon from './Icon';
+ import stripMarkdown from '../utils/tilePreviewText';
++import { getTileColor, TileColorName } from '../utils/tileColors';
+ 
+ interface Props {
+ 	dispatch: Dispatch;
+@@ -28,13 +29,17 @@ interface Props {
+ 	noteSelectionEnabled: boolean;
+ 	selectedNoteIds: string[];
+ 	index?: number;
++	pinned?: boolean;
++	tileColor?: TileColorName|null;
++	isDarkTheme: boolean;
+ 	fontScale: number;
+ 	viewerFontSize: number;
+ }
+ 
+-const useStyles = (themeId: number, isSelected: boolean, fontScale: number, viewerFontSize: number) => {
++const useStyles = (themeId: number, isSelected: boolean, fontScale: number, viewerFontSize: number, tileColor: TileColorName|null, isDark: boolean) => {
+ 	return useMemo(() => {
+ 		const theme = themeStyle(themeId);
++		const colorVariant = tileColor ? getTileColor(tileColor, isDark) : null;
+ 		const gap = theme.marginLeft / 2;
+ 		const scale = fontScale / 100;
+ 		// Match the font size shown in the note viewer, rather than the (larger) list/UI font.
+@@ -50,7 +55,7 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 		// against both light and dark tile backgrounds.
+ 		const card: ViewStyle = {
+ 			flexGrow: 1,
+-			backgroundColor: isSelected ? theme.backgroundColorHover3 : theme.backgroundColor,
++			backgroundColor: colorVariant ? colorVariant.background : (isSelected ? theme.backgroundColorHover3 : theme.backgroundColor),
+ 			borderRadius: 8,
+ 			borderWidth: isSelected ? 2 : 1,
+ 			borderColor: isSelected ? theme.color4 : theme.dividerColor,
+@@ -78,6 +83,18 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 			color: theme.color4,
+ 		};
+ 
++		const pinIcon: ViewStyle = {
++			position: 'absolute',
++			bottom: 6,
++			right: 8,
++			zIndex: 1,
++		};
++
++		const pinIconText: TextStyle = {
++			fontSize: 12,
++			color: colorVariant ? colorVariant.text : theme.colorFaded,
++		};
++
+ 		const image: ImageStyle = {
+ 			width: '100%',
+ 			height: 96 * scale,
+@@ -95,7 +112,7 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 		};
+ 
+ 		const lockIcon: TextStyle = {
+-			color: theme.colorFaded,
++			color: colorVariant ? colorVariant.secondaryText : theme.colorFaded,
+ 			fontSize: previewFontSize,
+ 			marginRight: 6,
+ 			marginTop: 2,
+@@ -104,13 +121,13 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 		const title: TextStyle = {
+ 			flexShrink: 1,
+ 			fontWeight: 'bold',
+-			color: theme.color,
++			color: colorVariant ? colorVariant.text : theme.color,
+ 			fontSize: viewerFontSize * scale,
+ 		};
+ 
+ 		const previewText: TextStyle = {
+ 			marginTop: 4,
+-			color: theme.colorFaded,
++			color: colorVariant ? colorVariant.secondaryText : theme.colorFaded,
+ 			fontSize: previewFontSize,
+ 		};
+ 
+@@ -126,6 +143,8 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 			card,
+ 			selectionIndicator,
+ 			selectionIndicatorIcon,
++			pinIcon,
++			pinIconText,
+ 			image,
+ 			content,
+ 			titleRow,
+@@ -141,13 +160,13 @@ const useStyles = (themeId: number, isSelected: boolean, fontScale: number, view
+ 			},
+ 			uncheckedOpacityStyle: { },
+ 		});
+-	}, [themeId, isSelected, fontScale, viewerFontSize]);
++	}, [themeId, isSelected, fontScale, viewerFontSize, tileColor, isDark]);
+ };
+ 
+ const NoteTileComponent: React.FC<Props> = memo(props => {
+ 	const note = props.note ?? {};
+ 	const isSelected = props.noteSelectionEnabled && props.selectedNoteIds.includes(note.id);
+-	const styles = useStyles(props.themeId, isSelected, props.fontScale, props.viewerFontSize);
++	const styles = useStyles(props.themeId, isSelected, props.fontScale, props.viewerFontSize, props.tileColor ?? null, props.isDarkTheme);
+ 	const dialogs = useContext(DialogContext);
+ 	const [checkboxKey, setCheckboxKey] = useState(0);
+ 	const [previewText, setPreviewText] = useState('');
+@@ -292,6 +311,11 @@ const NoteTileComponent: React.FC<Props> = memo(props => {
+ 				beforePressable={todoCheckbox ? <View style={styles.checkboxRow}>{todoCheckbox}</View> : null}
+ 			>
+ 				{selectionIndicator}
++				{props.pinned ? (
++					<View style={styles.pinIcon} testID='note-tile-pin-icon'>
++						<Icon name='fas fa-thumbtack' style={styles.pinIconText} accessibilityLabel={_('Pinned')}/>
++					</View>
++				) : null}
+ 				{imageUri ? <Image source={{ uri: imageUri }} style={styles.image} resizeMode='cover' /> : null}
+ 				<View style={styles.content}>
+ 					<View style={styles.titleRow}>
+@@ -308,6 +332,7 @@ const NoteTileComponent: React.FC<Props> = memo(props => {
+ export default connect((state: AppState) => {
+ 	return {
+ 		themeId: state.settings.theme,
++		isDarkTheme: themeStyle(state.settings.theme).appearance === 'dark',
+ 		noteSelectionEnabled: state.noteSelectionEnabled,
+ 		selectedNoteIds: state.selectedNoteIds,
+ 		fontScale: state.settings['notes.tileFontScale'],
+diff --git a/packages/app-mobile/components/NoteTileColorDialog.tsx b/packages/app-mobile/components/NoteTileColorDialog.tsx
+new file mode 100644
+index 0000000..a5a7fb1
+--- /dev/null
++++ b/packages/app-mobile/components/NoteTileColorDialog.tsx
+@@ -0,0 +1,115 @@
++import * as React from 'react';
++import { useMemo } from 'react';
++import { connect } from 'react-redux';
++import { StyleSheet, Text, TouchableOpacity, View, ViewStyle, TextStyle } from 'react-native';
++import { AppState } from '../utils/types';
++import { _ } from '@joplin/lib/locale';
++import Modal from './Modal';
++import { themeStyle } from './global-style';
++import { getTileColor, TileColorName, tileColorNames } from '../utils/tileColors';
++
++interface Props {
++	themeId: number;
++	isDarkTheme: boolean;
++	visible: boolean;
++	onSelect: (color: TileColorName|null)=> void;
++	onClose: ()=> void;
++}
++
++const colorLabels = (): Record<TileColorName, string> => ({
++	red: _('Red'),
++	orange: _('Orange'),
++	yellow: _('Yellow'),
++	green: _('Green'),
++	teal: _('Teal'),
++	blue: _('Blue'),
++	purple: _('Purple'),
++	pink: _('Pink'),
++	brown: _('Brown'),
++	grey: _('Grey'),
++});
++
++const useStyles = (themeId: number) => {
++	return useMemo(() => {
++		const theme = themeStyle(themeId);
++
++		const container: ViewStyle = {
++			backgroundColor: theme.backgroundColor,
++			borderRadius: 4,
++			maxWidth: 400,
++			width: '90%',
++			alignSelf: 'center',
++			marginVertical: 'auto',
++			padding: theme.margin,
++		};
++
++		const title: TextStyle = {
++			...theme.headerStyle,
++			marginBottom: theme.marginTop,
++		};
++
++		const grid: ViewStyle = {
++			flexDirection: 'row',
++			flexWrap: 'wrap',
++			justifyContent: 'center',
++		};
++
++		const swatch: ViewStyle = {
++			width: 44,
++			height: 44,
++			borderRadius: 22,
++			margin: 6,
++			borderWidth: 1,
++			borderColor: theme.dividerColor,
++			alignItems: 'center',
++			justifyContent: 'center',
++		};
++
++		const noneLabel: TextStyle = {
++			color: theme.color,
++			fontSize: theme.fontSizeSmaller,
++		};
++
++		return StyleSheet.create({ container, title, grid, swatch, noneLabel });
++	}, [themeId]);
++};
++
++const NoteTileColorDialogComponent: React.FC<Props> = props => {
++	const styles = useStyles(props.themeId);
++	const labels = colorLabels();
++
++	if (!props.visible) return null;
++
++	return (
++		<Modal visible={props.visible} onClose={props.onClose} containerStyle={styles.container}>
++			<Text style={styles.title}>{_('Colour')}</Text>
++			<View style={styles.grid}>
++				<TouchableOpacity
++					style={styles.swatch}
++					onPress={() => props.onSelect(null)}
++					accessibilityRole='button'
++					accessibilityLabel={_('None')}
++				>
++					<Text style={styles.noneLabel}>{'✕'}</Text>
++				</TouchableOpacity>
++				{tileColorNames.map(name => (
++					<TouchableOpacity
++						key={name}
++						testID={`note-tile-color-${name}`}
++						style={[styles.swatch, { backgroundColor: getTileColor(name, props.isDarkTheme).background }]}
++						onPress={() => props.onSelect(name)}
++						accessibilityRole='button'
++						accessibilityLabel={labels[name]}
++					/>
++				))}
++			</View>
++		</Modal>
++	);
++};
++
++export default connect((state: AppState) => {
++	return {
++		themeId: state.settings.theme,
++		isDarkTheme: themeStyle(state.settings.theme).appearance === 'dark',
++	};
++})(NoteTileColorDialogComponent);
+diff --git a/packages/app-mobile/components/NoteTileList.test.tsx b/packages/app-mobile/components/NoteTileList.test.tsx
+index 171ae54..aba1b15 100644
+--- a/packages/app-mobile/components/NoteTileList.test.tsx
++++ b/packages/app-mobile/components/NoteTileList.test.tsx
+@@ -223,4 +223,23 @@ describe('NoteTileList', () => {
+ 			expect(screen.getByText('There are currently no notes. Create one by clicking on the (+) button.')).toBeTruthy();
+ 		});
+ 	});
++
++	test('should show pinned notes first with a pin icon and section labels', async () => {
++		const folder = await Folder.save({ title: 'Test folder' });
++		const note1 = await Note.save({ title: 'First note', parent_id: folder.id });
++		const note2 = await Note.save({ title: 'Second note', parent_id: folder.id });
++		await Tag.addNoteTagByTitle(note2.id, 'pinned');
++		await Tag.addNoteTagByTitle(note1.id, 'color:green');
++
++		testStore.dispatch({ type: 'FOLDER_UPDATE_ALL', items: [folder] });
++		testStore.dispatch({ type: 'NOTE_UPDATE_ALL', notes: [note1, note2], notesSource: 'test' });
++
++		render(<WrappedNoteTileList/>);
++
++		await waitFor(() => {
++			expect(screen.getByText('Pinned')).toBeTruthy();
++			expect(screen.getByText('Others')).toBeTruthy();
++			expect(screen.getAllByTestId('note-tile-pin-icon')).toHaveLength(1);
++		});
++	});
+ });
+diff --git a/packages/app-mobile/components/NoteTileList.tsx b/packages/app-mobile/components/NoteTileList.tsx
+index a234856..1d94982 100644
+--- a/packages/app-mobile/components/NoteTileList.tsx
++++ b/packages/app-mobile/components/NoteTileList.tsx
+@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+ import { connect } from 'react-redux';
+ import { Dispatch } from 'redux';
+ import { ScrollView, GestureResponderEvent, Text, StyleSheet, Button, View, ViewStyle, TextStyle } from 'react-native';
+-import { FolderEntity, NoteEntity } from '@joplin/lib/services/database/types';
++import { FolderEntity, NoteEntity, TagEntity } from '@joplin/lib/services/database/types';
+ import { AppState } from '../utils/types';
+ import getEmptyFolderMessage from '@joplin/lib/components/shared/NoteList/getEmptyFolderMessage';
+ import Folder from '@joplin/lib/models/Folder';
+@@ -16,6 +16,7 @@ import { _ } from '@joplin/lib/locale';
+ import NoteTile from './NoteTile';
+ import { themeStyle } from './global-style';
+ import { zoomIn, zoomOut } from '../utils/tileZoom';
++import { loadTileTags, onTileTagsChanged, orderPinnedFirst, TileTagMap } from '../utils/tileTags';
+ import { getScopeFolderIds, workingSetFromStoredValue } from '../utils/tileFolderSelection';
+ 
+ interface Props {
+@@ -24,6 +25,7 @@ interface Props {
+ 	notesSource: string;
+ 	items: NoteEntity[];
+ 	folders: FolderEntity[];
++	tags: TagEntity[];
+ 	noteSelectionEnabled?: boolean;
+ 	notesParentType: string;
+ 	selectedFolderId: string|null;
+@@ -68,6 +70,16 @@ const useStyles = (themeId: number) => {
+ 			alignItems: 'flex-start',
+ 		};
+ 
++		const sectionLabel: TextStyle = {
++			color: theme.colorFaded,
++			fontSize: theme.fontSizeSmaller,
++			fontWeight: '600',
++			textTransform: 'uppercase',
++			paddingHorizontal: theme.marginLeft / 2,
++			paddingTop: 8,
++			paddingBottom: 2,
++		};
++
+ 		const column: ViewStyle = {
+ 			flex: 1,
+ 			minWidth: 0,
+@@ -81,6 +93,7 @@ const useStyles = (themeId: number) => {
+ 			listContent,
+ 			columnRow,
+ 			column,
++			sectionLabel,
+ 		});
+ 	}, [themeId]);
+ };
+@@ -171,15 +184,40 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 
+ 	const numColumns = Math.min(5, Math.max(1, props.tileColumns || 1));
+ 
++	// Pinned/colour state comes from tags. It is loaded with a single query for all visible notes,
++	// and reloaded when the notes change, when a tag changes in the store (sync, tag edits on this
++	// device), or after a pin/colour change made through utils/tileTags.
++	const [tileTags, setTileTags] = useState<TileTagMap>({});
++	const [tagsVersion, setTagsVersion] = useState(0);
++	useEffect(() => onTileTagsChanged(() => setTagsVersion(v => v + 1)), []);
++	useAsyncEffect(async event => {
++		const map = await loadTileTags(items.map(note => note.id));
++		if (!event.cancelled) setTileTags(map);
++	}, [items, props.tags, tagsVersion]);
++
++	// Pinned notes first, each group keeping the usual sort order.
++	const orderedItems = useMemo(() => orderPinnedFirst(items, tileTags), [items, tileTags]);
++	const pinnedCount = useMemo(() => orderedItems.filter(note => tileTags[note.id]?.pinned).length, [orderedItems, tileTags]);
++
+ 	// Round-robin distribution into column buckets, keeping each note's original index (used for
+ 	// keys and passed through to NoteTile) so that order within a column stays top-to-bottom.
+-	const columns = useMemo(() => {
+-		const result: { note: NoteEntity; index: number }[][] = Array.from({ length: numColumns }, (): { note: NoteEntity; index: number }[] => []);
+-		for (const [index, note] of items.entries()) {
+-			result[index % numColumns].push({ note, index });
++	const sections = useMemo(() => {
++		type Entry = { note: NoteEntity; index: number };
++		const distribute = (start: number, end: number) => {
++			const result: Entry[][] = Array.from({ length: numColumns }, (): Entry[] => []);
++			for (let index = start; index < end; index++) {
++				result[(index - start) % numColumns].push({ note: orderedItems[index], index });
++			}
++			return result;
++		};
++		if (pinnedCount > 0 && pinnedCount < orderedItems.length) {
++			return [
++				{ key: 'pinned', label: _('Pinned'), columns: distribute(0, pinnedCount) },
++				{ key: 'others', label: _('Others'), columns: distribute(pinnedCount, orderedItems.length) },
++			];
+ 		}
+-		return result;
+-	}, [items, numColumns]);
++		return [{ key: 'all', label: null as string|null, columns: distribute(0, orderedItems.length) }];
++	}, [orderedItems, pinnedCount, numColumns]);
+ 
+ 	const pinchStateRef = useRef<{ lastDistance: number }|null>(null);
+ 
+@@ -227,13 +265,18 @@ const NoteTileListComponent: React.FC<Props> = props => {
+ 				style={styles.list}
+ 				contentContainerStyle={styles.listContent}
+ 			>
+-				<View style={styles.columnRow}>
+-					{columns.map((column, columnIndex) => (
+-						<View key={`column-${columnIndex}`} style={styles.column}>
+-							{column.map(({ note, index }) => <NoteTile key={note.id} note={note} index={index} />)}
++				{sections.map(section => (
++					<View key={section.key}>
++						{section.label ? <Text style={styles.sectionLabel} accessibilityRole='header'>{section.label}</Text> : null}
++						<View style={styles.columnRow}>
++							{section.columns.map((column, columnIndex) => (
++								<View key={`column-${columnIndex}`} style={styles.column}>
++									{column.map(({ note, index }) => <NoteTile key={note.id} note={note} index={index} pinned={!!tileTags[note.id]?.pinned} tileColor={tileTags[note.id]?.color ?? null} />)}
++								</View>
++							))}
+ 						</View>
+-					))}
+-				</View>
++					</View>
++				))}
+ 			</ScrollView>
+ 		</View>;
+ 	} else {
+@@ -265,6 +308,7 @@ const NoteTileList = connect((state: AppState) => {
+ 	return {
+ 		items: state.notes,
+ 		folders: state.folders,
++		tags: state.tags,
+ 		notesSource: state.notesSource,
+ 		themeId: state.settings.theme,
+ 		noteSelectionEnabled: state.noteSelectionEnabled,
+diff --git a/packages/app-mobile/components/ScreenHeader/index.tsx b/packages/app-mobile/components/ScreenHeader/index.tsx
+index 65a96cd..c98a263 100644
+--- a/packages/app-mobile/components/ScreenHeader/index.tsx
++++ b/packages/app-mobile/components/ScreenHeader/index.tsx
+@@ -63,6 +63,15 @@ export interface FilterButtonOptions {
+ 	active: boolean;
+ }
+ 
++// An extra icon button shown in selection mode, next to the duplicate button (for example, the
++// note tile view's pin and colour actions). Generic so that ScreenHeader stays reusable.
++export interface SelectionAction {
++	key: string;
++	description: string;
++	iconName: string;
++	onPress: OnPressCallback;
++}
++
+ interface ScreenHeaderProps {
+ 	selectedNoteIds: string[];
+ 	selectedFolderId: string;
+@@ -83,6 +92,7 @@ interface ScreenHeaderProps {
+ 	onSaveButtonPress: OnPressCallback;
+ 	sortButton_press?: OnPressCallback;
+ 	filterButton?: FilterButtonOptions;
++	selectionActions?: SelectionAction[];
+ 	onSearchButtonPress?: OnPressCallback;
+ 	onDeleteButtonPress?: OnPressCallback;
+ 
+@@ -702,6 +712,18 @@ class ScreenHeaderComponent extends PureComponent<ScreenHeaderProps, ScreenHeade
+ 		const deleteButtonComp = showStandardDeleteButton ? deleteButton(this.styles(), () => this.deleteButton_press(), headerItemDisabled) : null;
+ 		const restoreButtonComp = selectedFolderInTrash && this.props.noteSelectionEnabled ? restoreButton(this.styles(), () => this.restoreButton_press(), headerItemDisabled) : null;
+ 		const duplicateButtonComp = !selectedFolderInTrash && this.props.noteSelectionEnabled ? duplicateButton(this.styles(), () => this.duplicateButton_press(), headerItemDisabled) : null;
++		const selectionActionComps = !selectedFolderInTrash && this.props.noteSelectionEnabled ? (this.props.selectionActions ?? []).map(action => (
++			<IconButton
++				key={action.key}
++				onPress={action.onPress}
++				disabled={headerItemDisabled}
++				themeId={themeId}
++				description={action.description}
++				contentWrapperStyle={headerItemDisabled ? this.styles().iconButtonDisabled : this.styles().iconButton}
++				iconName={action.iconName}
++				iconStyle={this.styles().topIcon}
++			/>
++		)) : null;
+ 		const sortButtonComp = !this.props.noteSelectionEnabled && this.props.sortButton_press ? sortButton(this.styles(), () => this.props.sortButton_press()) : null;
+ 		const filterButtonComp = !this.props.noteSelectionEnabled && this.props.filterButton ? filterButton(this.styles(), this.props.filterButton) : null;
+ 		const togglePluginEditorButton = renderTogglePluginEditorButton(this.styles(), () => CommandService.instance().execute('toggleEditorPlugin'), false);
+@@ -762,6 +784,7 @@ class ScreenHeaderComponent extends PureComponent<ScreenHeaderProps, ScreenHeade
+ 					)}
+ 					{titleComp}
+ 					{restoreButtonComp}
++					{selectionActionComps}
+ 					{duplicateButtonComp}
+ 					{filterButtonComp}
+ 					{sortButtonComp}
+diff --git a/packages/app-mobile/components/screens/Notes/Notes.tsx b/packages/app-mobile/components/screens/Notes/Notes.tsx
+index b51dee1..3edf521 100644
+--- a/packages/app-mobile/components/screens/Notes/Notes.tsx
++++ b/packages/app-mobile/components/screens/Notes/Notes.tsx
+@@ -9,7 +9,7 @@ import Tag from '@joplin/lib/models/Tag';
+ import Note, { PreviewsOrder } from '@joplin/lib/models/Note';
+ import Setting from '@joplin/lib/models/Setting';
+ import { themeStyle } from '../../global-style';
+-import { FolderPickerOptions, MenuOption, ScreenHeader } from '../../ScreenHeader';
++import { FolderPickerOptions, MenuOption, ScreenHeader, SelectionAction } from '../../ScreenHeader';
+ import { _ } from '@joplin/lib/locale';
+ import { BaseScreenComponent } from '../../base-screen';
+ import { AppState } from '../../../utils/types';
+@@ -26,6 +26,9 @@ import { getScopeFolderIds, workingSetFromStoredValue } from '../../../utils/til
+ import { zoomIn, zoomOut } from '../../../utils/tileZoom';
+ import PerFolderSortOrderService from '@joplin/lib/services/sortOrder/PerFolderSortOrderService';
+ import { ALL_NOTES_FILTER_ID } from '@joplin/lib/reserved-ids';
++import NoteTileColorDialog from '../../NoteTileColorDialog';
++import { loadTileTags, setNotesColor, setNotesPinned } from '../../../utils/tileTags';
++import { TileColorName } from '../../../utils/tileColors';
+ import { debugLog } from '../../../utils/debugLog';
+ 
+ const tilesLog = debugLog('tiles');
+@@ -56,6 +59,9 @@ interface Props {
+ 
+ interface State {
+ 	folderDialogVisible: boolean;
++	colorDialogVisible: boolean;
++	// True when every selected note is pinned (the action then becomes "Unpin").
++	selectionAllPinned: boolean;
+ }
+ 
+ interface ComponentProps extends Props {
+@@ -71,7 +77,7 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 
+ 	public constructor(props: ComponentProps) {
+ 		super(props);
+-		this.state = { folderDialogVisible: false };
++		this.state = { folderDialogVisible: false, colorDialogVisible: false, selectionAllPinned: false };
+ 	}
+ 
+ 	private onAppStateChange_ = async () => {
+@@ -188,6 +194,44 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 		};
+ 	}
+ 
++	private async updateSelectionPinned() {
++		const ids = this.props.selectedNoteIds;
++		if (!this.props.noteSelectionEnabled || !ids.length) {
++			if (this.state.selectionAllPinned) this.setState({ selectionAllPinned: false });
++			return;
++		}
++		const tags = await loadTileTags(ids);
++		const allPinned = ids.every(id => !!tags[id]?.pinned);
++		if (allPinned !== this.state.selectionAllPinned) this.setState({ selectionAllPinned: allPinned });
++	}
++
++	private selectionActions(): SelectionAction[] {
++		if (this.props.mobileLayout !== 'tiles') return [];
++		const pinned = this.state.selectionAllPinned;
++		return [
++			{
++				key: 'tilePin',
++				description: pinned ? _('Unpin') : _('Pin'),
++				iconName: 'fas fa-thumbtack',
++				onPress: async () => {
++					await setNotesPinned(this.props.selectedNoteIds, !pinned);
++					await this.updateSelectionPinned();
++				},
++			},
++			{
++				key: 'tileColor',
++				description: _('Colour…'),
++				iconName: 'ionicon color-palette',
++				onPress: () => this.setState({ colorDialogVisible: true }),
++			},
++		];
++	}
++
++	private onColorSelected = async (color: TileColorName|null) => {
++		this.setState({ colorDialogVisible: false });
++		await setNotesColor(this.props.selectedNoteIds, color);
++	};
++
+ 	private menuOptions(): MenuOption[] {
+ 		const options: MenuOption[] = [];
+ 
+@@ -242,6 +286,9 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 	}
+ 
+ 	public async componentDidUpdate(prevProps: Props) {
++		if (prevProps.selectedNoteIds !== this.props.selectedNoteIds || prevProps.noteSelectionEnabled !== this.props.noteSelectionEnabled) {
++			void this.updateSelectionPinned();
++		}
+ 		if (prevProps.notesOrder !== this.props.notesOrder || prevProps.selectedFolderId !== this.props.selectedFolderId || prevProps.selectedTagId !== this.props.selectedTagId || prevProps.selectedSmartFilterId !== this.props.selectedSmartFilterId || prevProps.notesParentType !== this.props.notesParentType || prevProps.uncompletedTodosOnTop !== this.props.uncompletedTodosOnTop || prevProps.showCompletedTodos !== this.props.showCompletedTodos) {
+ 			await this.refreshNotes(this.props);
+ 		}
+@@ -383,12 +430,18 @@ class NotesScreenComponent extends BaseScreenComponent<ComponentProps, State> {
+ 					showSearchButton={true}
+ 					showSideMenuButton={true}
+ 					menuOptions={this.menuOptions()}
++					selectionActions={this.selectionActions()}
+ 				/>
+ 				{this.props.mobileLayout === 'tiles' ? <NoteTileList /> : <NoteList />}
+ 				<NoteTileFolderDialog
+ 					visible={this.state.folderDialogVisible}
+ 					onClose={() => this.setState({ folderDialogVisible: false })}
+ 				/>
++				<NoteTileColorDialog
++					visible={this.state.colorDialogVisible}
++					onClose={() => this.setState({ colorDialogVisible: false })}
++					onSelect={this.onColorSelected}
++				/>
+ 				{actionButtonComp}
+ 			</AccessibleView>
+ 		);
+diff --git a/packages/app-mobile/utils/tileColors.test.ts b/packages/app-mobile/utils/tileColors.test.ts
+new file mode 100644
+index 0000000..74947ea
+--- /dev/null
++++ b/packages/app-mobile/utils/tileColors.test.ts
+@@ -0,0 +1,22 @@
++import { contrastRatio, getTileColor, isTileColorName, tileColorNames } from './tileColors';
++
++describe('tileColors', () => {
++	test.each([false, true])('text keeps a contrast of at least 4.5:1 (dark theme: %s)', isDark => {
++		for (const name of tileColorNames) {
++			const variant = getTileColor(name, isDark);
++			expect(contrastRatio(variant.background, variant.text)).toBeGreaterThanOrEqual(4.5);
++			expect(contrastRatio(variant.background, variant.secondaryText)).toBeGreaterThanOrEqual(4.5);
++		}
++	});
++
++	test('should compute known contrast ratios', () => {
++		expect(contrastRatio('#000000', '#ffffff')).toBeCloseTo(21, 5);
++		expect(contrastRatio('#777777', '#777777')).toBeCloseTo(1, 5);
++	});
++
++	test('should have the ten documented colours', () => {
++		expect(tileColorNames).toHaveLength(10);
++		expect(isTileColorName('teal')).toBe(true);
++		expect(isTileColorName('black')).toBe(false);
++	});
++});
+diff --git a/packages/app-mobile/utils/tileColors.ts b/packages/app-mobile/utils/tileColors.ts
+new file mode 100644
+index 0000000..34d50ee
+--- /dev/null
++++ b/packages/app-mobile/utils/tileColors.ts
+@@ -0,0 +1,65 @@
++// Colour palette for note tiles (Google-Keep style). A note's colour is stored as a
++// `color:<name>` tag, so the names below are part of the synced data format.
++
++export const tileColorNames = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink', 'brown', 'grey'] as const;
++export type TileColorName = typeof tileColorNames[number];
++
++export interface TileColorVariant {
++	background: string;
++	text: string;
++	// Used for the preview text under the title.
++	secondaryText: string;
++}
++
++interface TileColorEntry {
++	light: TileColorVariant;
++	dark: TileColorVariant;
++}
++
++const lightText = { text: '#1f1f1f', secondaryText: '#2f3133' };
++const darkText = { text: '#f1f3f4', secondaryText: '#c9ccd0' };
++
++const entry = (light: string, dark: string): TileColorEntry => ({
++	light: { background: light, ...lightText },
++	dark: { background: dark, ...darkText },
++});
++
++export const tileColorPalette: Record<TileColorName, TileColorEntry> = {
++	red: entry('#f28b82', '#5c2b29'),
++	orange: entry('#fbbc04', '#614a19'),
++	yellow: entry('#fff475', '#5b5517'),
++	green: entry('#ccff90', '#345920'),
++	teal: entry('#a7ffeb', '#16504b'),
++	blue: entry('#aecbfa', '#254a73'),
++	purple: entry('#d7aefb', '#42275e'),
++	pink: entry('#fdcfe8', '#5b2245'),
++	brown: entry('#e6c9a8', '#4a3320'),
++	grey: entry('#e8eaed', '#3c3f43'),
++};
++
++export const isTileColorName = (name: string): name is TileColorName => {
++	return (tileColorNames as readonly string[]).includes(name);
++};
++
++export const getTileColor = (name: TileColorName, isDark: boolean): TileColorVariant => {
++	return tileColorPalette[name][isDark ? 'dark' : 'light'];
++};
++
++const channelToLinear = (value: number) => {
++	const v = value / 255;
++	return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
++};
++
++const relativeLuminance = (hex: string) => {
++	const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
++	if (!m) throw new Error(`Invalid colour: ${hex}`);
++	const [r, g, b] = [m[1], m[2], m[3]].map(c => channelToLinear(parseInt(c, 16)));
++	return 0.2126 * r + 0.7152 * g + 0.0722 * b;
++};
++
++// WCAG 2.x contrast ratio between two #rrggbb colours.
++export const contrastRatio = (colorA: string, colorB: string) => {
++	const a = relativeLuminance(colorA);
++	const b = relativeLuminance(colorB);
++	return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
++};
+diff --git a/packages/app-mobile/utils/tileTags.test.ts b/packages/app-mobile/utils/tileTags.test.ts
+new file mode 100644
+index 0000000..3757fcd
+--- /dev/null
++++ b/packages/app-mobile/utils/tileTags.test.ts
+@@ -0,0 +1,64 @@
++import { setupDatabaseAndSynchronizer, switchClient } from '@joplin/lib/testing/test-utils';
++import Folder from '@joplin/lib/models/Folder';
++import Note from '@joplin/lib/models/Note';
++import Tag from '@joplin/lib/models/Tag';
++import { colorFromTagTitle, loadTileTags, orderPinnedFirst, setNotesColor, setNotesPinned, tileInfoFromTagTitles } from './tileTags';
++
++const tagTitles = async (noteId: string) => (await Tag.tagsByNoteId(noteId)).map(t => t.title).sort();
++
++describe('tileTags', () => {
++	beforeEach(async () => {
++		await setupDatabaseAndSynchronizer(1);
++		await switchClient(1);
++	});
++
++	test('should parse tag titles', () => {
++		expect(colorFromTagTitle('color:red')).toBe('red');
++		expect(colorFromTagTitle('Color:Blue')).toBe('blue');
++		expect(colorFromTagTitle('color:magenta')).toBeNull();
++		expect(colorFromTagTitle('red')).toBeNull();
++		expect(tileInfoFromTagTitles(['work', 'pinned', 'color:teal'])).toEqual({ pinned: true, color: 'teal' });
++	});
++
++	test('should put pinned notes first and keep the order stable', () => {
++		const notes = ['a', 'b', 'c', 'd', 'e'].map(id => ({ id }));
++		const ordered = orderPinnedFirst(notes, { b: { pinned: true, color: null }, d: { pinned: true, color: 'red' } });
++		expect(ordered.map(n => n.id)).toEqual(['b', 'd', 'a', 'c', 'e']);
++		expect(orderPinnedFirst(notes, {}).map(n => n.id)).toEqual(['a', 'b', 'c', 'd', 'e']);
++	});
++
++	test('should pin and unpin notes through the pinned tag', async () => {
++		const folder = await Folder.save({ title: 'f' });
++		const n1 = await Note.save({ title: 'n1', parent_id: folder.id });
++		const n2 = await Note.save({ title: 'n2', parent_id: folder.id });
++
++		await setNotesPinned([n1.id, n2.id], true);
++		expect(await tagTitles(n1.id)).toEqual(['pinned']);
++		expect((await loadTileTags([n1.id, n2.id]))[n2.id].pinned).toBe(true);
++
++		await setNotesPinned([n1.id], false);
++		expect(await tagTitles(n1.id)).toEqual([]);
++		const info = await loadTileTags([n1.id, n2.id]);
++		expect(info[n1.id]).toBeUndefined();
++		expect(info[n2.id].pinned).toBe(true);
++	});
++
++	test('should replace the colour tag and leave other tags alone', async () => {
++		const folder = await Folder.save({ title: 'f' });
++		const note = await Note.save({ title: 'n', parent_id: folder.id });
++		await Tag.addNoteTagByTitle(note.id, 'work');
++
++		await setNotesColor([note.id], 'red');
++		expect(await tagTitles(note.id)).toEqual(['color:red', 'work']);
++
++		await setNotesColor([note.id], 'blue');
++		expect(await tagTitles(note.id)).toEqual(['color:blue', 'work']);
++		expect((await loadTileTags([note.id]))[note.id].color).toBe('blue');
++
++		await setNotesColor([note.id], 'blue');
++		expect(await tagTitles(note.id)).toEqual(['color:blue', 'work']);
++
++		await setNotesColor([note.id], null);
++		expect(await tagTitles(note.id)).toEqual(['work']);
++	});
++});
+diff --git a/packages/app-mobile/utils/tileTags.ts b/packages/app-mobile/utils/tileTags.ts
+new file mode 100644
+index 0000000..0111ee2
+--- /dev/null
++++ b/packages/app-mobile/utils/tileTags.ts
+@@ -0,0 +1,126 @@
++import Tag from '@joplin/lib/models/Tag';
++import { debugLog } from './debugLog';
++import { isTileColorName, TileColorName } from './tileColors';
++
++const log = debugLog('tiles');
++
++// Pinning and colouring of note tiles is stored in ordinary Joplin tags, so it syncs to
++// the desktop app and other devices.
++export const pinnedTagTitle = 'pinned';
++export const colorTagPrefix = 'color:';
++
++export interface TileTagInfo {
++	pinned: boolean;
++	color: TileColorName|null;
++}
++
++export type TileTagMap = Record<string, TileTagInfo>;
++
++export const colorTagTitle = (color: TileColorName) => `${colorTagPrefix}${color}`;
++
++export const colorFromTagTitle = (title: string): TileColorName|null => {
++	const lower = (title ?? '').trim().toLowerCase();
++	if (!lower.startsWith(colorTagPrefix)) return null;
++	const name = lower.substring(colorTagPrefix.length).trim();
++	return isTileColorName(name) ? name : null;
++};
++
++export const tileInfoFromTagTitles = (titles: string[]): TileTagInfo => {
++	let pinned = false;
++	let color: TileColorName|null = null;
++	for (const title of titles) {
++		if ((title ?? '').trim().toLowerCase() === pinnedTagTitle) pinned = true;
++		const c = colorFromTagTitle(title);
++		if (c && !color) color = c;
++	}
++	return { pinned, color };
++};
++
++// Stable partition: pinned notes first, each group keeping its incoming (sort) order.
++export const orderPinnedFirst = <T extends { id?: string }>(notes: T[], tileTags: TileTagMap): T[] => {
++	const pinned: T[] = [];
++	const others: T[] = [];
++	for (const note of notes) {
++		(tileTags[note.id]?.pinned ? pinned : others).push(note);
++	}
++	return [...pinned, ...others];
++};
++
++// Simple pub/sub so that tiles refresh right after a pin/colour change made through this module.
++type Listener = ()=> void;
++const listeners: Listener[] = [];
++export const onTileTagsChanged = (listener: Listener) => {
++	listeners.push(listener);
++	return () => {
++		const index = listeners.indexOf(listener);
++		if (index >= 0) listeners.splice(index, 1);
++	};
++};
++const notifyChanged = () => {
++	for (const listener of [...listeners]) listener();
++};
++
++const chunkSize = 400;
++
++// Loads pinned/colour state for many notes using one query per chunk of note IDs (rather than
++// one query per note).
++export const loadTileTags = async (noteIds: string[]): Promise<TileTagMap> => {
++	const result: TileTagMap = {};
++	for (let i = 0; i < noteIds.length; i += chunkSize) {
++		const chunk = noteIds.slice(i, i + chunkSize);
++		const rows: { note_id: string; title: string }[] = await Tag.db().selectAll(
++			`SELECT note_tags.note_id AS note_id, tags.title AS title FROM note_tags
++			JOIN tags ON tags.id = note_tags.tag_id
++			WHERE note_tags.note_id IN (${chunk.map(() => '?').join(',')})
++			AND (tags.title = ? COLLATE NOCASE OR tags.title LIKE ? ESCAPE '\\')`,
++			[...chunk, pinnedTagTitle, `${colorTagPrefix}%`],
++		);
++
++		const titlesByNote: Record<string, string[]> = {};
++		for (const row of rows) {
++			if (!titlesByNote[row.note_id]) titlesByNote[row.note_id] = [];
++			titlesByNote[row.note_id].push(row.title);
++		}
++		for (const noteId of chunk) {
++			const info = tileInfoFromTagTitles(titlesByNote[noteId] ?? []);
++			if (info.pinned || info.color) result[noteId] = info;
++		}
++	}
++	return result;
++};
++
++export const setNotesPinned = async (noteIds: string[], pinned: boolean) => {
++	for (const noteId of noteIds) {
++		if (pinned) {
++			await Tag.addNoteTagByTitle(noteId, pinnedTagTitle);
++		} else {
++			const tags = await Tag.tagsByNoteId(noteId);
++			for (const tag of tags) {
++				if (tag.title.trim().toLowerCase() === pinnedTagTitle) await Tag.removeNote(tag.id, noteId);
++			}
++		}
++	}
++	log.info('Pinned state changed', { pinned, noteCount: noteIds.length });
++	notifyChanged();
++};
++
++// Sets the tile colour of the notes. A note has at most one colour tag, so any existing colour
++// tag is removed first. `color` null removes the colour.
++export const setNotesColor = async (noteIds: string[], color: TileColorName|null) => {
++	const wanted = color ? colorTagTitle(color) : null;
++	for (const noteId of noteIds) {
++		const tags = await Tag.tagsByNoteId(noteId);
++		let hasWanted = false;
++		for (const tag of tags) {
++			if (!colorFromTagTitle(tag.title)) continue;
++			if (wanted && tag.title.trim().toLowerCase() === wanted) {
++				hasWanted = true;
++			} else {
++				await Tag.removeNote(tag.id, noteId);
++			}
++		}
++		if (wanted && !hasWanted) await Tag.addNoteTagByTitle(noteId, wanted);
++	}
++	log.info('Colour changed', { color, noteCount: noteIds.length });
++	notifyChanged();
++};

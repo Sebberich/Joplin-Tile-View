@@ -1,0 +1,2629 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sebberich <sebberich@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 09:48:13 +0000
+Subject: [PATCH 31/33] Mobile: Shopping list backup, pull to refresh, manual
+ emoji and icon statistics
+
+- Export/import all lists as a JSON file, optionally password-encrypted
+  (PBKDF2-SHA256 + AES-256-GCM via shim.crypto); import merges per field,
+  device identity only on explicit confirmation.
+- Pull to refresh on the list and the overview (relays and nearby peers,
+  15 s limit, status line).
+- Set an item's emoji by hand, optionally "always use for <name>" shared
+  per list via the list settings (merged per key).
+- Local, opt-in statistics of items without a catalog icon, CSV export.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_015mATJ5zDWtHUm4X7vhb9u2
+
+diff --git a/.gitignore b/.gitignore
+index a09d3cd..44ccfb2 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -803,6 +803,7 @@ packages/app-mobile/components/NoteEditor/types.js
+ packages/app-mobile/components/NoteItem.js
+ packages/app-mobile/components/NoteList.js
+ packages/app-mobile/components/NoteTile.js
++packages/app-mobile/components/NoteTileColorDialog.js
+ packages/app-mobile/components/NoteTileFolderDialog.js
+ packages/app-mobile/components/NoteTileList.test.js
+ packages/app-mobile/components/NoteTileList.js
+@@ -1015,12 +1016,18 @@ packages/app-mobile/contentScripts/utils/readFileToBase64.js
+ packages/app-mobile/contentScripts/utils/setUpLogger.js
+ packages/app-mobile/gulpfile.js
+ packages/app-mobile/index.web.js
++packages/app-mobile/lists/core/backup.test.js
++packages/app-mobile/lists/core/backup.js
+ packages/app-mobile/lists/core/crypto.test.js
+ packages/app-mobile/lists/core/crypto.js
+ packages/app-mobile/lists/core/db.test.js
+ packages/app-mobile/lists/core/db.js
+ packages/app-mobile/lists/core/events.test.js
+ packages/app-mobile/lists/core/events.js
++packages/app-mobile/lists/core/iconMisses.test.js
++packages/app-mobile/lists/core/iconStats.js
++packages/app-mobile/lists/core/icons.test.js
++packages/app-mobile/lists/core/icons.js
+ packages/app-mobile/lists/core/invite.test.js
+ packages/app-mobile/lists/core/invite.js
+ packages/app-mobile/lists/core/merge.test.js
+@@ -1059,6 +1066,7 @@ packages/app-mobile/lists/sync/nearby.js
+ packages/app-mobile/lists/sync/relayPool.test.js
+ packages/app-mobile/lists/sync/relayPool.js
+ packages/app-mobile/lists/sync/testing/fakeRelay.js
++packages/app-mobile/lists/ui/IconStatsScreen.js
+ packages/app-mobile/lists/ui/JoinScreen.js
+ packages/app-mobile/lists/ui/ListScreen.test.js
+ packages/app-mobile/lists/ui/ListScreen.js
+@@ -1067,6 +1075,7 @@ packages/app-mobile/lists/ui/MembersScreen.js
+ packages/app-mobile/lists/ui/ShareScreen.test.js
+ packages/app-mobile/lists/ui/ShareScreen.js
+ packages/app-mobile/lists/ui/components/CreateListModal.js
++packages/app-mobile/lists/ui/components/ExportListsModal.js
+ packages/app-mobile/lists/ui/components/ItemEditModal.js
+ packages/app-mobile/lists/ui/components/ItemTile.js
+ packages/app-mobile/lists/ui/components/NearbyPeersModal.js
+@@ -1079,10 +1088,14 @@ packages/app-mobile/lists/ui/groupItems.test.js
+ packages/app-mobile/lists/ui/groupItems.js
+ packages/app-mobile/lists/ui/listTileZoom.test.js
+ packages/app-mobile/lists/ui/listTileZoom.js
++packages/app-mobile/lists/ui/listsBackup.js
+ packages/app-mobile/lists/ui/listsRuntime.js
+ packages/app-mobile/lists/ui/parseItemInput.test.js
+ packages/app-mobile/lists/ui/parseItemInput.js
++packages/app-mobile/lists/ui/pullRefresh.test.js
++packages/app-mobile/lists/ui/pullRefresh.js
+ packages/app-mobile/lists/ui/syncApi.js
++packages/app-mobile/lists/ui/usePullRefresh.js
+ packages/app-mobile/lists/ui/warmup.js
+ packages/app-mobile/root.js
+ packages/app-mobile/services/AlarmServiceDriver.android.js
+@@ -1178,10 +1191,14 @@ packages/app-mobile/utils/testing/getWebViewWindowById.js
+ packages/app-mobile/utils/testing/mockPluginServiceSetup.js
+ packages/app-mobile/utils/testing/setupGlobalStore.js
+ packages/app-mobile/utils/testing/testingLibrary.js
++packages/app-mobile/utils/tileColors.test.js
++packages/app-mobile/utils/tileColors.js
+ packages/app-mobile/utils/tileFolderSelection.test.js
+ packages/app-mobile/utils/tileFolderSelection.js
+ packages/app-mobile/utils/tilePreviewText.test.js
+ packages/app-mobile/utils/tilePreviewText.js
++packages/app-mobile/utils/tileTags.test.js
++packages/app-mobile/utils/tileTags.js
+ packages/app-mobile/utils/tileZoom.test.js
+ packages/app-mobile/utils/tileZoom.js
+ packages/app-mobile/utils/types.js
+diff --git a/.ignore.eslint b/.ignore.eslint
+index ae74d81..7a53c60 100644
+--- a/.ignore.eslint
++++ b/.ignore.eslint
+@@ -829,6 +829,7 @@ packages/app-mobile/components/NoteEditor/types.js
+ packages/app-mobile/components/NoteItem.js
+ packages/app-mobile/components/NoteList.js
+ packages/app-mobile/components/NoteTile.js
++packages/app-mobile/components/NoteTileColorDialog.js
+ packages/app-mobile/components/NoteTileFolderDialog.js
+ packages/app-mobile/components/NoteTileList.test.js
+ packages/app-mobile/components/NoteTileList.js
+@@ -1041,12 +1042,18 @@ packages/app-mobile/contentScripts/utils/readFileToBase64.js
+ packages/app-mobile/contentScripts/utils/setUpLogger.js
+ packages/app-mobile/gulpfile.js
+ packages/app-mobile/index.web.js
++packages/app-mobile/lists/core/backup.test.js
++packages/app-mobile/lists/core/backup.js
+ packages/app-mobile/lists/core/crypto.test.js
+ packages/app-mobile/lists/core/crypto.js
+ packages/app-mobile/lists/core/db.test.js
+ packages/app-mobile/lists/core/db.js
+ packages/app-mobile/lists/core/events.test.js
+ packages/app-mobile/lists/core/events.js
++packages/app-mobile/lists/core/iconMisses.test.js
++packages/app-mobile/lists/core/iconStats.js
++packages/app-mobile/lists/core/icons.test.js
++packages/app-mobile/lists/core/icons.js
+ packages/app-mobile/lists/core/invite.test.js
+ packages/app-mobile/lists/core/invite.js
+ packages/app-mobile/lists/core/merge.test.js
+@@ -1085,6 +1092,7 @@ packages/app-mobile/lists/sync/nearby.js
+ packages/app-mobile/lists/sync/relayPool.test.js
+ packages/app-mobile/lists/sync/relayPool.js
+ packages/app-mobile/lists/sync/testing/fakeRelay.js
++packages/app-mobile/lists/ui/IconStatsScreen.js
+ packages/app-mobile/lists/ui/JoinScreen.js
+ packages/app-mobile/lists/ui/ListScreen.test.js
+ packages/app-mobile/lists/ui/ListScreen.js
+@@ -1093,6 +1101,7 @@ packages/app-mobile/lists/ui/MembersScreen.js
+ packages/app-mobile/lists/ui/ShareScreen.test.js
+ packages/app-mobile/lists/ui/ShareScreen.js
+ packages/app-mobile/lists/ui/components/CreateListModal.js
++packages/app-mobile/lists/ui/components/ExportListsModal.js
+ packages/app-mobile/lists/ui/components/ItemEditModal.js
+ packages/app-mobile/lists/ui/components/ItemTile.js
+ packages/app-mobile/lists/ui/components/NearbyPeersModal.js
+@@ -1105,10 +1114,14 @@ packages/app-mobile/lists/ui/groupItems.test.js
+ packages/app-mobile/lists/ui/groupItems.js
+ packages/app-mobile/lists/ui/listTileZoom.test.js
+ packages/app-mobile/lists/ui/listTileZoom.js
++packages/app-mobile/lists/ui/listsBackup.js
+ packages/app-mobile/lists/ui/listsRuntime.js
+ packages/app-mobile/lists/ui/parseItemInput.test.js
+ packages/app-mobile/lists/ui/parseItemInput.js
++packages/app-mobile/lists/ui/pullRefresh.test.js
++packages/app-mobile/lists/ui/pullRefresh.js
+ packages/app-mobile/lists/ui/syncApi.js
++packages/app-mobile/lists/ui/usePullRefresh.js
+ packages/app-mobile/lists/ui/warmup.js
+ packages/app-mobile/root.js
+ packages/app-mobile/services/AlarmServiceDriver.android.js
+@@ -1204,10 +1217,14 @@ packages/app-mobile/utils/testing/getWebViewWindowById.js
+ packages/app-mobile/utils/testing/mockPluginServiceSetup.js
+ packages/app-mobile/utils/testing/setupGlobalStore.js
+ packages/app-mobile/utils/testing/testingLibrary.js
++packages/app-mobile/utils/tileColors.test.js
++packages/app-mobile/utils/tileColors.js
+ packages/app-mobile/utils/tileFolderSelection.test.js
+ packages/app-mobile/utils/tileFolderSelection.js
+ packages/app-mobile/utils/tilePreviewText.test.js
+ packages/app-mobile/utils/tilePreviewText.js
++packages/app-mobile/utils/tileTags.test.js
++packages/app-mobile/utils/tileTags.js
+ packages/app-mobile/utils/tileZoom.test.js
+ packages/app-mobile/utils/tileZoom.js
+ packages/app-mobile/utils/types.js
+diff --git a/packages/app-mobile/lists/core/backup.test.ts b/packages/app-mobile/lists/core/backup.test.ts
+new file mode 100644
+index 0000000..a211004
+--- /dev/null
++++ b/packages/app-mobile/lists/core/backup.test.ts
+@@ -0,0 +1,192 @@
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import { backupFileName, BackupError, buildBackup, importBackup, isEncryptedBackup, parseBackup, serializeBackup } from './backup';
++import { ListsDatabase } from './db';
++import { ListsStore } from './store';
++import { bytesToHex } from './crypto';
++import { customIconFor, parseListSettings } from './icons';
++
++// Real iteration counts take seconds in pure JS; the file records the count it
++// was made with, so a small one exercises the same code path.
++const TEST_ITERATIONS = 1000;
++
++interface Fixture { db: ListsDatabase; store: ListsStore; path: string }
++
++const open = async (): Promise<Fixture> => {
++	const path = join(tmpdir(), `tiles-lists-backup-test-${uuid.createNano()}.sqlite`);
++	const db = new ListsDatabase(new Database(new DatabaseDriverNode()));
++	return { db, store: new ListsStore(db, path), path };
++};
++
++describe('lists/core/backup', () => {
++	let source: Fixture;
++	let target: Fixture;
++
++	beforeEach(async () => {
++		source = await open();
++		target = await open();
++	});
++
++	afterEach(async () => {
++		await source.db.close();
++		await target.db.close();
++		await rm(source.path, { force: true });
++		await rm(target.path, { force: true });
++	});
++
++	const populate = async () => {
++		const list = await source.store.createOpenList('Groceries');
++		await source.store.addItem(list.id, 'Milch', { unit: 'ml', amount: 1000 });
++		await source.store.addItem(list.id, 'Brot');
++		const second = await source.store.createManagedList('Party');
++		await source.store.addItem(second.id, 'Chips');
++		await source.db.upsertProfileName(list.id, 'ab'.repeat(32), 'Anna', 5);
++		return { list, second };
++	};
++
++	const dump = async (fixture: Fixture, listId: string) => {
++		const items = await fixture.db.allItemsForSync(listId);
++		return items.map(({ pending: _p, ...rest }) => rest).sort((a, b) => a.dTag.localeCompare(b.dTag));
++	};
++
++	test('file name looks like forklin-listen-yyyymmdd-hhmm.json', () => {
++		expect(backupFileName(new Date(2026, 9, 1, 14, 5))).toBe('forklin-listen-20261001-1405.json');
++	});
++
++	test('plain roundtrip restores lists, items (with timestamps and qty), members and profiles on a fresh device', async () => {
++		const { list, second } = await populate();
++		const backup = await buildBackup(source.db, { includeIdentity: false });
++		const text = await serializeBackup(backup);
++		expect(isEncryptedBackup(text)).toBe(false);
++		expect(backup.identity).toBeUndefined();
++
++		await target.store.lists(); // opens the target database
++		const summary = await importBackup(target.db, await parseBackup(text));
++
++		expect(summary).toMatchObject({ listsAdded: 2, itemsAdded: 3, identityImported: false });
++		expect((await target.db.lists()).map(l => l.name).sort()).toEqual(['Groceries', 'Party']);
++		expect(await dump(target, list.id)).toEqual(await dump(source, list.id));
++		expect(await dump(target, second.id)).toEqual(await dump(source, second.id));
++		expect(await target.db.members(list.id)).toEqual(await source.db.members(list.id));
++		expect((await target.db.profileName(list.id, 'ab'.repeat(32)))).toEqual({ name: 'Anna', t: 5 });
++		const milch = (await target.db.allItemsForSync(list.id)).find(i => i.name === 'Milch');
++		expect(milch!.qty).not.toBeNull();
++		// The device identity stayed the target's own.
++		expect(bytesToHex((await target.db.deviceIdentity()).secretKey)).not.toBe(bytesToHex((await source.db.deviceIdentity()).secretKey));
++	});
++
++	test('encrypted roundtrip, wrong password and missing password', async () => {
++		await populate();
++		const backup = await buildBackup(source.db, { includeIdentity: false });
++		const text = await serializeBackup(backup, 'correct horse', TEST_ITERATIONS);
++
++		expect(isEncryptedBackup(text)).toBe(true);
++		expect(text).not.toContain('Milch');
++		expect(text).not.toContain('listKey');
++
++		await expect(parseBackup(text)).rejects.toMatchObject({ code: 'passwordRequired' });
++		await expect(parseBackup(text, 'wrong')).rejects.toMatchObject({ code: 'wrongPassword' });
++		await expect(parseBackup(text, 'wrong')).rejects.toBeInstanceOf(BackupError);
++		expect(await parseBackup(text, 'correct horse')).toEqual(backup);
++	});
++
++	test('the production key derivation uses at least 200k PBKDF2 iterations', async () => {
++		await source.store.lists(); // opens the database
++		const backup = await buildBackup(source.db, { includeIdentity: false });
++		const text = await serializeBackup(backup, 'pw');
++		expect(JSON.parse(text).iterations).toBeGreaterThanOrEqual(200000);
++		expect((await parseBackup(text, 'pw')).format).toBe('forklin-lists');
++	}, 120000);
++
++	test('rejects files that are not backups, or are from a newer version', async () => {
++		await expect(parseBackup('not json')).rejects.toMatchObject({ code: 'notABackup' });
++		await expect(parseBackup('{"format":"other","lists":[]}')).rejects.toMatchObject({ code: 'notABackup' });
++		await expect(parseBackup('{"format":"forklin-lists","version":99,"lists":[]}')).rejects.toMatchObject({ code: 'unsupportedVersion' });
++	});
++
++	test('import merges field-wise and never overwrites newer local data', async () => {
++		const { list } = await populate();
++		const backup = await buildBackup(source.db, { includeIdentity: false });
++
++		// Target already has the same list (same keys) with the same item, where the
++		// local copy is newer for `open` (bought later) and has its own detail.
++		await target.store.lists();
++		await target.db.importList(list);
++		const milch = (await source.db.allItemsForSync(list.id)).find(i => i.name === 'Milch')!;
++		await target.db.upsertItem({ ...milch, open: false, openT: milch.openT + 1000, detail: 'lokal', detailT: milch.openT + 500, qty: null, pending: false });
++		const newerLocal = await target.db.item(list.id, milch.dTag);
++
++		const summary = await importBackup(target.db, backup);
++
++		const after = await target.db.item(list.id, milch.dTag);
++		expect(after!.open).toBe(false); // newer local value kept
++		expect(after!.openT).toBe(newerLocal!.openT);
++		expect(after!.detail).toBe('lokal');
++		expect(after!.qty).toEqual(milch.qty); // qty merged in from the backup
++		expect(summary.listsAdded).toBe(1); // only "Party"
++		expect(summary.itemsAdded).toBe(2); // Brot, Chips
++		expect(summary.itemsUpdated).toBe(1); // Milch gained its qty
++		expect((await target.db.allItemsForSync(list.id)).length).toBe(2);
++
++		// a second import is a no-op
++		const again = await importBackup(target.db, backup);
++		expect(again).toMatchObject({ listsAdded: 0, itemsAdded: 0, itemsUpdated: 0 });
++		expect(again.itemsUnchanged).toBe(3);
++	});
++
++	test('newer data in the backup is taken, and settings merge per key', async () => {
++		const { list } = await populate();
++		await source.store.addItem(list.id, 'Käse');
++		const milch = (await source.db.allItemsForSync(list.id)).find(i => i.name === 'Milch')!;
++		await source.store.setItemIcon(list.id, milch.dTag, '🐄', true);
++		const backup = await buildBackup(source.db, { includeIdentity: false });
++
++		await target.store.lists();
++		await target.db.importList({ ...list, settings: JSON.stringify({ customIcons: { brot: '🥖' }, customIconsT: { brot: 1 } }) });
++		await target.db.upsertItem({ ...milch, icon: '🥛', iconT: 1, pending: false });
++
++		await importBackup(target.db, backup);
++
++		const restored = await target.db.item(list.id, milch.dTag);
++		expect(restored!.icon).toBe('🐄');
++		const settings = parseListSettings((await target.db.list(list.id))!.settings);
++		expect(customIconFor(settings, 'Milch')).toBe('🐄');
++		expect(customIconFor(settings, 'Brot')).toBe('🥖');
++	});
++
++	test('device identity is imported only when present and confirmed', async () => {
++		await populate();
++		const withIdentity = await buildBackup(source.db, { includeIdentity: true });
++		const sourceKey = bytesToHex((await source.db.deviceIdentity()).secretKey);
++		expect(withIdentity.identity?.secretKey).toBe(sourceKey);
++
++		await target.store.lists();
++		const targetKey = bytesToHex((await target.db.deviceIdentity()).secretKey);
++
++		// not confirmed
++		let summary = await importBackup(target.db, withIdentity, { confirmIdentity: async () => false });
++		expect(summary.identityImported).toBe(false);
++		expect(bytesToHex((await target.db.deviceIdentity()).secretKey)).toBe(targetKey);
++
++		// no callback at all counts as not confirmed
++		summary = await importBackup(target.db, withIdentity);
++		expect(summary.identityImported).toBe(false);
++
++		// confirmed
++		const confirm = jest.fn(async () => true);
++		summary = await importBackup(target.db, withIdentity, { confirmIdentity: confirm });
++		expect(confirm).toHaveBeenCalledTimes(1);
++		expect(summary.identityImported).toBe(true);
++		expect(bytesToHex((await target.db.deviceIdentity()).secretKey)).toBe(sourceKey);
++
++		// a backup without identity never asks
++		const without = await buildBackup(source.db, { includeIdentity: false });
++		const neverCalled = jest.fn(async () => true);
++		await importBackup(target.db, without, { confirmIdentity: neverCalled });
++		expect(neverCalled).not.toHaveBeenCalled();
++	});
++});
+diff --git a/packages/app-mobile/lists/core/backup.ts b/packages/app-mobile/lists/core/backup.ts
+new file mode 100644
+index 0000000..1fdaf0b
+--- /dev/null
++++ b/packages/app-mobile/lists/core/backup.ts
+@@ -0,0 +1,261 @@
++// Backup and restore of the shopping lists ("Sicherung der Listen", see
++// docs/KONZEPT.md section 4): one JSON file with lists, items (all field
++// timestamps and quantities), members, profiles and list settings, optionally
++// with the device identity, optionally encrypted with a password.
++//
++// Import merges into the existing data with the same field-wise rules as sync
++// (mergeItem, per-key settings merge) and never overwrites newer local data.
++import shim from '@joplin/lib/shim';
++import { CipherAlgorithm, Digest, EncryptionParameters, EncryptionResult } from '@joplin/lib/services/e2ee/types';
++import { bytesToHex } from './crypto';
++import { ListsDatabase } from './db';
++import { mergeListSettings } from './icons';
++import { mergeItem } from './merge';
++import { itemRecordToPayload, payloadToItemRecord } from './store';
++import { ItemRecord, ListRecord, MemberRecord } from './types';
++import { debugLog } from '../../utils/debugLog';
++
++const log = debugLog('lists.store');
++
++export const BACKUP_FORMAT = 'forklin-lists';
++export const BACKUP_VERSION = 1;
++const ENCRYPTED_FORMAT = 'forklin-lists-encrypted';
++// The password is stretched with PBKDF2-HMAC-SHA256 and the file encrypted with
++// AES-256-GCM, both through Joplin's native crypto layer (shim.crypto:
++// react-native-quick-crypto on the phone, node:crypto in tests) -- the same
++// primitives Joplin's own E2EE uses. A pure-JS PBKDF2 at this iteration count
++// would take minutes on Hermes.
++export const PBKDF2_ITERATIONS = 220000;
++
++export interface BackupProfile {
++	pubkey: string;
++	name: string;
++	t: number;
++}
++
++export interface BackupList {
++	list: ListRecord;
++	members: MemberRecord[];
++	profiles: BackupProfile[];
++	// Item rows without their local `pending` flag.
++	items: Omit<ItemRecord, 'pending'>[];
++}
++
++export interface BackupIdentity {
++	secretKey: string; // hex
++	name: string;
++}
++
++export interface BackupFile {
++	format: typeof BACKUP_FORMAT;
++	version: number;
++	exportedAt: number;
++	lists: BackupList[];
++	identity?: BackupIdentity;
++}
++
++export class BackupError extends Error {
++	public constructor(public code: 'notABackup' | 'unsupportedVersion' | 'wrongPassword' | 'passwordRequired', message: string) {
++		super(message);
++	}
++}
++
++// --- export ------------------------------------------------------------
++
++export const buildBackup = async (db: ListsDatabase, options: { includeIdentity: boolean; now?: number }): Promise<BackupFile> => {
++	const lists: BackupList[] = [];
++	for (const list of await db.lists()) {
++		const items = (await db.allItemsForSync(list.id)).map(item => {
++			const copy: Partial<ItemRecord> = { ...item };
++			delete copy.pending; // local-only flag
++			return copy as Omit<ItemRecord, 'pending'>;
++		});
++		lists.push({ list, members: await db.members(list.id), profiles: await db.allProfiles(list.id), items });
++	}
++	const backup: BackupFile = { format: BACKUP_FORMAT, version: BACKUP_VERSION, exportedAt: options.now ?? Date.now(), lists };
++	if (options.includeIdentity) {
++		const identity = await db.deviceIdentity();
++		backup.identity = { secretKey: bytesToHex(identity.secretKey), name: identity.name };
++	}
++	return backup;
++};
++
++// Default file name, e.g. forklin-listen-20261001-1430.json (local time).
++export const backupFileName = (date: Date = new Date()): string => {
++	const p = (n: number) => String(n).padStart(2, '0');
++	return `forklin-listen-${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}-${p(date.getHours())}${p(date.getMinutes())}.json`;
++};
++
++// --- password encryption ---------------------------------------------------
++
++interface EncryptedEnvelope extends EncryptionResult {
++	format: typeof ENCRYPTED_FORMAT;
++	version: number;
++	kdf: 'pbkdf2-sha256';
++	iterations: number;
++	cipher: 'aes-256-gcm';
++}
++
++const encryptionParameters = (iterations: number): EncryptionParameters => ({
++	cipherAlgorithm: CipherAlgorithm.AES_256_GCM,
++	authTagLength: 16,
++	digestAlgorithm: Digest.sha256,
++	keyLength: 32,
++	associatedData: new Uint8Array(0),
++	iterationCount: iterations,
++});
++
++// `iterations` is a parameter only so tests don't have to pay for the full
++// production cost on every call.
++export const serializeBackup = async (backup: BackupFile, password?: string, iterations: number = PBKDF2_ITERATIONS): Promise<string> => {
++	const json = JSON.stringify(backup);
++	if (!password) return json;
++	const salt = await shim.crypto.randomBytes(16);
++	const data = new Uint8Array(new TextEncoder().encode(json));
++	const result = await shim.crypto.encrypt(password.normalize('NFKC'), salt, data, encryptionParameters(iterations));
++	const envelope: EncryptedEnvelope = { format: ENCRYPTED_FORMAT, version: 1, kdf: 'pbkdf2-sha256', iterations, cipher: 'aes-256-gcm', ...result };
++	return JSON.stringify(envelope);
++};
++
++export const isEncryptedBackup = (text: string): boolean => {
++	try {
++		return JSON.parse(text)?.format === ENCRYPTED_FORMAT;
++	} catch (error) {
++		return false;
++	}
++};
++
++// Parses a backup file's text, decrypting it first if needed. Throws a
++// BackupError ('passwordRequired', 'wrongPassword', 'notABackup',
++// 'unsupportedVersion').
++export const parseBackup = async (text: string, password?: string): Promise<BackupFile> => {
++	let parsed;
++	try {
++		parsed = JSON.parse(text);
++	} catch (error) {
++		throw new BackupError('notABackup', 'The file is not a lists backup');
++	}
++
++	if (parsed?.format === ENCRYPTED_FORMAT) {
++		if (!password) throw new BackupError('passwordRequired', 'This backup is encrypted, a password is needed');
++		const envelope = parsed as EncryptedEnvelope;
++		if (envelope.kdf !== 'pbkdf2-sha256' || envelope.cipher !== 'aes-256-gcm' || !(envelope.iterations >= 1)) {
++			throw new BackupError('unsupportedVersion', 'Unsupported encryption');
++		}
++		let plain: Uint8Array;
++		try {
++			plain = await shim.crypto.decrypt(password.normalize('NFKC'), { salt: envelope.salt, iv: envelope.iv, ct: envelope.ct }, encryptionParameters(envelope.iterations));
++		} catch (error) {
++			throw new BackupError('wrongPassword', 'Wrong password, or the file is damaged');
++		}
++		try {
++			parsed = JSON.parse(new TextDecoder().decode(plain));
++		} catch (error) {
++			throw new BackupError('notABackup', 'The file is not a lists backup');
++		}
++	}
++
++	if (!parsed || parsed.format !== BACKUP_FORMAT || !Array.isArray(parsed.lists)) throw new BackupError('notABackup', 'The file is not a lists backup');
++	if (typeof parsed.version !== 'number' || parsed.version > BACKUP_VERSION) throw new BackupError('unsupportedVersion', 'The backup was made by a newer version of the app');
++	return parsed as BackupFile;
++};
++
++// --- import --------------------------------------------------------------
++
++export interface ImportSummary {
++	listsAdded: number;
++	listsUpdated: number;
++	itemsAdded: number;
++	itemsUpdated: number;
++	itemsUnchanged: number;
++	membersAdded: number;
++	identityImported: boolean;
++}
++
++export interface ImportOptions {
++	// Called only when the backup contains a device identity; the identity is
++	// imported only if this resolves to true.
++	confirmIdentity?: ()=> Promise<boolean>;
++}
++
++const isHex = (value: unknown, length: number): value is string => typeof value === 'string' && value.length === length && /^[0-9a-f]+$/i.test(value);
++
++// Merges `backup` into the database. Local data that is newer always wins
++// (mergeItem, per-key customIcons, member `since`, profile `t`); nothing is
++// deleted. Items that the backup adds or improves are marked pending so the
++// next sync publishes them.
++export const importBackup = async (db: ListsDatabase, backup: BackupFile, options: ImportOptions = {}): Promise<ImportSummary> => {
++	const summary: ImportSummary = { listsAdded: 0, listsUpdated: 0, itemsAdded: 0, itemsUpdated: 0, itemsUnchanged: 0, membersAdded: 0, identityImported: false };
++
++	for (const entry of backup.lists) {
++		const incoming = entry.list;
++		const existing = await db.list(incoming.id);
++		let listChanged = false;
++
++		if (!existing) {
++			await db.importList({ ...incoming, sortOrder: 0 });
++			summary.listsAdded++;
++		} else {
++			// Keep local name/relays/sort order; only fill in what's missing, and
++			// merge the settings per key.
++			const settings = mergeListSettings(existing.settings, incoming.settings);
++			const merged: ListRecord = {
++				...existing,
++				listKey: existing.listKey ?? incoming.listKey,
++				contentKey: existing.contentKey ?? incoming.contentKey,
++				settings,
++			};
++			if (merged.listKey !== existing.listKey || merged.contentKey !== existing.contentKey || merged.settings !== existing.settings) {
++				await db.importList(merged);
++				listChanged = true;
++			}
++		}
++
++		const localMembers = new Map((await db.members(incoming.id)).map(m => [m.pubkey, m]));
++		for (const member of entry.members ?? []) {
++			const local = localMembers.get(member.pubkey);
++			if (!local) {
++				await db.upsertMember({ ...member, listId: incoming.id });
++				summary.membersAdded++;
++				listChanged = true;
++			} else if (member.since > local.since || (member.since === local.since && (member.removedAt ?? 0) > (local.removedAt ?? 0))) {
++				await db.upsertMember({ ...member, listId: incoming.id });
++				listChanged = true;
++			}
++		}
++
++		for (const profile of entry.profiles ?? []) await db.upsertProfileName(incoming.id, profile.pubkey, profile.name, profile.t);
++
++		let itemsTouched = 0;
++		for (const raw of entry.items ?? []) {
++			const incomingItem: ItemRecord = { ...raw, listId: incoming.id, pending: false };
++			const local = await db.item(incoming.id, incomingItem.dTag);
++			if (!local) {
++				await db.upsertItem({ ...incomingItem, pending: true });
++				summary.itemsAdded++;
++				itemsTouched++;
++				continue;
++			}
++			const mergedPayload = mergeItem(itemRecordToPayload(local), itemRecordToPayload(incomingItem));
++			const mergedRecord = payloadToItemRecord(incoming.id, incomingItem.dTag, mergedPayload, local.pending);
++			const withoutDevice = (record: ItemRecord) => JSON.stringify({ ...itemRecordToPayload(record), device: '' });
++			if (withoutDevice(mergedRecord) === withoutDevice(local)) {
++				summary.itemsUnchanged++;
++				continue;
++			}
++			await db.upsertItem({ ...mergedRecord, pending: true });
++			summary.itemsUpdated++;
++			itemsTouched++;
++		}
++		if (existing && (listChanged || itemsTouched)) summary.listsUpdated++;
++	}
++
++	if (backup.identity && isHex(backup.identity.secretKey, 64) && options.confirmIdentity && await options.confirmIdentity()) {
++		await db.setMeta('deviceSecretKey', backup.identity.secretKey.toLowerCase());
++		if (backup.identity.name) await db.setMeta('deviceName', backup.identity.name);
++		summary.identityImported = true;
++	}
++
++	log.info('Lists backup imported', { ...summary });
++	return summary;
++};
+diff --git a/packages/app-mobile/lists/core/db.test.ts b/packages/app-mobile/lists/core/db.test.ts
+index 39302f1..2fd5fcd 100644
+--- a/packages/app-mobile/lists/core/db.test.ts
++++ b/packages/app-mobile/lists/core/db.test.ts
+@@ -44,7 +44,7 @@ describe('lists/core/db', () => {
+ 		const a = await db.deviceIdentity();
+ 		const b = await db.deviceIdentity();
+ 		expect(a.publicKey).toBe(b.publicKey);
+-		expect(a.name).toBe('Joplin Tiles');
++		expect(a.name).toBe('Forklin');
+ 	});
+ 
+ 	test('createList generates an open list with a list key and a content key', async () => {
+@@ -278,6 +278,10 @@ describe('lists/core/db', () => {
+ 
+ 			const salat = await migrated.item('list-1', 'salat');
+ 			expect(salat!.qty).toBeNull();
++
++			// The v4 step (icon_misses table) ran as part of the same upgrade.
++			await migrated.recordIconMiss('x', 'X', 'list-1');
++			expect(await migrated.iconMisses()).toHaveLength(1);
+ 		} finally {
+ 			await migrated.close();
+ 			await rm(path, { force: true });
+diff --git a/packages/app-mobile/lists/core/db.ts b/packages/app-mobile/lists/core/db.ts
+index d482335..763edb7 100644
+--- a/packages/app-mobile/lists/core/db.ts
++++ b/packages/app-mobile/lists/core/db.ts
+@@ -11,10 +11,10 @@ const log = debugLog('lists.store');
+ // eslint-disable-next-line @typescript-eslint/no-var-requires -- plain JSON data file, no resolveJsonModule configured for this package
+ const catalogItems: CatalogItemDef[] = require('../catalog/items.json');
+ 
+-const SCHEMA_VERSION = 3;
++const SCHEMA_VERSION = 4;
+ // Fallback used when the platform can't tell us a device model (iOS, or a
+ // plain Node test environment) -- see defaultDeviceName() below.
+-const DEFAULT_DEVICE_NAME = 'Joplin Tiles';
++const DEFAULT_DEVICE_NAME = 'Forklin';
+ 
+ // The device's own display name defaults to its model (e.g. "Pixel 8") rather
+ // than the generic DEFAULT_DEVICE_NAME above, so members see something
+@@ -93,6 +93,33 @@ const CREATE_TABLES_V2: string[] = [
+ 	)`,
+ ];
+ 
++// Schema version 4: local-only statistics of items added without a catalog
++// icon (see docs/KONZEPT.md, "Artikel ohne Icon zählen"). Never synced and
++// never sent anywhere. `lists` is a JSON array of short list-id prefixes, so
++// the number of distinct lists can be shown without storing more than that.
++const CREATE_TABLES_V4: string[] = [
++	`CREATE TABLE IF NOT EXISTS icon_misses (
++		name TEXT PRIMARY KEY,
++		display_name TEXT NOT NULL,
++		count INTEGER NOT NULL DEFAULT 0,
++		lists TEXT NOT NULL DEFAULT '[]',
++		first_seen INTEGER NOT NULL,
++		last_seen INTEGER NOT NULL,
++		chosen_emoji TEXT
++	)`,
++];
++
++export interface IconMissRow {
++	// Normalized name (see normalize.ts#normalizeName), the primary key.
++	name: string;
++	displayName: string;
++	count: number;
++	listCount: number;
++	firstSeen: number;
++	lastSeen: number;
++	chosenEmoji: string | null;
++}
++
+ export interface DeviceIdentity {
+ 	secretKey: Uint8Array;
+ 	publicKey: string;
+@@ -174,9 +201,12 @@ export class ListsDatabase {
+ 		if (version < 2) {
+ 			await this.db.transactionExecBatch([...CREATE_TABLES_V2, 'PRAGMA user_version = 2']);
+ 		}
+-		if (version < SCHEMA_VERSION) {
++		if (version < 3) {
+ 			await this.migrateQtyColumn();
+ 		}
++		if (version < 4) {
++			await this.db.transactionExecBatch([...CREATE_TABLES_V4, `PRAGMA user_version = ${SCHEMA_VERSION}`]);
++		}
+ 	}
+ 
+ 	// v3: adds the `qty` column, and moves any existing item's `detail` into it
+@@ -202,7 +232,7 @@ export class ListsDatabase {
+ 			migratedCount++;
+ 		}
+ 
+-		await this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
++		await this.db.exec('PRAGMA user_version = 3');
+ 		log.info('Migrated lists DB to schema v3 (qty column)', { itemsWithQuantityMoved: migratedCount, itemsScanned: rows.length });
+ 	}
+ 
+@@ -270,6 +300,12 @@ export class ListsDatabase {
+ 		await this.setMeta(this.profilePublishedKey(listId), String(t));
+ 	}
+ 
++	// Every profile row of a list, for the lists backup (see core/backup.ts).
++	public async allProfiles(listId: string): Promise<{ pubkey: string; name: string; t: number }[]> {
++		const rows = await this.db.selectAll('SELECT pubkey, name, t FROM profiles WHERE list_id = ?', [listId]);
++		return rows.map(row => ({ pubkey: row.pubkey as string, name: row.name as string, t: Number(row.t) }));
++	}
++
+ 	// Applies an incoming (or local) profile name if `t` is newer than what's
+ 	// already stored for this (list, pubkey) -- last-writer-wins, mirroring
+ 	// merge.ts's field semantics for items. Returns whether it was applied.
+@@ -478,6 +514,15 @@ export class ListsDatabase {
+ 
+ 	// Replaces an item's whole qty object (the PN-counter, see core/qty.ts) --
+ 	// always the full object, since it's a single JSON column.
++	// Sets an item's own icon (a manually chosen emoji, or '' to mark it as
++	// explicitly cleared -- see lists/core/icons.ts) as a normal LWW field.
++	public async setIcon(listId: string, dTag: string, icon: string | null, t: number, device: string): Promise<void> {
++		await this.db.exec(
++			'UPDATE items SET icon = ?, icon_t = ?, device = ?, pending = 1 WHERE list_id = ? AND d_tag = ?',
++			[icon, t, device, listId, dTag],
++		);
++	}
++
+ 	public async setQty(listId: string, dTag: string, qty: Qty | null, device: string): Promise<void> {
+ 		await this.db.exec(
+ 			'UPDATE items SET qty = ?, device = ?, pending = 1 WHERE list_id = ? AND d_tag = ?',
+@@ -510,7 +555,7 @@ export class ListsDatabase {
+ 	public async maxSeenTime(listId: string): Promise<number> {
+ 		const row = await this.db.selectOne(
+ 			`SELECT MAX(
+-				COALESCE(open_t, 0), COALESCE(detail_t, 0), COALESCE(category_t, 0), COALESCE(deleted_t, 0)
++				COALESCE(open_t, 0), COALESCE(detail_t, 0), COALESCE(category_t, 0), COALESCE(deleted_t, 0), COALESCE(icon_t, 0)
+ 			) as maxT FROM items WHERE list_id = ?`,
+ 			[listId],
+ 		);
+@@ -567,4 +612,58 @@ export class ListsDatabase {
+ 
+ 		return results.slice(0, limit);
+ 	}
++
++	// --- icon statistics (local only) -------------------------------------
++
++	// Counts one add/re-open of an item that has no item-specific catalog
++	// emoji. `listId` is kept only as an 8-char prefix, to count distinct lists.
++	public async recordIconMiss(normalizedName: string, displayName: string, listId: string, now: number = Date.now()): Promise<void> {
++		const listTag = listId.slice(0, 8);
++		const row = await this.db.selectOne('SELECT lists FROM icon_misses WHERE name = ?', [normalizedName]);
++		if (!row) {
++			await this.db.exec(
++				'INSERT INTO icon_misses (name, display_name, count, lists, first_seen, last_seen, chosen_emoji) VALUES (?, ?, 1, ?, ?, ?, NULL)',
++				[normalizedName, displayName, JSON.stringify([listTag]), now, now],
++			);
++			return;
++		}
++		const lists: string[] = JSON.parse(row.lists as string);
++		if (!lists.includes(listTag)) lists.push(listTag);
++		await this.db.exec(
++			'UPDATE icon_misses SET count = count + 1, display_name = ?, lists = ?, last_seen = ? WHERE name = ?',
++			[displayName, JSON.stringify(lists), now, normalizedName],
++		);
++	}
++
++	// Remembers the emoji a person picked by hand for a name without catalog
++	// icon. Creates the row (with count 0) if the name was never counted.
++	public async recordChosenEmoji(normalizedName: string, displayName: string, listId: string, emoji: string | null, now: number = Date.now()): Promise<void> {
++		const row = await this.db.selectOne('SELECT name FROM icon_misses WHERE name = ?', [normalizedName]);
++		if (!row) {
++			await this.db.exec(
++				'INSERT INTO icon_misses (name, display_name, count, lists, first_seen, last_seen, chosen_emoji) VALUES (?, ?, 0, ?, ?, ?, ?)',
++				[normalizedName, displayName, JSON.stringify([listId.slice(0, 8)]), now, now, emoji],
++			);
++			return;
++		}
++		await this.db.exec('UPDATE icon_misses SET chosen_emoji = ? WHERE name = ?', [emoji, normalizedName]);
++	}
++
++	// Sorted by count (most frequent first), then by name.
++	public async iconMisses(): Promise<IconMissRow[]> {
++		const rows = await this.db.selectAll('SELECT * FROM icon_misses ORDER BY count DESC, name ASC');
++		return rows.map(row => ({
++			name: row.name as string,
++			displayName: row.display_name as string,
++			count: Number(row.count),
++			listCount: (JSON.parse(row.lists as string) as string[]).length,
++			firstSeen: Number(row.first_seen),
++			lastSeen: Number(row.last_seen),
++			chosenEmoji: (row.chosen_emoji as string | null) ?? null,
++		}));
++	}
++
++	public async clearIconMisses(): Promise<void> {
++		await this.db.exec('DELETE FROM icon_misses');
++	}
+ }
+diff --git a/packages/app-mobile/lists/core/iconMisses.test.ts b/packages/app-mobile/lists/core/iconMisses.test.ts
+new file mode 100644
+index 0000000..669ae7f
+--- /dev/null
++++ b/packages/app-mobile/lists/core/iconMisses.test.ts
+@@ -0,0 +1,127 @@
++import { rm } from 'fs-extra';
++import { join } from 'path';
++import { tmpdir } from 'os';
++import Database from '@joplin/lib/database';
++import { DatabaseDriverNode } from '@joplin/lib/database-driver-node';
++import uuid from '@joplin/lib/uuid';
++import { ListsDatabase } from './db';
++import { ListsStore } from './store';
++import iconMissesToCsv from './iconStats';
++import { customIconFor } from './icons';
++
++describe('lists/core/iconMisses', () => {
++	let enabled: boolean;
++	let store: ListsStore;
++	let path: string;
++
++	beforeEach(() => {
++		enabled = true;
++		path = join(tmpdir(), `tiles-lists-iconmiss-test-${uuid.createNano()}.sqlite`);
++		store = new ListsStore(new ListsDatabase(new Database(new DatabaseDriverNode())), path, { countIconMisses: () => enabled });
++	});
++
++	afterEach(async () => {
++		await rm(path, { force: true });
++	});
++
++	test('counts adds and re-opens of items without a catalog icon, per normalized name', async () => {
++		const a = await store.createOpenList('A');
++		const b = await store.createOpenList('B');
++
++		await store.addItem(a.id, 'Zzzxqy');
++		await store.addItem(a.id, ' zzzxqy '); // same normalized name, added again
++		await store.addItem(b.id, 'ZZZXQY');
++		const item = await store.addItem(a.id, 'Qqqwww');
++		await store.toggleOpen(a.id, item.dTag); // bought
++		await store.toggleOpen(a.id, item.dTag); // re-opened: counted
++
++		const rows = await store.iconMisses();
++		expect(rows.map(r => [r.name, r.count, r.listCount])).toEqual([['zzzxqy', 3, 2], ['qqqwww', 2, 1]]);
++		expect(rows[0].displayName).toBe('ZZZXQY');
++		expect(rows[0].firstSeen).toBeLessThanOrEqual(rows[0].lastSeen);
++	});
++
++	test('items with a catalog icon are not counted; category-only fallbacks are', async () => {
++		const list = await store.createOpenList('A');
++		await store.addItem(list.id, 'Milch');
++		await store.addItem(list.id, 'H-Milch');
++		expect(await store.iconMisses()).toEqual([]);
++
++		// "Obst" style names that only map to a category are misses too: here a name
++		// the catalog does not know at all, with a category set afterwards.
++		const item = await store.addItem(list.id, 'Zzzxqy');
++		await store.setCategory(list.id, item.dTag, 'obst_gemuese');
++		await store.toggleOpen(list.id, item.dTag);
++		await store.toggleOpen(list.id, item.dTag);
++		expect((await store.iconMisses())[0]).toMatchObject({ name: 'zzzxqy', count: 2 });
++	});
++
++	test('nothing is counted or recorded while the setting is off, and counting resumes when it is switched on', async () => {
++		enabled = false;
++		const list = await store.createOpenList('A');
++		const item = await store.addItem(list.id, 'Zzzxqy');
++		await store.setItemIcon(list.id, item.dTag, '🧿', true);
++		expect(await store.iconMisses()).toEqual([]);
++
++		enabled = true;
++		await store.addItem(list.id, 'Zzzxqy');
++		expect(await store.iconMisses()).toHaveLength(1);
++	});
++
++	test('manually chosen emojis are recorded, and clearing the statistics empties the table', async () => {
++		const list = await store.createOpenList('A');
++		const item = await store.addItem(list.id, 'Zzzxqy');
++		await store.setItemIcon(list.id, item.dTag, '🧿', true);
++
++		expect(await store.iconMisses()).toEqual([expect.objectContaining({ name: 'zzzxqy', count: 1, chosenEmoji: '🧿' })]);
++
++		// a name never counted before gets a row with count 0
++		const other = await store.addItem(list.id, 'Milch');
++		await store.setItemIcon(list.id, other.dTag, '🐄', false);
++		expect((await store.iconMisses()).map(r => r.name)).toEqual(['zzzxqy']); // has a catalog emoji: not a miss
++
++		await store.clearIconMisses();
++		expect(await store.iconMisses()).toEqual([]);
++	});
++
++	test('setItemIcon stores the emoji on the item and, with "always", in the list settings; reset reverts both', async () => {
++		const list = await store.createOpenList('A');
++		const item = await store.addItem(list.id, 'Milch');
++
++		await store.setItemIcon(list.id, item.dTag, '🐄', true);
++		let stored = (await store.items(list.id))[0];
++		expect(stored).toMatchObject({ icon: '🐄', pending: true });
++		expect(stored.iconT).toBeGreaterThan(item.iconT as number);
++		expect(customIconFor(await store.listSettings(list.id), 'Milch')).toBe('🐄');
++
++		await store.setItemIcon(list.id, item.dTag, null);
++		stored = (await store.items(list.id))[0];
++		expect(stored.icon).toBe('🥛'); // the catalog's emoji again
++		expect(customIconFor(await store.listSettings(list.id), 'Milch')).toBeNull();
++
++		// without "always", the list settings stay untouched
++		await store.setItemIcon(list.id, item.dTag, '🧀', false);
++		expect(customIconFor(await store.listSettings(list.id), 'Milch')).toBeNull();
++	});
++
++	test('setItemIcon rejects anything but a single emoji', async () => {
++		const list = await store.createOpenList('A');
++		const item = await store.addItem(list.id, 'Milch');
++		await expect(store.setItemIcon(list.id, item.dTag, 'M')).rejects.toThrow();
++		await expect(store.setItemIcon(list.id, item.dTag, '🍎🍌')).rejects.toThrow();
++		expect((await store.items(list.id))[0].icon).toBe('🥛');
++	});
++
++	test('cSV export has the documented columns and escapes spreadsheet-hostile cells', () => {
++		const csv = iconMissesToCsv([
++			{ name: 'a', displayName: 'Salz; fein', count: 3, listCount: 2, firstSeen: Date.UTC(2026, 8, 1), lastSeen: Date.UTC(2026, 9, 1), chosenEmoji: '🧂' },
++			{ name: 'b', displayName: '=SUM(A1)', count: 1, listCount: 1, firstSeen: Date.UTC(2026, 8, 2), lastSeen: Date.UTC(2026, 8, 2), chosenEmoji: null },
++		]);
++		expect(csv.split('\n')).toEqual([
++			'name;count;lists;first;last;chosenEmoji',
++			'"Salz; fein";3;2;2026-09-01;2026-10-01;🧂',
++			'\'=SUM(A1);1;1;2026-09-02;2026-09-02;',
++			'',
++		]);
++	});
++});
+diff --git a/packages/app-mobile/lists/core/iconStats.ts b/packages/app-mobile/lists/core/iconStats.ts
+new file mode 100644
+index 0000000..6666027
+--- /dev/null
++++ b/packages/app-mobile/lists/core/iconStats.ts
+@@ -0,0 +1,23 @@
++// CSV export of the local icon statistics ("Artikel ohne Icon zählen", see
++// docs/KONZEPT.md section 2). Semicolon-separated so German spreadsheet
++// programs open it directly.
++import { IconMissRow } from './db';
++
++const csvCell = (value: string): string => {
++	// A leading = + - @ would make a spreadsheet evaluate the cell as a formula.
++	let text = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
++	if (/[;"\n\r]/.test(text)) text = `"${text.replace(/"/g, '""')}"`;
++	return text;
++};
++
++const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
++
++const iconMissesToCsv = (rows: IconMissRow[]): string => {
++	const lines = ['name;count;lists;first;last;chosenEmoji'];
++	for (const row of rows) {
++		lines.push([csvCell(row.displayName), String(row.count), String(row.listCount), isoDate(row.firstSeen), isoDate(row.lastSeen), csvCell(row.chosenEmoji ?? '')].join(';'));
++	}
++	return `${lines.join('\n')}\n`;
++};
++
++export default iconMissesToCsv;
+diff --git a/packages/app-mobile/lists/core/icons.test.ts b/packages/app-mobile/lists/core/icons.test.ts
+new file mode 100644
+index 0000000..9030c21
+--- /dev/null
++++ b/packages/app-mobile/lists/core/icons.test.ts
+@@ -0,0 +1,87 @@
++import { customIconFor, isSingleEmoji, mergeListSettings, parseListSettings, resolveItemIcon, suggestEmojis, withCustomIcon } from './icons';
++
++describe('lists/core/icons', () => {
++	test.each([
++		['🍎', true],
++		['  🥛 ', true],
++		['👍🏽', true], // skin tone
++		['🧑‍🍳', true], // ZWJ sequence
++		['👨‍👩‍👧‍👦', true], // longer ZWJ sequence
++		['🇩🇪', true], // flag
++		['❤️', true], // symbol + variation selector
++		['1️⃣', true], // keycap
++		['🏴󠁧󠁢󠁥󠁮󠁧󠁿', true], // England flag (tag sequence)
++		['a', false],
++		['A', false],
++		['1', false],
++		['ab', false],
++		['🍎🍌', false],
++		['🍎a', false],
++		['', false],
++		['   ', false],
++		['Milch', false],
++	])('isSingleEmoji(%j) is %s', (input, expected) => {
++		expect(isSingleEmoji(input)).toBe(expected);
++	});
++
++	test('resolution order: item icon (by hand) -> customIcons -> catalog -> category emoji -> null', () => {
++		const settings = parseListSettings(withCustomIcon(null, 'Milch', '🐄', 1));
++		const base = { name: 'Milch', icon: null as string | null, category: null as string | null };
++
++		// 1. a hand-set item icon beats everything
++		expect(resolveItemIcon({ ...base, icon: '🧀' }, settings)).toBe('🧀');
++		// 2. then the list's customIcons -- even over the catalog emoji the item stored when it was added
++		expect(resolveItemIcon({ ...base, icon: '🥛' }, settings)).toBe('🐄');
++		expect(resolveItemIcon(base, settings)).toBe('🐄');
++		// 3. then the catalog
++		expect(resolveItemIcon(base, {})).toBe('🥛');
++		// 4. then the category emoji (no catalog entry for this name)
++		const unknown = { name: 'Zzzxqy', icon: null as string | null, category: 'obst_gemuese' as string | null };
++		const categoryResult = resolveItemIcon(unknown, {});
++		expect(categoryResult).toEqual(expect.any(String));
++		expect(isSingleEmoji(categoryResult as string)).toBe(true);
++		// 5. otherwise nothing (the UI draws the first letter)
++		expect(resolveItemIcon({ name: 'Zzzxqy', icon: null, category: null }, {})).toBeNull();
++		// a cleared icon ('') counts as none
++		expect(resolveItemIcon({ name: 'Zzzxqy', icon: '', category: null }, {})).toBeNull();
++	});
++
++	test('customIcons lookup uses the normalized name and ignores tombstones', () => {
++		let json = withCustomIcon(null, '  Milch ', '🐄', 5);
++		expect(customIconFor(parseListSettings(json), 'MILCH')).toBe('🐄');
++		json = withCustomIcon(json, 'milch', null, 6);
++		expect(customIconFor(parseListSettings(json), 'milch')).toBeNull();
++	});
++
++	test('suggestEmojis starts with the category emoji and offers similar catalog items without duplicates', () => {
++		const picks = suggestEmojis('Hafermilch', 'kuehlregal');
++		expect(picks.length).toBeGreaterThan(1);
++		expect(new Set(picks).size).toBe(picks.length);
++		expect(picks).toContain('🥛');
++		for (const emoji of picks) expect(isSingleEmoji(emoji)).toBe(true);
++	});
++
++	test('mergeListSettings merges customIcons per key by timestamp, symmetrically, instead of replacing the object', () => {
++		const a = withCustomIcon(withCustomIcon(null, 'Milch', '🐄', 10), 'Brot', '🍞', 10);
++		const b = withCustomIcon(withCustomIcon(null, 'Milch', '🥛', 20), 'Käse', '🧀', 5);
++
++		const ab = parseListSettings(mergeListSettings(a, b));
++		const ba = parseListSettings(mergeListSettings(b, a));
++		expect(ab).toEqual(ba);
++		expect(ab.customIcons).toEqual({ milch: '🥛', brot: '🍞', käse: '🧀' });
++		expect(ab.customIconsT?.milch).toBe(20);
++
++		// merging again changes nothing (idempotent)
++		expect(parseListSettings(mergeListSettings(JSON.stringify(ab), b))).toEqual(ab);
++		// a missing side keeps the other
++		expect(parseListSettings(mergeListSettings(null, a)).customIcons).toEqual({ milch: '🐄', brot: '🍞' });
++		expect(mergeListSettings(null, null)).toBeNull();
++	});
++
++	test('a newer tombstone removes an entry on merge', () => {
++		const a = withCustomIcon(null, 'Milch', '🐄', 10);
++		const b = withCustomIcon(null, 'Milch', null, 20);
++		expect(customIconFor(parseListSettings(mergeListSettings(a, b)), 'Milch')).toBeNull();
++		expect(customIconFor(parseListSettings(mergeListSettings(b, a)), 'Milch')).toBeNull();
++	});
++});
+diff --git a/packages/app-mobile/lists/core/icons.ts b/packages/app-mobile/lists/core/icons.ts
+new file mode 100644
+index 0000000..fde717c
+--- /dev/null
++++ b/packages/app-mobile/lists/core/icons.ts
+@@ -0,0 +1,179 @@
++// Icon handling for shopping-list items: validating a hand-typed emoji,
++// deciding which icon a tile shows, and the per-list `customIcons` setting
++// ("always use this emoji for <name>"). See docs/KONZEPT.md section 2,
++// "Emoji von Hand festlegen".
++import { categoryEmoji, normalizeName, resolveCatalog } from './normalize';
++import { CatalogItemDef } from './types';
++
++// eslint-disable-next-line @typescript-eslint/no-var-requires -- plain JSON data file, no resolveJsonModule configured for this package
++const catalogItems: CatalogItemDef[] = require('../catalog/items.json');
++
++// --- emoji validation --------------------------------------------------
++
++// Written with explicit code point ranges rather than \p{Extended_Pictographic}
++// & co.: Hermes' support for Unicode property escapes is incomplete, and these
++// ranges cover the emoji blocks that matter for shopping items.
++const PICTOGRAPH = '[\\u{1F300}-\\u{1FAFF}\\u{1F000}-\\u{1F2FF}\\u{2600}-\\u{27BF}\\u{2B00}-\\u{2BFF}\\u{2300}-\\u{23FF}\\u{2190}-\\u{21FF}\\u{2900}-\\u{297F}\\u{25A0}-\\u{25FF}\\u{3030}\\u{303D}\\u{3297}\\u{3299}]';
++const MODIFIER_OR_VS = '(?:\\u{FE0F}|[\\u{1F3FB}-\\u{1F3FF}])?';
++const TAG_SEQUENCE = '(?:[\\u{E0020}-\\u{E007E}]+\\u{E007F})?'; // e.g. England/Scotland flags
++const ELEMENT = `${PICTOGRAPH}${MODIFIER_OR_VS}`;
++const EMOJI_GRAPHEME = new RegExp(
++	'^(?:' +
++		'[\\u{1F1E6}-\\u{1F1FF}]{2}' + // flag: a pair of regional indicators
++		'|[#*0-9]\\u{FE0F}?\\u{20E3}' + // keycap
++		`|${ELEMENT}${TAG_SEQUENCE}(?:\\u{200D}${ELEMENT})*` + // pictograph, skin tone, ZWJ sequence
++	')$',
++	'u',
++);
++
++interface Segmenter { segment(input: string): Iterable<unknown> }
++type SegmenterConstructor = new (locale?: string, options?: { granularity: 'grapheme' })=> Segmenter;
++
++// Number of user-perceived characters in `text`: Intl.Segmenter where the
++// JS engine has it, otherwise null (the caller then relies on the regex above,
++// which only ever matches a single grapheme).
++const graphemeCount = (text: string): number | null => {
++	const SegmenterClass = (typeof Intl !== 'undefined' ? (Intl as unknown as { Segmenter?: SegmenterConstructor }).Segmenter : undefined);
++	if (!SegmenterClass) return null;
++	return Array.from(new SegmenterClass(undefined, { granularity: 'grapheme' }).segment(text)).length;
++};
++
++// True for exactly one emoji grapheme (including skin tones, ZWJ sequences
++// such as the cook emoji, and flags). Plain letters, digits, several emoji
++// and empty input are rejected.
++export const isSingleEmoji = (text: string): boolean => {
++	const trimmed = text.trim();
++	if (!trimmed) return false;
++	const count = graphemeCount(trimmed);
++	if (count !== null && count !== 1) return false;
++	return EMOJI_GRAPHEME.test(trimmed);
++};
++
++// --- icon resolution ---------------------------------------------------
++
++export interface IconSettings {
++	customIcons?: Record<string, string>;
++	// Time (ms) each customIcons entry was last changed, for per-key merging
++	// between devices -- see mergeListSettings(). An empty-string value is a
++	// tombstone ("no custom icon for this name any more").
++	customIconsT?: Record<string, number>;
++	[key: string]: unknown;
++}
++
++export const parseListSettings = (json: string | null | undefined): IconSettings => {
++	if (!json) return {};
++	try {
++		const parsed = JSON.parse(json);
++		return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as IconSettings : {};
++	} catch (error) {
++		return {};
++	}
++};
++
++export const customIconFor = (settings: IconSettings, name: string): string | null => {
++	const emoji = settings.customIcons?.[normalizeName(name)];
++	return emoji ? emoji : null;
++};
++
++// resolveCatalog() scans the whole term index, so tiles (which resolve their
++// icon on every render) go through this small cache instead.
++const matchCache = new Map<string, ReturnType<typeof resolveCatalog>>();
++const cachedMatch = (name: string): ReturnType<typeof resolveCatalog> => {
++	const key = normalizeName(name);
++	let match = matchCache.get(key);
++	if (!match) {
++		match = resolveCatalog(name);
++		if (matchCache.size > 2000) matchCache.clear();
++		matchCache.set(key, match);
++	}
++	return match;
++};
++
++// The emoji the catalog alone would give an item of this name (what addItem()
++// stores in the item's `icon` field when nothing was chosen by hand).
++export const catalogEmojiFor = (name: string): string | null => cachedMatch(name).emoji;
++
++// Icon shown for an item, in the order from the concept: the item's own icon
++// if set by hand -> the list's customIcons -> the catalog -> the category
++// emoji -> null (the UI then draws the first letter).
++//
++// An item's `icon` field is also filled automatically from the catalog when
++// the item is added, so "set by hand" means "differs from what the catalog
++// gives for this name" -- otherwise a later customIcons entry could never
++// take effect on items that already exist.
++export const resolveItemIcon = (item: { name: string; icon: string | null; category: string | null }, settings: IconSettings): string | null => {
++	const match = cachedMatch(item.name);
++	if (item.icon && item.icon !== match.emoji) return item.icon;
++	const custom = customIconFor(settings, item.name);
++	if (custom) return custom;
++	if (item.icon) return item.icon;
++	if (match.emoji) return match.emoji;
++	const categoryId = item.category ?? match.category;
++	return categoryId ? categoryEmoji(categoryId) : null;
++};
++
++// Quick-pick emojis for the item editor: the item's category emoji first,
++// then the emojis of catalog items in the same category or with a similar
++// name (sharing a word), without duplicates.
++export const suggestEmojis = (name: string, categoryId: string | null, limit = 12): string[] => {
++	const result: string[] = [];
++	const add = (emoji: string | null | undefined) => {
++		if (emoji && !result.includes(emoji) && result.length < limit) result.push(emoji);
++	};
++	const match = cachedMatch(name);
++	const category = categoryId ?? match.category;
++	if (category) add(categoryEmoji(category));
++	add(match.emoji);
++
++	const words = normalizeName(name).split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 3);
++	if (words.length) {
++		for (const item of catalogItems) {
++			const terms = [item.name, ...item.synonyms].map(normalizeName);
++			if (terms.some(term => words.some(w => term.includes(w) || w.includes(term)))) add(item.emoji);
++		}
++	}
++	if (category) for (const item of catalogItems) if (item.category === category) add(item.emoji);
++	return result;
++};
++
++// --- synced settings: per-key merge of customIcons -------------------------
++
++// Merges two JSON settings blobs of the same list. customIcons entries merge
++// per name, newest timestamp wins (a tie goes to the larger emoji string, so
++// the result is the same whichever side is "local"); any other key falls back
++// to the remote value, as the whole blob did before customIcons existed.
++export const mergeListSettings = (localJson: string | null, remoteJson: string | null): string | null => {
++	if (!localJson && !remoteJson) return null;
++	const local = parseListSettings(localJson);
++	const remote = parseListSettings(remoteJson);
++	const merged: IconSettings = { ...local, ...remote };
++
++	const icons: Record<string, string> = {};
++	const times: Record<string, number> = {};
++	const names = new Set([...Object.keys(local.customIcons ?? {}), ...Object.keys(remote.customIcons ?? {})]);
++	for (const name of names) {
++		const l = local.customIcons?.[name];
++		const r = remote.customIcons?.[name];
++		const lt = local.customIconsT?.[name] ?? 0;
++		const rt = remote.customIconsT?.[name] ?? 0;
++		let winner: string | undefined;
++		let t: number;
++		if (l === undefined) { winner = r; t = rt; } else if (r === undefined) { winner = l; t = lt; } else if (lt !== rt) { winner = lt > rt ? l : r; t = Math.max(lt, rt); } else { winner = l >= r ? l : r; t = lt; }
++		icons[name] = winner as string;
++		times[name] = t;
++	}
++	if (names.size) {
++		merged.customIcons = icons;
++		merged.customIconsT = times;
++	}
++	return JSON.stringify(merged);
++};
++
++// Sets (or, with null, clears via tombstone) one customIcons entry.
++export const withCustomIcon = (settingsJson: string | null, name: string, emoji: string | null, t: number): string => {
++	const settings = parseListSettings(settingsJson);
++	const key = normalizeName(name);
++	settings.customIcons = { ...settings.customIcons, [key]: emoji ?? '' };
++	settings.customIconsT = { ...settings.customIconsT, [key]: t };
++	return JSON.stringify(settings);
++};
+diff --git a/packages/app-mobile/lists/core/store.ts b/packages/app-mobile/lists/core/store.ts
+index 016af9c..11de112 100644
+--- a/packages/app-mobile/lists/core/store.ts
++++ b/packages/app-mobile/lists/core/store.ts
+@@ -12,6 +12,7 @@ import {
+ 	verifyManagedInviteToken,
+ } from './invite';
+ import { clampTime, mergeItem } from './merge';
++import { catalogEmojiFor, IconSettings, isSingleEmoji, parseListSettings, withCustomIcon } from './icons';
+ import { normalizeName, resolveCatalog } from './normalize';
+ import { applyLocalQtyDelta, emptyQty, epochForReopen, qtyIsZero, qtyMaxTime, qtyTotal } from './qty';
+ import { emitRemoteChange } from './remoteChanges';
+@@ -83,15 +84,21 @@ export const itemMaxFieldTime = (item: ItemRecord): number =>
+ 	Math.max(item.openT, item.detailT ?? 0, item.categoryT ?? 0, item.iconT ?? 0, item.deletedT ?? 0, qtyMaxTime(item.qty));
+ 
+ // The `created_at` (Nostr seconds) an outgoing event for this item should
+-// carry, ms->s converted. Deliberately leaves iconT out (unlike
+-// itemMaxFieldTime() above): the icon is catalog-derived, not something a
+-// person edited, so it shouldn't bump the event's timestamp on its own.
++// carry, ms->s converted. iconT is included so a manually chosen icon (see
++// ListsStore#setItemIcon) reaches relays as a newer event; an automatic
++// catalog icon is stamped with the item's creation time, so it adds nothing.
+ export const itemEventCreatedAt = (item: ItemRecord): number => {
+-	const times = [item.openT, item.detailT, item.categoryT, item.deletedT, qtyMaxTime(item.qty) || null].filter((t): t is number => t !== null);
++	const times = [item.openT, item.detailT, item.categoryT, item.iconT, item.deletedT, qtyMaxTime(item.qty) || null].filter((t): t is number => t !== null);
+ 	const maxMs = times.length > 0 ? Math.max(...times) : Date.now();
+ 	return Math.floor(maxMs / 1000);
+ };
+ 
++export interface ListsStoreOptions {
++	// Whether to count items without an icon (setting lists.countIconMisses);
++	// asked on every add, so changing the setting takes effect immediately.
++	countIconMisses?: ()=> boolean;
++}
++
+ export type JoinResult =
+ 	| { type: 'open'; list: ListRecord }
+ 	| { type: 'managed'; list: ListRecord; joinRequest: VerifiedEvent };
+@@ -105,10 +112,35 @@ export class ListsStore {
+ 	private dbName: string;
+ 	private changes = new ChangeEmitter();
+ 	private openPromise: Promise<void> | null = null;
++	private options: ListsStoreOptions;
+ 
+-	public constructor(db: ListsDatabase, dbName: string) {
++	public constructor(db: ListsDatabase, dbName: string, options: ListsStoreOptions = {}) {
+ 		this.db = db;
+ 		this.dbName = dbName;
++		this.options = options;
++	}
++
++	private iconMissCountingEnabled(): boolean {
++		try {
++			return !!this.options.countIconMisses?.();
++		} catch (error) {
++			return false;
++		}
++	}
++
++	// Local-only statistics (never synced, see core/db.ts#recordIconMiss): one
++	// count per add/re-open of an item that has no item-specific catalog emoji,
++	// including ones that only get the category emoji. Failures are logged and
++	// swallowed -- statistics must never get in the way of adding an item.
++	private async countIconMiss(listId: string, name: string): Promise<void> {
++		if (!this.iconMissCountingEnabled()) return;
++		try {
++			if (resolveCatalog(name).emoji) return;
++			await this.db.recordIconMiss(normalizeName(name), name.trim(), listId);
++			log.debug('Counted item without icon', { listId: listId.slice(0, 8) });
++		} catch (error) {
++			log.warn('Could not count item without icon', { error: String(error) });
++		}
+ 	}
+ 
+ 	// Opens the database on first use (not at construction time), so the app
+@@ -272,6 +304,7 @@ export class ListsStore {
+ 		const device = deviceTag(identity.publicKey);
+ 		const t = await this.nextTimestamp(listId);
+ 
++		await this.countIconMiss(listId, typedName);
+ 		const existing = await this.db.item(listId, tag);
+ 		if (existing) {
+ 			let qty = await this.reopenItem(listId, existing, t, device);
+@@ -317,10 +350,76 @@ export class ListsStore {
+ 			await this.db.setOpen(listId, itemDTag, false, t, device);
+ 		} else {
+ 			await this.reopenItem(listId, item, t, device);
++			await this.countIconMiss(listId, item.name);
+ 		}
+ 		this.changes.emit(listId);
+ 	}
+ 
++	// Tells the UI that something changed outside the store's own methods, e.g.
++	// after core/backup.ts#importBackup wrote to the database directly.
++	public notifyChanged(listId?: string): void {
++		this.changes.emit(listId);
++	}
++
++	// The parsed settings of a list (customIcons, ...), {} if none.
++	public async listSettings(listId: string): Promise<IconSettings> {
++		await this.ensureOpen();
++		return parseListSettings((await this.db.list(listId))?.settings);
++	}
++
++	// Sets an item's icon by hand. `emoji` must be a single emoji (see
++	// icons.ts#isSingleEmoji); null resets it to the automatic one (the
++	// catalog's, or none) and also drops the list's "always use" entry for
++	// this name. With `always`, the choice is also stored in the list's synced
++	// settings (customIcons) so future items of this name get it too.
++	public async setItemIcon(listId: string, itemDTag: string, emoji: string | null, always = false): Promise<void> {
++		const identity = await this.ensureOpen();
++		const item = await this.db.item(listId, itemDTag);
++		if (!item) throw new Error(`Unknown item: ${itemDTag}`);
++		const list = await this.requireList(listId);
++		const t = await this.nextTimestamp(listId);
++		const device = deviceTag(identity.publicKey);
++		const catalogEmoji = catalogEmojiFor(item.name);
++
++		if (emoji !== null) {
++			emoji = emoji.trim();
++			if (!isSingleEmoji(emoji)) throw new Error('Not a single emoji');
++		}
++
++		// '' (rather than null) records "cleared" so the change still syncs as
++		// a newer value of the icon field.
++		await this.db.setIcon(listId, itemDTag, emoji ?? catalogEmoji ?? '', t, device);
++
++		const settings = parseListSettings(list.settings);
++		const hasCustom = !!settings.customIcons?.[normalizeName(item.name)];
++		if (emoji !== null && always) {
++			await this.db.setListSettings(listId, withCustomIcon(list.settings, item.name, emoji, t));
++		} else if (emoji === null && hasCustom) {
++			await this.db.setListSettings(listId, withCustomIcon(list.settings, item.name, null, t));
++		}
++
++		if (this.iconMissCountingEnabled() && !catalogEmoji) {
++			try {
++				await this.db.recordChosenEmoji(normalizeName(item.name), item.name, listId, emoji);
++			} catch (error) {
++				log.warn('Could not record chosen emoji', { error: String(error) });
++			}
++		}
++		log.info('Item icon set by hand', { dTag: itemDTag, reset: emoji === null, always: !!always && emoji !== null });
++		this.changes.emit(listId);
++	}
++
++	public async iconMisses() {
++		await this.ensureOpen();
++		return this.db.iconMisses();
++	}
++
++	public async clearIconMisses(): Promise<void> {
++		await this.ensureOpen();
++		await this.db.clearIconMisses();
++		log.info('Icon statistics cleared');
++	}
++
+ 	// Sets one unit's total for an item to `total` (clamped to >= 0), by
+ 	// recording the difference as this device's own delta -- used by
+ 	// ItemEditModal's quantity field. Other units already present are left
+diff --git a/packages/app-mobile/lists/sync/listSync.test.ts b/packages/app-mobile/lists/sync/listSync.test.ts
+index 3bca293..15d3a1a 100644
+--- a/packages/app-mobile/lists/sync/listSync.test.ts
++++ b/packages/app-mobile/lists/sync/listSync.test.ts
+@@ -105,6 +105,34 @@ describe('lists/sync/listSync', () => {
+ 		}
+ 	});
+ 
++	test('open list: customIcons entries from two devices merge per key instead of one overwriting the other', async () => {
++		const a = await addDevice();
++		const b = await addDevice();
++		const list = await a.store.createOpenList('Groceries');
++		await a.sync.syncList(list.id);
++		await b.store.joinFromInvite((await a.store.inviteFor(list.id)).link);
++		await b.sync.syncList(list.id);
++		await a.sync.syncList(list.id);
++
++		const milch = await a.store.addItem(list.id, 'Milch');
++		const brot = await a.store.addItem(list.id, 'Brot');
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++
++		// Each device picks an icon for a different item, before seeing the other's.
++		await a.store.setItemIcon(list.id, milch.dTag, '🐄', true);
++		await b.store.setItemIcon(list.id, brot.dTag, '🥖', true);
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++		await a.sync.syncList(list.id);
++		await b.sync.syncList(list.id);
++
++		for (const device of [a, b]) {
++			const settings = await device.store.listSettings(list.id);
++			expect(settings.customIcons).toEqual({ milch: '🐄', brot: '🥖' });
++		}
++	});
++
+ 	test('open list: a tombstone propagates to another device', async () => {
+ 		const a = await addDevice();
+ 		const b = await addDevice();
+diff --git a/packages/app-mobile/lists/sync/listSync.ts b/packages/app-mobile/lists/sync/listSync.ts
+index e405a3f..fcb5e21 100644
+--- a/packages/app-mobile/lists/sync/listSync.ts
++++ b/packages/app-mobile/lists/sync/listSync.ts
+@@ -19,6 +19,7 @@ import {
+ 	parseOpenDirectoryEvent,
+ 	unwrapManagedContentKey,
+ } from '../core/events';
++import { mergeListSettings } from '../core/icons';
+ import { buildProfileEvent, isProfileDTag, parseProfileEvent } from '../core/profile';
+ import { debugLog } from '../../utils/debugLog';
+ import { deriveOpenListKeys, hexToBytes } from '../core/crypto';
+@@ -278,7 +279,11 @@ export class ListsSync {
+ 
+ 	private async applyDirectory(listId: string, payload: DirectoryPayload): Promise<void> {
+ 		for (const member of payload.members) await this.db.upsertMember(member);
+-		await this.db.setListSettings(listId, payload.settings ?? null);
++		// Merged per key rather than replaced wholesale: a member who changed one
++		// customIcons entry must not wipe the others set by someone else in the
++		// meantime (see core/icons.ts#mergeListSettings).
++		const local = await this.db.list(listId);
++		await this.db.setListSettings(listId, mergeListSettings(local?.settings ?? null, payload.settings ?? null));
+ 	}
+ 
+ 	// Signs a managed directory update. The creating admin keeps its copy of
+@@ -320,7 +325,10 @@ export class ListsSync {
+ 
+ 		if (!await this.isLocalAdmin(list.id, identity.publicKey)) return;
+ 		const previousJson = await this.db.getMeta(this.directoryMetaKey(list.id));
+-		if (previousJson) return;
++		// Already published once: only republish when the list's settings changed
++		// since (e.g. a new customIcons entry); membership changes republish
++		// themselves in acceptJoinRequests().
++		if (previousJson && ((JSON.parse(previousJson) as DirectoryPayload).settings ?? null) === list.settings) return;
+ 		const payload: DirectoryPayload = { members, settings: list.settings };
+ 		const event = await this.signManagedDirectory(list, identity, hexToBytes(list.contentKey), payload);
+ 		await pool.publishAll(event);
+diff --git a/packages/app-mobile/lists/ui/IconStatsScreen.tsx b/packages/app-mobile/lists/ui/IconStatsScreen.tsx
+new file mode 100644
+index 0000000..b72cbc7
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/IconStatsScreen.tsx
+@@ -0,0 +1,102 @@
++import * as React from 'react';
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import { FlatList, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { _ } from '@joplin/lib/locale';
++import shim from '@joplin/lib/shim';
++import { themeStyle } from '../../components/global-style';
++import shareFile from '../../utils/shareFile';
++import { writeTextToCacheFile } from '../../utils/ShareUtils';
++import { getListsStore } from './listsRuntime';
++import { IconMissRow } from '../core/db';
++import iconMissesToCsv from '../core/iconStats';
++import { debugLog } from '../../utils/debugLog';
++
++const log = debugLog('lists.ui');
++
++interface Props {
++	visible: boolean;
++	themeId: number;
++	onClose: ()=> void;
++}
++
++const formatDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
++
++// "Icon statistics": which items were added without a catalog icon, most
++// frequent first (see docs/KONZEPT.md section 2). Local to this device; the
++// only way out is the explicit CSV export.
++const IconStatsScreen: React.FC<Props> = ({ visible, themeId, onClose }) => {
++	const store = useMemo(() => getListsStore(), []);
++	const [rows, setRows] = useState<IconMissRow[]>([]);
++
++	const styles = useMemo(() => {
++		const theme = themeStyle(themeId);
++		return StyleSheet.create({
++			container: { flex: 1, backgroundColor: theme.backgroundColor },
++			header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: theme.margin },
++			title: { fontSize: theme.fontSize * 1.2, fontWeight: 'bold', color: theme.color },
++			button: { paddingVertical: 8, paddingHorizontal: 12 },
++			buttonText: { fontSize: theme.fontSize, color: theme.color4 },
++			row: { paddingHorizontal: theme.margin, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.dividerColor },
++			name: { fontSize: theme.fontSize, color: theme.color },
++			meta: { fontSize: theme.fontSize * 0.8, color: theme.colorFaded },
++			empty: { padding: theme.margin, textAlign: 'center', color: theme.colorFaded, fontSize: theme.fontSize },
++			footer: { flexDirection: 'row', justifyContent: 'space-around', padding: theme.margin },
++		});
++	}, [themeId]);
++
++	const reload = useCallback(async () => setRows(await store.iconMisses()), [store]);
++	useEffect(() => {
++		if (visible) void reload();
++	}, [visible, reload]);
++
++	const onExportCsv = useCallback(async () => {
++		const path = await writeTextToCacheFile(iconMissesToCsv(rows), 'forklin-icon-statistics.csv');
++		log.info('Exporting icon statistics as CSV', { rows: rows.length });
++		try {
++			await shareFile(path, 'text/csv');
++		} finally {
++			await shim.fsDriver().remove(path);
++		}
++	}, [rows]);
++
++	const onClear = useCallback(async () => {
++		const ok = await shim.showConfirmationDialog(_('Delete all icon statistics on this device?'));
++		if (!ok) return;
++		await store.clearIconMisses();
++		await reload();
++	}, [store, reload]);
++
++	return (
++		<Modal visible={visible} animationType='slide' onRequestClose={onClose}>
++			<View style={styles.container}>
++				<View style={styles.header}>
++					<Text style={styles.title}>{_('Icon statistics')}</Text>
++					<TouchableOpacity style={styles.button} onPress={onClose} accessibilityRole='button'>
++						<Text style={styles.buttonText}>{_('Close')}</Text>
++					</TouchableOpacity>
++				</View>
++				<FlatList
++					data={rows}
++					keyExtractor={row => row.name}
++					ListEmptyComponent={<Text style={styles.empty}>{_('No items without an icon have been counted yet.')}</Text>}
++					renderItem={({ item }) => (
++						<View style={styles.row}>
++							<Text style={styles.name}>{item.chosenEmoji ? `${item.chosenEmoji} ` : ''}{item.displayName}</Text>
++							<Text style={styles.meta}>{_('%d times in %d lists, %s to %s', item.count, item.listCount, formatDate(item.firstSeen), formatDate(item.lastSeen))}</Text>
++						</View>
++					)}
++				/>
++				<View style={styles.footer}>
++					<TouchableOpacity style={styles.button} onPress={() => void onExportCsv()} disabled={!rows.length}>
++						<Text style={styles.buttonText}>{_('Export as CSV')}</Text>
++					</TouchableOpacity>
++					<TouchableOpacity style={styles.button} onPress={() => void onClear()} disabled={!rows.length}>
++						<Text style={styles.buttonText}>{_('Clear statistics')}</Text>
++					</TouchableOpacity>
++				</View>
++			</View>
++		</Modal>
++	);
++};
++
++export default IconStatsScreen;
+diff --git a/packages/app-mobile/lists/ui/ListScreen.tsx b/packages/app-mobile/lists/ui/ListScreen.tsx
+index 0687b25..40647ee 100644
+--- a/packages/app-mobile/lists/ui/ListScreen.tsx
++++ b/packages/app-mobile/lists/ui/ListScreen.tsx
+@@ -1,6 +1,6 @@
+ import * as React from 'react';
+ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+-import { AppState as RNAppState, FlatList, GestureResponderEvent, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
++import { AppState as RNAppState, FlatList, GestureResponderEvent, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+ import { Dispatch } from 'redux';
+ import { _ } from '@joplin/lib/locale';
+ import shim from '@joplin/lib/shim';
+@@ -12,7 +12,10 @@ import { themeStyle } from '../../components/global-style';
+ import { debugLog } from '../../utils/debugLog';
+ import { getListsDatabase, getListsStore } from './listsRuntime';
+ import PromptModal from './components/PromptModal';
+-import { getListsSync } from './syncApi';
++import { getListsSync, getNearbyTransport } from './syncApi';
++import usePullRefresh from './usePullRefresh';
++import { optionalResyncPeers } from './pullRefresh';
++import { IconSettings, parseListSettings, resolveItemIcon } from '../core/icons';
+ import { parseItemInput } from './parseItemInput';
+ import { groupOpenItems, sortRecentlyBought } from './groupItems';
+ import { parseQuantityToken } from '../core/qty';
+@@ -199,6 +202,7 @@ const useTileMetrics = (themeId: number, columns: number) => {
+ const ListScreenComponent: React.FC<Props> = props => {
+ 	const listId = props.navigation.state.listId;
+ 	const styles = useStyles(props.themeId);
++	const theme = useMemo(() => themeStyle(props.themeId), [props.themeId]);
+ 	const store = useMemo(() => getListsStore(), []);
+ 	const sync = useMemo(() => getListsSync(), []);
+ 
+@@ -213,6 +217,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 	const [renaming, setRenaming] = useState(false);
+ 	const [tileColumns, setTileColumns] = useState(DEFAULT_TILE_COLUMNS);
+ 	const [notifyEnabled, setNotifyEnabled] = useState(true);
++	const [pinching, setPinching] = useState(false);
+ 	const tileStyles = useTileMetrics(props.themeId, tileColumns);
+ 	const pinchStateRef = useRef<{ lastDistance: number } | null>(null);
+ 	const mountStartRef = useRef(now());
+@@ -220,6 +225,26 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 	const statusFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 	const pendingStatusRef = useRef<{ lastSyncedAt: number | null; online: boolean } | null>(null);
+ 
++	// Pull down to refresh: relay sync of this list, plus a Bluetooth resync if the
++	// nearby transport offers one. See ./pullRefresh.ts.
++	const { refreshing, message: refreshMessageText, onRefresh } = usePullRefresh(() => {
++		let online = true;
++		const unsubscribe = sync.onStatus(status => {
++			if (status.listId === listId) online = status.online;
++		});
++		return {
++			syncRelays: async () => {
++				try {
++					await sync.syncList(listId);
++				} finally {
++					unsubscribe();
++				}
++			},
++			isOnline: () => online,
++			resyncPeers: optionalResyncPeers(getNearbyTransport()),
++		};
++	});
++
+ 	const reload = useCallback(async () => {
+ 		const [lists, open, bought] = await Promise.all([
+ 			store.lists(),
+@@ -399,6 +424,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 
+ 	const onResponderGrant = useCallback((event: GestureResponderEvent) => {
+ 		pinchStateRef.current = { lastDistance: touchDistance(event.nativeEvent.touches) };
++		setPinching(true);
+ 	}, []);
+ 
+ 	const onResponderMove = useCallback((event: GestureResponderEvent) => {
+@@ -415,8 +441,13 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 
+ 	const onResponderEnd = useCallback(() => {
+ 		pinchStateRef.current = null;
++		setPinching(false);
+ 	}, []);
+ 
++	const listSettings: IconSettings = useMemo(() => parseListSettings(list?.settings), [list?.settings]);
++	// Displayed icon per item: own icon -> list customIcons -> catalog -> category emoji.
++	const iconFor = useCallback((item: ItemRecord) => resolveItemIcon(item, listSettings), [listSettings]);
++
+ 	const openGroups = useMemo(() => groupOpenItems(openItems), [openItems]);
+ 	const recentlyBought = useMemo(() => sortRecentlyBought(boughtItems).slice(0, RECENTLY_BOUGHT_LIMIT), [boughtItems]);
+ 
+@@ -466,11 +497,10 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 		{ title: notifyEnabled ? _('Notifications: on') : _('Notifications: off'), onPress: (): void => logMenuAction('Notifications', () => { void onToggleNotifications(); }) },
+ 	], [goTo, onCleanUpBought, onToggleNotifications, notifyEnabled, logMenuAction]);
+ 
+-	const syncLine = !online
+-		? _('Offline – changes will be sent later')
+-		: lastSyncedAt
+-			? _('Last synced %s', time.formatMsToLocal(lastSyncedAt))
+-			: _('Not synced yet');
++	let syncLine = _('Not synced yet');
++	if (refreshMessageText) syncLine = refreshMessageText;
++	else if (!online) syncLine = _('Offline – changes will be sent later');
++	else if (lastSyncedAt) syncLine = _('Last synced %s', time.formatMsToLocal(lastSyncedAt));
+ 
+ 	const isEmpty = !openItems.length && !boughtItems.length;
+ 
+@@ -521,7 +551,19 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 				onResponderRelease={onResponderEnd}
+ 				onResponderTerminate={onResponderEnd}
+ 			>
+-				<ScrollView keyboardShouldPersistTaps='handled'>
++				<ScrollView
++					keyboardShouldPersistTaps='handled'
++					refreshControl={
++						<RefreshControl
++							refreshing={refreshing}
++							onRefresh={() => void onRefresh()}
++							enabled={!pinching}
++							colors={[theme.color4]}
++							progressBackgroundColor={theme.backgroundColor}
++							tintColor={theme.color}
++						/>
++					}
++				>
+ 					{isEmpty && (
+ 						<View style={styles.emptyState}>
+ 							<Text style={styles.emptyText}>{_('No items yet. Type above to add the first one.')}</Text>
+@@ -533,7 +575,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 							<Text style={styles.sectionHeader}>{group.emoji} {group.categoryName}</Text>
+ 							<View style={styles.tileGrid}>
+ 								{group.items.map(item => (
+-									<ItemTile key={item.dTag} item={item} bought={false} styles={styles} tileStyles={tileStyles} onPress={onToggleItem} onLongPress={onEditItem} />
++									<ItemTile key={item.dTag} item={item} icon={iconFor(item)} bought={false} styles={styles} tileStyles={tileStyles} onPress={onToggleItem} onLongPress={onEditItem} />
+ 								))}
+ 							</View>
+ 						</View>
+@@ -544,7 +586,7 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 							<Text style={styles.sectionHeader}>{_('Recently bought')}</Text>
+ 							<View style={styles.tileGrid}>
+ 								{recentlyBought.map(item => (
+-									<ItemTile key={item.dTag} item={item} bought={true} styles={styles} tileStyles={tileStyles} onPress={onToggleItem} onLongPress={onEditItem} />
++									<ItemTile key={item.dTag} item={item} icon={iconFor(item)} bought={true} styles={styles} tileStyles={tileStyles} onPress={onToggleItem} onLongPress={onEditItem} />
+ 								))}
+ 							</View>
+ 						</View>
+@@ -562,13 +604,16 @@ const ListScreenComponent: React.FC<Props> = props => {
+ 
+ 			<ItemEditModal
+ 				item={editingItem}
++				listSettings={listSettings}
+ 				onClose={() => setEditingItem(null)}
+-				onSave={async (detail, category, quantityText) => {
++				onSave={async (detail, category, quantityText, icon) => {
+ 					if (!editingItem) return;
+ 					await store.setDetail(listId, editingItem.dTag, detail);
+ 					if (category !== editingItem.category) await setItemCategory(editingItem, category);
+ 					const parsedQty = quantityText ? parseQuantityToken(quantityText) : null;
+ 					if (parsedQty) await store.setQuantity(listId, editingItem.dTag, parsedQty.unit, Math.max(0, parsedQty.amount));
++					if (icon.type === 'set') await store.setItemIcon(listId, editingItem.dTag, icon.emoji, icon.always);
++					else if (icon.type === 'reset') await store.setItemIcon(listId, editingItem.dTag, null);
+ 					setEditingItem(null);
+ 				}}
+ 				onDelete={async () => {
+diff --git a/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx b/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx
+index 6882c31..3356d35 100644
+--- a/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx
++++ b/packages/app-mobile/lists/ui/ListsOverviewScreen.tsx
+@@ -1,10 +1,11 @@
+ import * as React from 'react';
+ import { useCallback, useEffect, useMemo, useState } from 'react';
+-import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { Alert, FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+ import { Dispatch } from 'redux';
+ import { _ } from '@joplin/lib/locale';
+ import shim from '@joplin/lib/shim';
+-import { ScreenHeader } from '../../components/ScreenHeader';
++import { ScreenHeader, MenuOption } from '../../components/ScreenHeader';
++import Setting from '@joplin/lib/models/Setting';
+ import Icon from '../../components/Icon';
+ import { BaseScreenComponent } from '../../components/base-screen';
+ import { themeStyle } from '../../components/global-style';
+@@ -12,6 +13,16 @@ import { getListsDatabase, getListsStore } from './listsRuntime';
+ import CreateListModal from './components/CreateListModal';
+ import PromptModal from './components/PromptModal';
+ import { ListKind, ListRecord } from '../core/types';
++import ExportListsModal from './components/ExportListsModal';
++import IconStatsScreen from './IconStatsScreen';
++import { exportListsToShareSheet, pickBackupText } from './listsBackup';
++import { BackupError, BackupFile, importBackup, isEncryptedBackup, parseBackup } from '../core/backup';
++import { getListsSync, getNearbyTransport } from './syncApi';
++import usePullRefresh from './usePullRefresh';
++import { optionalResyncPeers } from './pullRefresh';
++import { debugLog } from '../../utils/debugLog';
++
++const log = debugLog('lists.ui');
+ 
+ interface Props {
+ 	navigation: { state: Record<string, never> };
+@@ -41,6 +52,12 @@ const useStyles = (themeId: number) => {
+ 			kindIcon: { fontSize: 22, color: theme.color, marginRight: 12, width: 26, textAlign: 'center' },
+ 			name: { fontSize: theme.fontSize, color: theme.color, flex: 1 },
+ 			meta: { fontSize: theme.fontSize * 0.8, color: theme.colorFaded },
++			statusLine: {
++				paddingHorizontal: theme.margin,
++				paddingVertical: 4,
++				fontSize: theme.fontSize * 0.75,
++				color: theme.colorFaded,
++			},
+ 			emptyState: { padding: theme.margin, alignItems: 'center' },
+ 			emptyText: { fontSize: theme.fontSize, color: theme.colorFaded, textAlign: 'center' },
+ 			fab: {
+@@ -67,6 +84,32 @@ const ListsOverviewComponent: React.FC<Props> = props => {
+ 	const [rows, setRows] = useState<ListRow[]>([]);
+ 	const [createVisible, setCreateVisible] = useState(false);
+ 	const [renamingList, setRenamingList] = useState<ListRecord | null>(null);
++	const [exportVisible, setExportVisible] = useState(false);
++	const [statsVisible, setStatsVisible] = useState(false);
++	// Text of an encrypted backup waiting for its password.
++	const [encryptedImport, setEncryptedImport] = useState<string | null>(null);
++	const theme = useMemo(() => themeStyle(props.themeId), [props.themeId]);
++	const sync = useMemo(() => getListsSync(), []);
++
++	// Pull down to refresh: relay sync of every list, plus a Bluetooth resync if the
++	// nearby transport offers one. See ./pullRefresh.ts.
++	const { refreshing, message: refreshMessageText, onRefresh } = usePullRefresh(() => {
++		let online = true;
++		const unsubscribe = sync.onStatus(status => {
++			if (!status.online) online = false;
++		});
++		return {
++			syncRelays: async () => {
++				try {
++					await sync.refreshAll();
++				} finally {
++					unsubscribe();
++				}
++			},
++			isOnline: () => online,
++			resyncPeers: optionalResyncPeers(getNearbyTransport()),
++		};
++	});
+ 
+ 	const reload = useCallback(async () => {
+ 		const lists = await store.lists();
+@@ -132,9 +175,69 @@ const ListsOverviewComponent: React.FC<Props> = props => {
+ 		);
+ 	}, [onLeaveList]);
+ 
++	const onImportBackup = useCallback(async (backup: BackupFile) => {
++		const db = await getListsDatabase();
++		const summary = await importBackup(db, backup, {
++			confirmIdentity: () => shim.showConfirmationDialog(_('The backup contains a device identity. Importing it replaces this device\'s identity, so other members will see this phone as the device the backup came from. Only do this when moving to a new phone. Import the identity?')),
++		});
++		store.notifyChanged();
++		await reload();
++		let message = _('%d lists, %d items imported/updated', summary.listsAdded + summary.listsUpdated, summary.itemsAdded + summary.itemsUpdated);
++		if (summary.identityImported) message += `\n${_('The device identity was replaced.')}`;
++		Alert.alert(_('Import lists'), message);
++	}, [store, reload]);
++
++	const onImportText = useCallback(async (text: string, password?: string) => {
++		try {
++			await onImportBackup(await parseBackup(text, password));
++			setEncryptedImport(null);
++		} catch (error) {
++			if (error instanceof BackupError && (error.code === 'passwordRequired' || error.code === 'wrongPassword')) {
++				if (error.code === 'wrongPassword') Alert.alert(_('Import lists'), _('Wrong password.'));
++				setEncryptedImport(text);
++				return;
++			}
++			setEncryptedImport(null);
++			log.warn('Lists import failed', { error: String(error) });
++			Alert.alert(_('Import lists'), error instanceof BackupError ? _('This file is not a lists backup (or was made by a newer version of the app).') : String(error));
++		}
++	}, [onImportBackup]);
++
++	const onPickImportFile = useCallback(async () => {
++		try {
++			const text = await pickBackupText();
++			if (text === null) return;
++			if (isEncryptedBackup(text)) setEncryptedImport(text);
++			else await onImportText(text);
++		} catch (error) {
++			log.warn('Lists import: could not read the file', { error: String(error) });
++			Alert.alert(_('Import lists'), String(error));
++		}
++	}, [onImportText]);
++
++	const onExport = useCallback(async (password: string, includeIdentity: boolean) => {
++		setExportVisible(false);
++		try {
++			await exportListsToShareSheet(await getListsDatabase(), { password, includeIdentity });
++		} catch (error) {
++			log.warn('Lists export failed', { error: String(error) });
++			Alert.alert(_('Export lists'), String(error));
++		}
++	}, []);
++
++	const menuOptions: MenuOption[] = useMemo(() => {
++		const options: MenuOption[] = [
++			{ title: _('Export lists'), onPress: (): void => setExportVisible(true) },
++			{ title: _('Import lists'), onPress: (): void => { void onPickImportFile(); } },
++		];
++		if (Setting.value('lists.countIconMisses')) options.push({ title: _('Icon statistics'), onPress: (): void => setStatsVisible(true) });
++		return options;
++	}, [onPickImportFile]);
++
+ 	return (
+ 		<View style={styles.container}>
+-			<ScreenHeader title={_('Shopping lists')} showBackButton />
++			<ScreenHeader title={_('Shopping lists')} showBackButton menuOptions={menuOptions} />
++			{!!refreshMessageText && <Text style={styles.statusLine}>{refreshMessageText}</Text>}
+ 
+ 			{!rows.length && (
+ 				<View style={styles.emptyState}>
+@@ -145,6 +248,15 @@ const ListsOverviewComponent: React.FC<Props> = props => {
+ 			<FlatList
+ 				data={rows}
+ 				keyExtractor={row => row.list.id}
++				refreshControl={
++					<RefreshControl
++						refreshing={refreshing}
++						onRefresh={() => void onRefresh()}
++						colors={[theme.color4]}
++						progressBackgroundColor={theme.backgroundColor}
++						tintColor={theme.color}
++					/>
++				}
+ 				renderItem={({ item }) => (
+ 					<TouchableOpacity
+ 						style={styles.row}
+@@ -173,6 +285,19 @@ const ListsOverviewComponent: React.FC<Props> = props => {
+ 				onCancel={() => setCreateVisible(false)}
+ 			/>
+ 
++			<ExportListsModal visible={exportVisible} onExport={(password, includeIdentity) => void onExport(password, includeIdentity)} onCancel={() => setExportVisible(false)} />
++
++			<PromptModal
++				visible={encryptedImport !== null}
++				title={_('Password of the backup')}
++				secureTextEntry
++				submitLabel={_('Import')}
++				onSubmit={password => { if (encryptedImport !== null) void onImportText(encryptedImport, password); }}
++				onCancel={() => setEncryptedImport(null)}
++			/>
++
++			<IconStatsScreen visible={statsVisible} themeId={props.themeId} onClose={() => setStatsVisible(false)} />
++
+ 			<PromptModal
+ 				visible={!!renamingList}
+ 				title={_('Rename list')}
+diff --git a/packages/app-mobile/lists/ui/components/ExportListsModal.tsx b/packages/app-mobile/lists/ui/components/ExportListsModal.tsx
+new file mode 100644
+index 0000000..0c483c1
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/components/ExportListsModal.tsx
+@@ -0,0 +1,72 @@
++import * as React from 'react';
++import { useEffect, useState } from 'react';
++import { Modal, View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
++import { _ } from '@joplin/lib/locale';
++
++interface Props {
++	visible: boolean;
++	onExport: (password: string, includeIdentity: boolean)=> void;
++	onCancel: ()=> void;
++}
++
++const styles = StyleSheet.create({
++	backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 },
++	card: { backgroundColor: '#ffffff', borderRadius: 8, padding: 16 },
++	title: { fontSize: 16, fontWeight: 'bold', marginBottom: 8 },
++	hint: { fontSize: 13, opacity: 0.7, marginBottom: 8 },
++	input: { borderWidth: 1, borderColor: '#cccccc', borderRadius: 4, padding: 8, fontSize: 16 },
++	checkbox: { fontSize: 15, marginTop: 14 },
++	warning: { fontSize: 12, opacity: 0.7, marginTop: 4 },
++	buttonRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 16 },
++	button: { paddingVertical: 8, paddingHorizontal: 16 },
++	buttonText: { fontSize: 15 },
++});
++
++// Options for "Export lists": an optional password (the file contains the
++// lists' keys, so encrypting it is recommended) and whether to include this
++// device's identity, which is only needed to move to a new phone.
++const ExportListsModal: React.FC<Props> = ({ visible, onExport, onCancel }) => {
++	const [password, setPassword] = useState('');
++	const [includeIdentity, setIncludeIdentity] = useState(false);
++
++	useEffect(() => {
++		if (visible) {
++			setPassword('');
++			setIncludeIdentity(false);
++		}
++	}, [visible]);
++
++	return (
++		<Modal visible={visible} transparent animationType='fade' onRequestClose={onCancel}>
++			<View style={styles.backdrop}>
++				<View style={styles.card}>
++					<Text style={styles.title}>{_('Export lists')}</Text>
++					<Text style={styles.hint}>{_('The file contains the keys of your lists. Protect it with a password to encrypt it, or leave the field empty to save it unencrypted.')}</Text>
++					<TextInput
++						style={styles.input}
++						value={password}
++						onChangeText={setPassword}
++						placeholder={_('Password (optional)')}
++						secureTextEntry
++						autoCapitalize='none'
++						autoCorrect={false}
++					/>
++					<TouchableOpacity onPress={() => setIncludeIdentity(!includeIdentity)} accessibilityRole='checkbox' accessibilityState={{ checked: includeIdentity }}>
++						<Text style={styles.checkbox}>{includeIdentity ? '☑ ' : '☐ '}{_('Include device identity (for moving to a new phone)')}</Text>
++					</TouchableOpacity>
++					{includeIdentity && <Text style={styles.warning}>{_('Anyone with this file can act as this device in your lists. Use a password.')}</Text>}
++					<View style={styles.buttonRow}>
++						<TouchableOpacity style={styles.button} onPress={onCancel}>
++							<Text style={styles.buttonText}>{_('Cancel')}</Text>
++						</TouchableOpacity>
++						<TouchableOpacity style={styles.button} onPress={() => onExport(password, includeIdentity)}>
++							<Text style={styles.buttonText}>{_('Export')}</Text>
++						</TouchableOpacity>
++					</View>
++				</View>
++			</View>
++		</Modal>
++	);
++};
++
++export default ExportListsModal;
+diff --git a/packages/app-mobile/lists/ui/components/ItemEditModal.tsx b/packages/app-mobile/lists/ui/components/ItemEditModal.tsx
+index 44f0b51..cb29c2b 100644
+--- a/packages/app-mobile/lists/ui/components/ItemEditModal.tsx
++++ b/packages/app-mobile/lists/ui/components/ItemEditModal.tsx
+@@ -2,13 +2,23 @@ import * as React from 'react';
+ import { useEffect, useState } from 'react';
+ import { Modal, View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+ import { _ } from '@joplin/lib/locale';
+-import { categoryOrder } from '../../core/normalize';
++import { categoryEmoji, categoryOrder } from '../../core/normalize';
++import { catalogEmojiFor, IconSettings, isSingleEmoji, resolveItemIcon, suggestEmojis } from '../../core/icons';
+ import { formatQtyUnit, QTY_UNITS, qtyTotal } from '../../core/qty';
+ import { ItemRecord, QtyUnit } from '../../core/types';
+ 
++// What the person did with the "Symbol" field: nothing, picked/typed an emoji
++// (optionally "always use it for this name"), or reset to the automatic one.
++export type IconChange =
++	| { type: 'none' }
++	| { type: 'set'; emoji: string; always: boolean }
++	| { type: 'reset' };
++
+ interface Props {
+ 	item: ItemRecord | null;
+-	onSave: (note: string | null, category: string | null, quantityText: string)=> void;
++	// The list's synced settings (customIcons), used to show the icon currently in effect.
++	listSettings?: IconSettings;
++	onSave: (note: string | null, category: string | null, quantityText: string, icon: IconChange)=> void;
+ 	onDelete: ()=> void;
+ 	onClose: ()=> void;
+ }
+@@ -73,6 +83,40 @@ const styles = StyleSheet.create({
+ 	buttonText: {
+ 		fontSize: 15,
+ 	},
++	iconInput: {
++		borderWidth: 1,
++		borderColor: '#cccccc',
++		borderRadius: 4,
++		padding: 8,
++		fontSize: 24,
++		width: 80,
++		textAlign: 'center',
++	},
++	iconRow: {
++		flexDirection: 'row',
++		alignItems: 'center',
++	},
++	iconPicks: {
++		flexDirection: 'row',
++		flexWrap: 'wrap',
++		marginTop: 8,
++	},
++	iconPick: {
++		padding: 6,
++		marginRight: 4,
++		marginBottom: 4,
++		borderRadius: 8,
++		borderWidth: 1,
++		borderColor: '#cccccc',
++	},
++	iconPickText: {
++		fontSize: 24,
++	},
++	errorText: {
++		fontSize: 13,
++		color: '#c0392b',
++		marginTop: 4,
++	},
+ 	deleteText: {
+ 		fontSize: 15,
+ 		color: '#c0392b',
+@@ -91,10 +135,15 @@ const primaryQtyUnit = (item: ItemRecord | null): QtyUnit => {
+ // Long-press editor for a single tile: quantity, note ("detail"), category
+ // and delete. Rendered for every ListScreen instance but only visible while
+ // `item` is set.
+-const ItemEditModal: React.FC<Props> = ({ item, onSave, onDelete, onClose }) => {
++const ItemEditModal: React.FC<Props> = ({ item, listSettings, onSave, onDelete, onClose }) => {
+ 	const [quantityText, setQuantityText] = useState('');
+ 	const [detail, setDetail] = useState('');
+ 	const [category, setCategory] = useState<string | null>(null);
++	const [iconText, setIconText] = useState('');
++	const [initialIcon, setInitialIcon] = useState('');
++	const [alwaysUseIcon, setAlwaysUseIcon] = useState(true);
++	const [iconReset, setIconReset] = useState(false);
++	const [iconError, setIconError] = useState(false);
+ 
+ 	useEffect(() => {
+ 		const unit = primaryQtyUnit(item);
+@@ -102,10 +151,47 @@ const ItemEditModal: React.FC<Props> = ({ item, onSave, onDelete, onClose }) =>
+ 		setQuantityText(total > 0 ? formatQtyUnit(unit, total) : '');
+ 		setDetail(item?.detail ?? '');
+ 		setCategory(item?.category ?? null);
+-	}, [item]);
++		const icon = item ? resolveItemIcon(item, listSettings ?? {}) ?? '' : '';
++		setIconText(icon);
++		setInitialIcon(icon);
++		setAlwaysUseIcon(true);
++		setIconReset(false);
++		setIconError(false);
++	}, [item]); // eslint-disable-line @seiyab/react-hooks/exhaustive-deps -- listSettings only matters when a different item is opened
+ 
+ 	if (!item) return null;
+ 
++	const pickEmoji = (emoji: string) => {
++		setIconText(emoji);
++		setIconReset(false);
++		setIconError(false);
++	};
++
++	const resetIcon = () => {
++		// Back to what the catalog (or the category) would show on its own.
++		const automatic = catalogEmojiFor(item.name) ?? (category ? categoryEmoji(category) : null) ?? '';
++		setIconText(automatic);
++		setIconReset(true);
++		setIconError(false);
++	};
++
++	const onSavePress = () => {
++		let icon: IconChange = { type: 'none' };
++		if (iconReset) {
++			icon = { type: 'reset' };
++		} else if (iconText.trim() !== initialIcon) {
++			if (!iconText.trim()) {
++				icon = { type: 'reset' };
++			} else if (isSingleEmoji(iconText)) {
++				icon = { type: 'set', emoji: iconText.trim(), always: alwaysUseIcon };
++			} else {
++				setIconError(true);
++				return;
++			}
++		}
++		onSave(detail.trim() || null, category, quantityText.trim(), icon);
++	};
++
+ 	return (
+ 		<Modal visible transparent animationType='slide' onRequestClose={onClose}>
+ 			<View style={styles.backdrop}>
+@@ -119,6 +205,31 @@ const ItemEditModal: React.FC<Props> = ({ item, onSave, onDelete, onClose }) =>
+ 						<Text style={styles.label}>{_('Note')}</Text>
+ 						<TextInput style={styles.input} value={detail} onChangeText={setDetail} placeholder={_('e.g. Bio, Freiland')} />
+ 
++						<Text style={styles.label}>{_('Symbol')}</Text>
++						<View style={styles.iconRow}>
++							<TextInput
++								style={styles.iconInput}
++								value={iconText}
++								onChangeText={text => { setIconText(text); setIconReset(false); setIconError(false); }}
++								accessibilityLabel={_('Symbol')}
++								autoCorrect={false}
++							/>
++							<TouchableOpacity style={styles.button} onPress={resetIcon}>
++								<Text style={styles.buttonText}>{_('Reset')}</Text>
++							</TouchableOpacity>
++						</View>
++						{iconError && <Text style={styles.errorText}>{_('Please enter exactly one emoji.')}</Text>}
++						<View style={styles.iconPicks}>
++							{suggestEmojis(item.name, category).map(emoji => (
++								<TouchableOpacity key={emoji} style={styles.iconPick} onPress={() => pickEmoji(emoji)} accessibilityLabel={emoji}>
++									<Text style={styles.iconPickText}>{emoji}</Text>
++								</TouchableOpacity>
++							))}
++						</View>
++						<TouchableOpacity onPress={() => setAlwaysUseIcon(!alwaysUseIcon)} accessibilityRole='checkbox' accessibilityState={{ checked: alwaysUseIcon }}>
++							<Text style={styles.label}>{alwaysUseIcon ? '☑ ' : '☐ '}{_('Always use for "%s"', item.name)}</Text>
++						</TouchableOpacity>
++
+ 						<Text style={styles.label}>{_('Category')}</Text>
+ 						<View style={styles.categoryRow}>
+ 							{categoryOrder().map(c => (
+@@ -140,7 +251,7 @@ const ItemEditModal: React.FC<Props> = ({ item, onSave, onDelete, onClose }) =>
+ 								<TouchableOpacity style={styles.button} onPress={onClose}>
+ 									<Text style={styles.buttonText}>{_('Cancel')}</Text>
+ 								</TouchableOpacity>
+-								<TouchableOpacity style={styles.button} onPress={() => onSave(detail.trim() || null, category, quantityText.trim())}>
++								<TouchableOpacity style={styles.button} onPress={onSavePress}>
+ 									<Text style={styles.buttonText}>{_('Save')}</Text>
+ 								</TouchableOpacity>
+ 							</View>
+diff --git a/packages/app-mobile/lists/ui/components/ItemTile.tsx b/packages/app-mobile/lists/ui/components/ItemTile.tsx
+index 351fa86..7799cb2 100644
+--- a/packages/app-mobile/lists/ui/components/ItemTile.tsx
++++ b/packages/app-mobile/lists/ui/components/ItemTile.tsx
+@@ -18,6 +18,8 @@ type TileStylesheet = ReturnType<typeof import('react-native').StyleSheet.create
+ 
+ interface ItemTileProps {
+ 	item: ItemRecord;
++	// The emoji to show (see core/icons.ts#resolveItemIcon), or null for the first-letter circle.
++	icon: string | null;
+ 	bought: boolean;
+ 	// Both come from useMemo() in ListScreen.tsx (see useStyles/useTileMetrics
+ 	// there), so they're stable references across re-renders that don't
+@@ -28,7 +30,7 @@ interface ItemTileProps {
+ 	onLongPress: (item: ItemRecord)=> void;
+ }
+ 
+-const ItemTileComponent: React.FC<ItemTileProps> = ({ item, bought, styles, tileStyles, onPress, onLongPress }) => {
++const ItemTileComponent: React.FC<ItemTileProps> = ({ item, icon, bought, styles, tileStyles, onPress, onLongPress }) => {
+ 	const qtyText = formatQty(item.qty);
+ 	// Once bought, the quantity is only shown while still inside the
+ 	// undo window (see core/qty.ts#epochForReopen) -- past it, re-opening
+@@ -41,8 +43,8 @@ const ItemTileComponent: React.FC<ItemTileProps> = ({ item, bought, styles, tile
+ 			onPress={() => onPress(item)}
+ 			onLongPress={() => onLongPress(item)}
+ 		>
+-			{item.icon ? (
+-				<Text style={tileStyles.tileEmoji}>{item.icon}</Text>
++			{icon ? (
++				<Text style={tileStyles.tileEmoji}>{icon}</Text>
+ 			) : (
+ 				<View style={[styles.letterCircle, tileStyles.letterCircle]}>
+ 					<Text style={[styles.letterCircleText, tileStyles.letterCircleText]}>{item.name.charAt(0).toUpperCase()}</Text>
+@@ -56,7 +58,7 @@ const ItemTileComponent: React.FC<ItemTileProps> = ({ item, bought, styles, tile
+ };
+ 
+ const areEqual = (prev: ItemTileProps, next: ItemTileProps): boolean => {
+-	if (prev.bought !== next.bought) return false;
++	if (prev.bought !== next.bought || prev.icon !== next.icon) return false;
+ 	if (prev.styles !== next.styles || prev.tileStyles !== next.tileStyles) return false;
+ 	if (prev.onPress !== next.onPress || prev.onLongPress !== next.onLongPress) return false;
+ 	const a = prev.item, b = next.item;
+diff --git a/packages/app-mobile/lists/ui/components/PromptModal.tsx b/packages/app-mobile/lists/ui/components/PromptModal.tsx
+index 5a03883..f87d058 100644
+--- a/packages/app-mobile/lists/ui/components/PromptModal.tsx
++++ b/packages/app-mobile/lists/ui/components/PromptModal.tsx
+@@ -9,6 +9,7 @@ interface Props {
+ 	initialValue?: string;
+ 	placeholder?: string;
+ 	submitLabel?: string;
++	secureTextEntry?: boolean;
+ 	onSubmit: (value: string)=> void;
+ 	onCancel: ()=> void;
+ }
+@@ -72,6 +73,7 @@ const PromptModal: React.FC<Props> = props => {
+ 						onChangeText={setValue}
+ 						placeholder={props.placeholder}
+ 						autoFocus
++						secureTextEntry={props.secureTextEntry}
+ 					/>
+ 					<View style={styles.buttonRow}>
+ 						<TouchableOpacity style={styles.button} onPress={props.onCancel}>
+diff --git a/packages/app-mobile/lists/ui/listsBackup.ts b/packages/app-mobile/lists/ui/listsBackup.ts
+new file mode 100644
+index 0000000..c7e9279
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/listsBackup.ts
+@@ -0,0 +1,39 @@
++// UI-side glue for the lists backup (core/backup.ts): writing the export file
++// and handing it to the share sheet, and picking and reading a file to import.
++import shim from '@joplin/lib/shim';
++import uuid from '@joplin/lib/uuid';
++import shareFile from '../../utils/shareFile';
++import pickDocument from '../../utils/pickDocument';
++import { writeTextToCacheFile } from '../../utils/ShareUtils';
++import { backupFileName, buildBackup, serializeBackup } from '../core/backup';
++import { ListsDatabase } from '../core/db';
++import { debugLog } from '../../utils/debugLog';
++
++const log = debugLog('lists.store');
++
++export const exportListsToShareSheet = async (db: ListsDatabase, options: { password?: string; includeIdentity: boolean }): Promise<void> => {
++	const backup = await buildBackup(db, { includeIdentity: options.includeIdentity });
++	const text = await serializeBackup(backup, options.password || undefined);
++	const path = await writeTextToCacheFile(text, backupFileName());
++	log.info('Lists backup written', { lists: backup.lists.length, encrypted: !!options.password, identity: options.includeIdentity });
++	try {
++		await shareFile(path, 'application/json');
++	} finally {
++		// Contains list keys: don't leave the plain copy lying around in the cache.
++		await shim.fsDriver().remove(path);
++	}
++};
++
++// Lets the person pick a backup file and returns its text, or null if they
++// cancelled.
++export const pickBackupText = async (): Promise<string | null> => {
++	const files = await pickDocument({ multiple: false });
++	if (!files.length) return null;
++	const cachePath = `${shim.fsDriver().getCacheDirectoryPath()}/import-${uuid.createNano()}.json`;
++	try {
++		await shim.fsDriver().copy(files[0].uri, cachePath);
++		return await shim.fsDriver().readFile(cachePath, 'utf8');
++	} finally {
++		await shim.fsDriver().remove(cachePath);
++	}
++};
+diff --git a/packages/app-mobile/lists/ui/listsRuntime.ts b/packages/app-mobile/lists/ui/listsRuntime.ts
+index ff8b1e1..1ed04ac 100644
+--- a/packages/app-mobile/lists/ui/listsRuntime.ts
++++ b/packages/app-mobile/lists/ui/listsRuntime.ts
+@@ -4,6 +4,7 @@
+ // file this mirrors).
+ 
+ import Database from '@joplin/lib/database';
++import Setting from '@joplin/lib/models/Setting';
+ import DatabaseDriverReactNative from '../../utils/database-driver-react-native';
+ import { ListsDatabase } from '../core/db';
+ import { ListsStore } from '../core/store';
+@@ -15,7 +16,7 @@ let store: ListsStore | null = null;
+ 
+ const ensureInstances = () => {
+ 	if (!database) database = new ListsDatabase(new Database(new DatabaseDriverReactNative()));
+-	if (!store) store = new ListsStore(database, LISTS_DB_FILENAME);
++	if (!store) store = new ListsStore(database, LISTS_DB_FILENAME, { countIconMisses: () => !!Setting.value('lists.countIconMisses') });
+ 	return { database, store };
+ };
+ 
+diff --git a/packages/app-mobile/lists/ui/pullRefresh.test.ts b/packages/app-mobile/lists/ui/pullRefresh.test.ts
+new file mode 100644
+index 0000000..70a6fa0
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/pullRefresh.test.ts
+@@ -0,0 +1,70 @@
++import { optionalResyncPeers, REFRESH_TIMEOUT_MS, refreshMessage, runRefresh } from './pullRefresh';
++
++const never = (): Promise<void> => new Promise(() => {});
++
++describe('lists/ui/pullRefresh', () => {
++	afterEach(() => {
++		jest.useRealTimers();
++	});
++
++	test('reports "updated" when the relay sync finishes online', async () => {
++		const syncRelays = jest.fn(async () => {});
++		const result = await runRefresh({ syncRelays, isOnline: () => true });
++		expect(result).toEqual({ outcome: 'updated' });
++		expect(syncRelays).toHaveBeenCalledTimes(1);
++	});
++
++	test('reports "offline" when the relays were unreachable', async () => {
++		expect(await runRefresh({ syncRelays: async () => {}, isOnline: () => false })).toEqual({ outcome: 'offline' });
++	});
++
++	test('reports the error when the sync throws', async () => {
++		const result = await runRefresh({ syncRelays: async () => { throw new Error('boom'); }, isOnline: () => true });
++		expect(result).toEqual({ outcome: 'error', message: 'boom' });
++		expect(refreshMessage(result)).toBe('boom');
++	});
++
++	test('gives up after 15 seconds and ends the spinner', async () => {
++		jest.useFakeTimers();
++		let finished = false;
++		const promise = (async () => {
++			const r = await runRefresh({ syncRelays: never, isOnline: () => true });
++			finished = true;
++			return r;
++		})();
++
++		await jest.advanceTimersByTimeAsync(REFRESH_TIMEOUT_MS - 1);
++		expect(finished).toBe(false);
++		await jest.advanceTimersByTimeAsync(1);
++		expect(await promise).toEqual({ outcome: 'timeout' });
++		expect(REFRESH_TIMEOUT_MS).toBe(15000);
++		expect(refreshMessage({ outcome: 'timeout' })).toBe('Offline – changes will be sent later');
++	});
++
++	test('a custom timeout is honoured', async () => {
++		jest.useFakeTimers();
++		const promise = runRefresh({ syncRelays: never, isOnline: () => true, timeoutMs: 100 });
++		await jest.advanceTimersByTimeAsync(100);
++		expect(await promise).toEqual({ outcome: 'timeout' });
++	});
++
++	test('calls the optional Bluetooth resync alongside the relay sync, and a failing peer resync does not fail the refresh', async () => {
++		const resyncPeers = jest.fn(async () => { throw new Error('ble down'); });
++		const syncRelays = jest.fn(async () => {});
++		expect(await runRefresh({ syncRelays, resyncPeers, isOnline: () => true })).toEqual({ outcome: 'updated' });
++		expect(resyncPeers).toHaveBeenCalledTimes(1);
++	});
++
++	test('optionalResyncPeers only returns a function if the transport has one', async () => {
++		expect(optionalResyncPeers({ start: () => {} })).toBeUndefined();
++		expect(optionalResyncPeers(null)).toBeUndefined();
++		const transport = { calls: 0, async resyncPeers() { this.calls++; } };
++		await optionalResyncPeers(transport)!();
++		expect(transport.calls).toBe(1);
++	});
++
++	test('status line texts', () => {
++		expect(refreshMessage({ outcome: 'updated' })).toBe('Updated');
++		expect(refreshMessage({ outcome: 'offline' })).toBe('Offline – changes will be sent later');
++	});
++});
+diff --git a/packages/app-mobile/lists/ui/pullRefresh.ts b/packages/app-mobile/lists/ui/pullRefresh.ts
+new file mode 100644
+index 0000000..65f9316
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/pullRefresh.ts
+@@ -0,0 +1,102 @@
++// Pull-to-refresh logic for the list screens ("Herunterziehen zum
++// Aktualisieren", docs/KONZEPT.md section 2), kept free of React so it can be
++// tested directly: runs the relay sync, and -- only if the nearby transport
++// offers an optional resyncPeers() -- a Bluetooth resync, ends after at most
++// REFRESH_TIMEOUT_MS and reports what happened for the status line.
++import { _ } from '@joplin/lib/locale';
++import { debugLog } from '../../utils/debugLog';
++
++const log = debugLog('lists.sync');
++
++export const REFRESH_TIMEOUT_MS = 15000;
++
++export type RefreshOutcome = 'updated' | 'offline' | 'error' | 'timeout';
++
++export interface RefreshResult {
++	outcome: RefreshOutcome;
++	// Human-readable error text for outcome 'error'.
++	message?: string;
++}
++
++export interface RefreshSources {
++	// Syncs the list (or all lists) over the relays.
++	syncRelays: ()=> Promise<void>;
++	// True if the relays were reachable during the last sync.
++	isOnline: ()=> boolean;
++	// Optional: ask connected nearby devices for a fresh comparison.
++	resyncPeers?: ()=> Promise<void>;
++	timeoutMs?: number;
++	now?: ()=> number;
++}
++
++const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T | 'timeout'> => {
++	let timer: ReturnType<typeof setTimeout> | undefined;
++	const timeout = new Promise<'timeout'>(resolve => {
++		timer = setTimeout(() => resolve('timeout'), ms);
++	});
++	try {
++		return await Promise.race([promise, timeout]);
++	} finally {
++		clearTimeout(timer);
++	}
++};
++
++export const runRefresh = async (sources: RefreshSources): Promise<RefreshResult> => {
++	const now = sources.now ?? Date.now;
++	const timeoutMs = sources.timeoutMs ?? REFRESH_TIMEOUT_MS;
++	const start = now();
++	log.info('Pull-to-refresh started', { nearby: !!sources.resyncPeers });
++
++	const timed = async (label: string, run: ()=> Promise<void>): Promise<string> => {
++		const legStart = now();
++		try {
++			await run();
++			log.info(`Pull-to-refresh: ${label} done`, { ms: now() - legStart });
++			return 'ok';
++		} catch (error) {
++			log.warn(`Pull-to-refresh: ${label} failed`, { ms: now() - legStart, error: String(error) });
++			throw error;
++		}
++	};
++
++	const legs: Promise<string>[] = [timed('relays', sources.syncRelays)];
++	if (sources.resyncPeers) {
++		const resyncPeers = sources.resyncPeers;
++		// A failing Bluetooth resync (already logged by timed()) must not fail the refresh.
++		legs.push((async () => {
++			try {
++				return await timed('bluetooth', resyncPeers);
++			} catch (error) {
++				return 'peer-error';
++			}
++		})());
++	}
++
++	let result: RefreshResult;
++	try {
++		const settled = await withTimeout(Promise.all(legs), timeoutMs);
++		if (settled === 'timeout') result = { outcome: 'timeout' };
++		else result = { outcome: sources.isOnline() ? 'updated' : 'offline' };
++	} catch (error) {
++		result = { outcome: 'error', message: error instanceof Error ? error.message : String(error) };
++	}
++	log.info('Pull-to-refresh finished', { outcome: result.outcome, ms: now() - start });
++	return result;
++};
++
++// Status-line text for a refresh result.
++export const refreshMessage = (result: RefreshResult): string => {
++	switch (result.outcome) {
++	case 'updated': return _('Updated');
++	case 'offline':
++	case 'timeout': return _('Offline – changes will be sent later');
++	default: return result.message || _('Sync failed');
++	}
++};
++
++// Looks up the optional Bluetooth resync of the nearby transport without
++// depending on its (separately owned) interface.
++export const optionalResyncPeers = (transport: unknown): (()=> Promise<void>) | undefined => {
++	const candidate = (transport as { resyncPeers?: ()=> Promise<void> } | null)?.resyncPeers;
++	return typeof candidate === 'function' ? () => candidate.call(transport) : undefined;
++};
+diff --git a/packages/app-mobile/lists/ui/usePullRefresh.ts b/packages/app-mobile/lists/ui/usePullRefresh.ts
+new file mode 100644
+index 0000000..139b971
+--- /dev/null
++++ b/packages/app-mobile/lists/ui/usePullRefresh.ts
+@@ -0,0 +1,47 @@
++import { useCallback, useEffect, useRef, useState } from 'react';
++import { refreshMessage, RefreshSources, runRefresh } from './pullRefresh';
++
++const MESSAGE_VISIBLE_MS = 5000;
++
++// React side of pull-to-refresh (see ./pullRefresh.ts): `refreshing` drives
++// the RefreshControl spinner, `message` is the short result text for the
++// screen's status line ("Updated", "Offline – changes will be sent later",
++// or the error), cleared again after a few seconds.
++const usePullRefresh = (buildSources: ()=> RefreshSources) => {
++	const [refreshing, setRefreshing] = useState(false);
++	const [message, setMessage] = useState<string | null>(null);
++	const busyRef = useRef(false);
++	const buildRef = useRef(buildSources);
++	buildRef.current = buildSources;
++	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
++	const unmountedRef = useRef(false);
++
++	useEffect(() => {
++		unmountedRef.current = false;
++		return () => {
++			unmountedRef.current = true;
++			if (timerRef.current) clearTimeout(timerRef.current);
++		};
++	}, []);
++
++	const onRefresh = useCallback(async () => {
++		if (busyRef.current) return;
++		busyRef.current = true;
++		setRefreshing(true);
++		setMessage(null);
++		try {
++			const result = await runRefresh(buildRef.current());
++			if (unmountedRef.current) return;
++			setMessage(refreshMessage(result));
++			if (timerRef.current) clearTimeout(timerRef.current);
++			timerRef.current = setTimeout(() => setMessage(null), MESSAGE_VISIBLE_MS);
++		} finally {
++			busyRef.current = false;
++			if (!unmountedRef.current) setRefreshing(false);
++		}
++	}, []);
++
++	return { refreshing, message, onRefresh };
++};
++
++export default usePullRefresh;
+diff --git a/packages/lib/models/settings/builtInMetadata.ts b/packages/lib/models/settings/builtInMetadata.ts
+index 2563d5a..1077fa7 100644
+--- a/packages/lib/models/settings/builtInMetadata.ts
++++ b/packages/lib/models/settings/builtInMetadata.ts
+@@ -2651,6 +2651,18 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			isGlobal: true,
+ 		},
+ 
++		'lists.nearbyLongRange': {
++			value: false,
++			type: SettingItemType.Bool,
++			section: 'lists',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Bluetooth Long Range (experimental)'),
++			description: () => _('Also advertises and connects over the Bluetooth LE Coded PHY for a longer range. Only works if both phones support it, and may make connections less reliable.'),
++			storage: SettingStorage.File,
++			isGlobal: true,
++		},
++
+ 		'lists.notifyChanges': {
+ 			value: true,
+ 			type: SettingItemType.Bool,
+@@ -2662,6 +2674,18 @@ const builtInMetadata = (Setting: typeof SettingType) => {
+ 			isGlobal: true,
+ 		},
+ 
++		'lists.countIconMisses': {
++			value: false,
++			type: SettingItemType.Bool,
++			section: 'lists',
++			public: true,
++			appTypes: [AppType.Mobile],
++			label: () => _('Count items without an icon'),
++			description: () => _('Counts, on this device only, which items you add that have no matching icon, so the icon catalog can be improved. Nothing is sent anywhere; you can view, export or clear the statistics from the shopping lists menu.'),
++			storage: SettingStorage.File,
++			isGlobal: true,
++		},
++
+ 		'debugLog.enabled': {
+ 			value: false,
+ 			type: SettingItemType.Bool,

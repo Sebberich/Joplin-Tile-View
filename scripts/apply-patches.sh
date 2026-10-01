@@ -26,5 +26,7 @@ if [ ${#PATCHES[@]} -eq 0 ]; then
 	exit 0
 fi
 
-git -c user.name="tile-view" -c user.email="tile-view@localhost" am --3way "${PATCHES[@]}"
+# --keep-cr: some upstream files (e.g. the adaptive icon XMLs) use CRLF; without it git am
+# strips the CRs from the patch and the hunks no longer match.
+git -c user.name="tile-view" -c user.email="tile-view@localhost" am --keep-cr --3way "${PATCHES[@]}"
 echo "${#PATCHES[@]} Patch(es) angewendet. HEAD: $(git rev-parse --short HEAD)"

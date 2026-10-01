@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sebberich <sebberich@users.noreply.github.com>
 Date: Fri, 25 Sep 2026 02:03:56 +0000
-Subject: [PATCH 29/29] Mobile: Make the shopping list screens faster
+Subject: [PATCH 29/33] Mobile: Make the shopping list screens faster
 
 Tiles are memoized and only re-render when their item changes; changes
 to other lists no longer reload the open one; sync status updates are
