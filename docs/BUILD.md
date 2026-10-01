@@ -117,22 +117,48 @@ The workflow signs with your own keystore from the repo secrets. If the secrets 
 builds with the debug keystore; the release is still created (test phase), and the release
 notes state which signature was used.
 
-Generate once locally (`keytool` ships with Android Studio under `jbr/bin`):
+Generate once on your own computer, never in CI or a shared environment.
+
+**With Android Studio** (any project must be open, e.g. a new "Empty Activity" project):
+Build → Generate Signed App Bundle or APK… → APK → Next → *Create new…* under "Key store path".
+Store the file outside any repository (e.g. `joplin-tiles.jks`), alias `joplintiles`, **key
+password = keystore password**, validity 25 years or more, at least one certificate field (e.g.
+first and last name). Confirm with OK, then cancel the wizard – no build is needed.
+
+**Or with `keytool`** (ships with Android Studio under `jbr/bin`):
 
 ```
-keytool -genkeypair -v -keystore joplin-tiles.keystore -alias joplintiles \
+keytool -genkeypair -v -keystore joplin-tiles.jks -alias joplintiles \
   -keyalg RSA -keysize 2048 -validity 10000
-base64 -w0 joplin-tiles.keystore > joplin-tiles.keystore.b64
 ```
 
-Repo secrets (Settings → Secrets and variables → Actions):
+Encode as Base64 for the secret:
+
+```
+# Linux
+base64 -w0 joplin-tiles.jks > joplin-tiles.jks.b64
+# macOS
+base64 -i joplin-tiles.jks -o joplin-tiles.jks.b64
+# Windows PowerShell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("joplin-tiles.jks")) | Set-Content -NoNewline joplin-tiles.jks.b64
+```
+
+Repo secrets (Settings → Secrets and variables → Actions → Secrets):
 
 | Secret | Content |
 |---|---|
-| `TILES_KEYSTORE_BASE64` | Content of `joplin-tiles.keystore.b64` |
+| `TILES_KEYSTORE_BASE64` | Content of `joplin-tiles.jks.b64` |
 | `TILES_KEYSTORE_PASSWORD` | Keystore password |
 | `TILES_KEY_ALIAS` | `joplintiles` (or whichever alias you chose) |
-| `TILES_KEY_PASSWORD` | Key password (with `keytool` from JDK 9 on, same as the keystore password) |
+| `TILES_KEY_PASSWORD` | Key password (same as the keystore password) |
+
+**Switch:** The keystore is only used once the repository *variable* `TILES_USE_RELEASE_KEYSTORE`
+is set to `true` (Settings → Secrets and variables → Actions → Variables). Until then every build
+checks the secrets (file, password, alias) and prints the certificate's SHA-256 fingerprint in the
+"Keystore aus Secrets bereitstellen" step, but still signs with the debug keystore. This lets you
+set the secrets up early and switch at a planned moment, because the first build with the own key
+cannot be installed as an update over debug-signed builds. Delete `joplin-tiles.jks.b64` after
+copying it into the secret.
 
 Keep the keystore and passwords safe: if the keystore is lost, all future builds require a
 fresh install again. When switching from the debug keystore to your own, uninstall the app once

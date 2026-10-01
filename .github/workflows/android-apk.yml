@@ -121,20 +121,42 @@ jobs:
           cd joplin
           retry yarn install
 
-      # Eigener Keystore aus den Repo-Secrets. Fehlt er, wird mit dem Debug-Keystore gebaut;
-      # das Release wird trotzdem angelegt (Testphase), die Release-Notes nennen die Signatur.
+      # Eigener Keystore aus den Repo-Secrets. Benutzt wird er erst, wenn die Repo-Variable
+      # TILES_USE_RELEASE_KEYSTORE auf "true" steht: Der Wechsel vom Debug- zum eigenen Schlüssel
+      # erzwingt eine Neuinstallation, soll also bewusst geschaltet werden. Solange der Schalter aus
+      # ist, wird ein vorhandener Keystore nur geprüft (Alias, Passwörter) und sein Fingerabdruck
+      # ausgegeben, damit die Einrichtung vorab kontrolliert werden kann.
       - name: Keystore aus Secrets bereitstellen
         id: keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.TILES_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.TILES_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TILES_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.TILES_KEY_PASSWORD }}
+          USE_RELEASE_KEYSTORE: ${{ vars.TILES_USE_RELEASE_KEYSTORE }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ]; then
             echo "::warning::Secret TILES_KEYSTORE_BASE64 fehlt – Build mit Debug-Keystore."
             echo "available=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/tiles.keystore"
-            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/tiles.keystore"
+          # Prüfen: Keystore lesbar, Passwort stimmt, Alias vorhanden. (Das Schlüssel-Passwort lässt sich
+          # bei PKCS12-Keystores nicht getrennt prüfen; es muss dem Keystore-Passwort entsprechen.)
+          if ! keytool -list -keystore "$RUNNER_TEMP/tiles.keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
+            echo "::error::Keystore-Secrets passen nicht zusammen (Datei, Keystore-Passwort oder Alias falsch)."
+            exit 1
+          fi
+          FINGERPRINT="$(keytool -list -v -keystore "$RUNNER_TEMP/tiles.keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | sed -n 's/^[[:space:]]*SHA256: //p')"
+          echo "Keystore geprüft. Zertifikat SHA-256: $FINGERPRINT"
+          echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          if [ "$USE_RELEASE_KEYSTORE" != "true" ]; then
+            echo "::notice::Eigener Keystore ist eingerichtet und geprüft, aber noch nicht aktiv (Repo-Variable TILES_USE_RELEASE_KEYSTORE != true) – Build mit Debug-Keystore."
+            rm -f "$RUNNER_TEMP/tiles.keystore"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Android-APK bauen
         env:
@@ -178,7 +200,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KEYSTORE_AVAILABLE: ${{ steps.keystore.outputs.available }}
         run: |
-          if [ "$KEYSTORE_AVAILABLE" = "true" ]; then SIG="project keystore"; else SIG="debug keystore (test phase, reinstall required when switching to the project keystore)"; fi
+          if [ "$KEYSTORE_AVAILABLE" = "true" ]; then SIG="project keystore (SHA-256 ${{ steps.keystore.outputs.fingerprint }})"; else SIG="debug keystore (test phase, reinstall required when switching to the project keystore)"; fi
           APK=joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
           BASE="$(sed -n 's/.*versionName tileViewBuildNumber > 0 ? "\([0-9.]*\)-tiles.*/\1/p' joplin/packages/app-mobile/android/app/build.gradle)"
           VERSION="${BASE}-tiles.${{ github.run_number }}"
