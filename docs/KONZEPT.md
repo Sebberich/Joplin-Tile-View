@@ -629,8 +629,8 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
   „Tiles – Notes“: Die Notiz-App **xTiles** (xTiles, Inc., kachelbasierte Notizen) liegt im selben
   Produktbereich; in Deutschland kann ein App-Name auch ohne Eintragung als Werktitel geschützt sein.
   „Forklin“: Websuche ohne Treffer für App, Software oder Marke (nur entfernt ähnliche Food-Marken
-  „Forkly“, „FORKSLIST“). **Vor der Umstellung noch prüfen:** TMview „forklin“ (Klassen 9/42, EM/DE),
-  Play Store, GitHub. Nicht mit Joplins Logo oder Farben kombinieren.
+  „Forkly“, „FORKSLIST“). TMview-Prüfung „forklin“ durch den Projektinhaber am 01.10.2026: ohne
+  Konflikt. Nicht mit Joplins Logo oder Farben kombinieren.
 - **Umstellung auf Forklin – in einem Release zusammen mit dem eigenen Signaturschlüssel:**
   - App-Name „Forklin“ (Startbildschirm und Store), App-ID `io.github.sebberich.forklin`,
     eigenes Icon; Hinweis „Inoffizielle, veränderte Version von Joplin (AGPL-3.0-or-later). Joplin
