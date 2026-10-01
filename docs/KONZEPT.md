@@ -651,7 +651,10 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
     und Listen sichern).
   - Claude-Sitzungen: Der GitHub-Zugriff ist auf den Repo-Namen eingetragen; nach der Umbenennung
     das Repo in neuen Sitzungen neu auswählen.
-- **To-do:** Icon festlegen; README, Release-Notes und „Über“-Dialog mit Hinweis
+- **Icon entschieden (01.10.2026):** `docs/branding/forklin-icon.svg` – weißes „Fork“-F (mittlerer Arm
+  zweigt im Bogen ab und endet in einem Punkt) auf `#111111`; Einbau als Android-Adaptive-Icon bei
+  der Umstellung.
+- **To-do:** README, Release-Notes und „Über“-Dialog mit Hinweis
   „Inoffizielle, veränderte Version von Joplin (AGPL-3.0-or-later). Joplin ist eine Marke der
   JOPLIN SAS.“; Lizenz fürs Plugin festlegen (derzeit MIT); Umbenennung, neue App-ID und eigener
   Signaturschlüssel in einem Release bündeln.
