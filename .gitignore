@@ -16,3 +16,4 @@ node_modules/
 *.keystore
 *.jks.b64
 *.keystore.b64
+smoke-test-results/

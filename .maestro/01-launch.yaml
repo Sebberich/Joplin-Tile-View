@@ -1,0 +1,16 @@
+# Flow 1: cold start with fresh app data, main screen (header with side menu button) is shown.
+# The application id comes from -e APP_ID=... (see scripts/smoke-test.sh), never hard-coded here.
+appId: ${APP_ID}
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+- runFlow: subflows/dismiss-dialogs.yaml
+# First start creates the database and may take a while on a CI emulator.
+- extendedWaitUntil:
+    visible: 'Sidebar'
+    timeout: 120000
+- takeScreenshot: 01-main-screen
+- runFlow: subflows/dismiss-dialogs.yaml
+- assertVisible: 'Sidebar'
+- takeScreenshot: 01-main-screen-ready

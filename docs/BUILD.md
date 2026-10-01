@@ -77,6 +77,44 @@ Joplin build must pass first") can be verified even without a local Android tool
 usually takes 40–80 minutes, most of which is the NDK compilation of
 `react-native-quick-crypto`.
 
+## Smoke test in CI
+
+After the `build` job, the `smoke-test` job starts an Android emulator (API 34, x86_64,
+`google_apis`, KVM enabled via the udev rule) with `reactivecircus/android-emulator-runner`,
+installs the built APK and plays the [Maestro](https://maestro.mobile.dev) flows from `.maestro/`
+via `scripts/smoke-test.sh`:
+
+1. `01-launch.yaml` – fresh start, optional system dialogs are dismissed, main screen is visible.
+2. `02-shopping-list.yaml` – side menu → "Shopping lists" → new list "CI" → add "Milk" → tap the
+   tile → it shows up under "Recently bought".
+3. `03-settings.yaml` – Configuration opens and contains the "Test logging" section.
+
+The flows use English UI strings (the emulator locale is en-US). The application id is defined in
+one place, `scripts/smoke-test.sh` (`APP_ID`), and passed to the flows as `-e APP_ID=...`; change it
+there when the id changes. Screenshots, the Maestro report/log and `adb logcat -d` are uploaded as
+the artifact `smoke-test-results` (always, also on failure).
+
+**Gating:** the GitHub release lives in its own `release` job (`needs: build, smoke-test, plugin`).
+The repository variable `SMOKE_TEST_REQUIRED` (Settings → Secrets and variables → Actions →
+Variables) controls whether the smoke test blocks it:
+
+- not set / anything but `true` (default): the smoke test may fail (`continue-on-error`), the
+  release is still created. Use this while the flows are new.
+- `true`: a failing smoke test prevents the release.
+
+**Run locally** (emulator or device with en-US locale running, Maestro installed via
+`curl -fsSL "https://get.maestro.mobile.dev" | bash`):
+
+```bash
+scripts/smoke-test.sh                       # uses the release APK from scripts/build-android.sh
+scripts/smoke-test.sh path/to/app.apk       # or a specific APK
+# only the flows, app already installed:
+maestro test -e APP_ID=net.cozic.joplin.tileview .maestro
+```
+
+Results land in `smoke-test-results/`. The Maestro version used in CI is pinned via
+`MAESTRO_VERSION` in the workflow.
+
 ## Installing on the Phone – Pitfalls
 
 - **Same package ID as the Store Joplin** (`net.cozic.joplin`), but a different signature.

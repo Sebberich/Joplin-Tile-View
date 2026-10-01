@@ -1,0 +1,22 @@
+# Flow 3: the settings screen opens and contains the "Test logging" section.
+appId: ${APP_ID}
+---
+- launchApp
+- runFlow: subflows/dismiss-dialogs.yaml
+- extendedWaitUntil:
+    visible: 'Sidebar'
+    timeout: 60000
+- tapOn: 'Sidebar'
+- extendedWaitUntil:
+    visible: 'Configuration'
+    timeout: 10000
+- takeScreenshot: 03-side-menu
+- tapOn: 'Configuration'
+- extendedWaitUntil:
+    visible: 'Configuration'
+    timeout: 20000
+- scrollUntilVisible:
+    element: 'Test logging'
+    timeout: 30000
+- assertVisible: 'Test logging'
+- takeScreenshot: 03-settings-test-logging

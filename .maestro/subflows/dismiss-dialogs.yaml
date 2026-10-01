@@ -1,0 +1,16 @@
+# Optional first-start / system dialogs. Each one is only handled when it is actually visible,
+# so the flow also works when nothing pops up. Expects APP_ID from the parent flow.
+appId: ${APP_ID}
+---
+# Android 13+ notification permission prompt.
+- runFlow:
+    when:
+      visible: 'Allow'
+    commands:
+      - tapOn: 'Allow'
+# "App isn't responding" dialog on a slow CI emulator.
+- runFlow:
+    when:
+      visible: 'Wait'
+    commands:
+      - tapOn: 'Wait'

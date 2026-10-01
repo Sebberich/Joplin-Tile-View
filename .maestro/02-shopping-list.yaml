@@ -1,0 +1,44 @@
+# Flow 2: create a shopping list, add an item, buy it, check "Recently bought".
+appId: ${APP_ID}
+---
+- launchApp
+- runFlow: subflows/dismiss-dialogs.yaml
+- extendedWaitUntil:
+    visible: 'Sidebar'
+    timeout: 60000
+- tapOn: 'Sidebar'
+- extendedWaitUntil:
+    visible: 'Shopping lists'
+    timeout: 10000
+- takeScreenshot: 02-side-menu
+- tapOn: 'Shopping lists'
+- extendedWaitUntil:
+    visible: 'New list'
+    timeout: 20000
+- takeScreenshot: 02-lists-overview
+# + button (accessibility label "New list"); the dialog focuses the name field automatically.
+- tapOn: 'New list'
+- extendedWaitUntil:
+    visible: 'List name'
+    timeout: 10000
+- inputText: 'CI'
+- takeScreenshot: 02-create-dialog
+- tapOn: 'Create'
+# Creating a list opens it.
+- extendedWaitUntil:
+    visible: 'Add an item.*'
+    timeout: 20000
+- takeScreenshot: 02-list-empty
+- tapOn: 'Add an item.*'
+- inputText: 'Milk'
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: 'Milk'
+    timeout: 20000
+- takeScreenshot: 02-item-added
+- tapOn: 'Milk'
+- extendedWaitUntil:
+    visible: 'Recently bought'
+    timeout: 20000
+- assertVisible: 'Milk'
+- takeScreenshot: 02-item-bought
