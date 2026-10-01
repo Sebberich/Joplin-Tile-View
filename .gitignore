@@ -10,3 +10,9 @@ node_modules/
 .idea/
 .vscode/
 .DS_Store
+
+# Signaturschlüssel nie einchecken
+*.jks
+*.keystore
+*.jks.b64
+*.keystore.b64
