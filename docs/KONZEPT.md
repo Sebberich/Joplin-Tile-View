@@ -462,7 +462,16 @@ lesen (NIP-44), prüfen nur die Signatur.
 Verbindungsdauer und Durchsatz ab); ob iPhones (Hintergrund-Advertising nur eingeschränkt) als
 Weiterleiter taugen.
 
-### Kompaktes Datenformat (geplant, nach funktionierender Bluetooth-Verbindung)
+### Kompaktes Datenformat (zurückgestellt, nur bei Bedarf – entschieden 01.10.2026)
+
+**Stand:** Nicht nötig. Bluetooth schafft realistisch einige bis 20 KB/s; eine Änderung (≈ 1,1 KB) ist
+in Sekundenbruchteilen übertragen, ein Erstabgleich von 50 Artikeln dauert grob 3–10 s und danach
+gehen über die Übersicht nur geänderte Artikel. Relays kommen mit 1 KB pro Event problemlos zurecht.
+**Vorgehen:** erst messen (das Test-Log protokolliert Bytes und Dauer jedes Bluetooth-Abgleichs);
+wird der Erstabgleich spürbar zäh, zuerst nur die Bluetooth-Hülle binär übertragen (Hex → Bytes,
+≈ 1,1 → 0,7 KB, kein Formatbruch zu den Relays). Binäre Nutzdaten, Feld-Patches und kurze
+JSON-Schlüssel bleiben als Option notiert, sind aber wegen Formatwechsel und Fehlerrisiko derzeit
+nicht vorgesehen. Die Analyse unten bleibt als Grundlage erhalten.
 
 **Ist (gemessen 01.10.2026)** für „Brot, 5 Stück“: Nutzdaten-JSON 333 B (jedes Feld mit eigenem
 ms-Zeitstempel, Kategorie als Text, Emoji, Mengenzähler pro Gerät) → NIP-44 polstert auf 512 B, +65 B
