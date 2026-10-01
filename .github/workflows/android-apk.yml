@@ -1,14 +1,15 @@
-# Baut das Android-APK (Release-Variante, mit Debug-Keystore signiert) aus dem
+# Baut das Forklin-Android-APK (Release-Variante, mit dem Projekt-Keystore signiert, ersatzweise Debug) aus dem
 # Submodule joplin/ plus patches/. Orientiert sich an joplin/.github/workflows/build-android.yml.
 # Läuft bei jedem Push und manuell (workflow_dispatch). Das APK liegt danach als
-# Artefakt "joplin-tile-view-apk" am Workflow-Lauf und als GitHub-Release
-# "v<Joplin-Version>-tiles.<Build-Nr>" (Quelle für Obtainium).
+# Artefakt "forklin-apk" am Workflow-Lauf und als GitHub-Release
+# "v<Joplin-Version>-forklin.<Build-Nr>" (Quelle für Obtainium).
 name: android-apk
 
 on:
   push:
     paths-ignore:
       - 'docs/**'
+      - '.github/workflows/keystore-check.yml'
       - 'README.md'
       - 'patches/README.md'
   workflow_dispatch:
@@ -21,9 +22,39 @@ permissions:
   contents: write
 
 jobs:
+  # Formel-Tabellen-Plugin (plugins/formula-tables): Tests, Build der .jpl, hängt am Release.
+  plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: plugins/formula-tables
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: plugins/formula-tables/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run lint
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formula-tables-plugin
+          path: plugins/formula-tables/publish/*.jpl
+          if-no-files-found: error
+          retention-days: 30
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    needs: plugin
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      keystore_available: ${{ steps.keystore.outputs.available }}
+      keystore_fingerprint: ${{ steps.keystore.outputs.fingerprint }}
     steps:
       - name: Linux-Abhängigkeiten
         run: |
@@ -95,20 +126,41 @@ jobs:
           cd joplin
           retry yarn install
 
-      # Eigener Keystore aus den Repo-Secrets. Fehlt er, wird mit dem Debug-Keystore gebaut;
-      # das Release wird trotzdem angelegt (Testphase), die Release-Notes nennen die Signatur.
+      # Eigener Keystore aus den Repo-Secrets. Seit der Umstellung auf Forklin (neue App-ID, also
+      # ohnehin Neuinstallation) wird er immer benutzt, wenn die Secrets da sind. Notbremse: Repo-
+      # Variable TILES_USE_RELEASE_KEYSTORE auf "false" setzen, dann wird der Keystore nur geprüft
+      # (Alias, Passwörter, Fingerabdruck) und mit dem Debug-Keystore gebaut.
       - name: Keystore aus Secrets bereitstellen
         id: keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.TILES_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.TILES_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TILES_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.TILES_KEY_PASSWORD }}
+          USE_RELEASE_KEYSTORE: ${{ vars.TILES_USE_RELEASE_KEYSTORE }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ]; then
             echo "::warning::Secret TILES_KEYSTORE_BASE64 fehlt – Build mit Debug-Keystore."
             echo "available=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/tiles.keystore"
-            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/tiles.keystore"
+          # Prüfen: Keystore lesbar, Passwort stimmt, Alias vorhanden. (Das Schlüssel-Passwort lässt sich
+          # bei PKCS12-Keystores nicht getrennt prüfen; es muss dem Keystore-Passwort entsprechen.)
+          if ! keytool -list -keystore "$RUNNER_TEMP/tiles.keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
+            echo "::error::Keystore-Secrets passen nicht zusammen (Datei, Keystore-Passwort oder Alias falsch)."
+            exit 1
+          fi
+          FINGERPRINT="$(keytool -list -v -keystore "$RUNNER_TEMP/tiles.keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | sed -n 's/^[[:space:]]*SHA256: //p')"
+          echo "Keystore geprüft. Zertifikat SHA-256: $FINGERPRINT"
+          echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          if [ "$USE_RELEASE_KEYSTORE" = "false" ]; then
+            echo "::notice::Eigener Keystore ist eingerichtet und geprüft, aber abgeschaltet (Repo-Variable TILES_USE_RELEASE_KEYSTORE = false) – Build mit Debug-Keystore."
+            rm -f "$RUNNER_TEMP/tiles.keystore"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Android-APK bauen
         env:
@@ -133,27 +185,119 @@ jobs:
           ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -name zipalign | sort | tail -n1)"
           "$ZIPALIGN" -c -P 16 -v 4 "$APK" | tail -n 3
 
+      # Version für das Release (und den Release-Job): Basis aus dem gepatchten build.gradle.
+      - name: Version ermitteln
+        id: version
+        run: |
+          BASE="$(sed -n 's/.*versionName tileViewBuildNumber > 0 ? "\([0-9.]*\)-forklin.*/\1/p' joplin/packages/app-mobile/android/app/build.gradle)"
+          VERSION="${BASE}-forklin.${{ github.run_number }}"
+          echo "Version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: joplin-tile-view-apk
+          name: forklin-apk
           path: joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
 
+  # App-Smoke-Test im Android-Emulator (Maestro-Flows in .maestro/, Ablauf in scripts/smoke-test.sh).
+  # Solange die Repo-Variable SMOKE_TEST_REQUIRED nicht "true" ist, darf der Job fehlschlagen,
+  # ohne das Release zu blockieren (continue-on-error am Job: needs.smoke-test.result ist dann "success").
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+    continue-on-error: ${{ vars.SMOKE_TEST_REQUIRED != 'true' }}
+    steps:
+      - uses: actions/checkout@v6   # ohne Submodule: nur .maestro/ und scripts/ werden gebraucht
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: forklin-apk
+          path: apk
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # KVM auf ubuntu-latest freischalten (Vorgehen aus der Doku von android-emulator-runner).
+      - name: KVM aktivieren
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Maestro installieren
+        env:
+          MAESTRO_VERSION: '2.0.10'
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Emulator starten, APK installieren, Maestro-Flows ausführen
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          SMOKE_RESULTS_DIR: ${{ github.workspace }}/smoke-test-results
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: scripts/smoke-test.sh apk/app-release.apk
+
+      - name: Ergebnisse hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-results
+          path: smoke-test-results
+          if-no-files-found: warn
+          retention-days: 14
+
+  # GitHub-Release (Quelle für Obtainium). Läuft nur bei Push und nur, wenn Build und Plugin
+  # erfolgreich waren. Der Smoke-Test muss nur dann bestehen, wenn SMOKE_TEST_REQUIRED == "true";
+  # !cancelled() verhindert, dass ein (mit continue-on-error tolerierter) Smoke-Test-Fehler
+  # den Job über den impliziten success()-Check überspringt.
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build, smoke-test, plugin]
+    if: >-
+      ${{ !cancelled()
+      && github.event_name == 'push'
+      && needs.build.result == 'success'
+      && needs.plugin.result == 'success'
+      && (needs.smoke-test.result == 'success' || vars.SMOKE_TEST_REQUIRED != 'true') }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: forklin-apk
+          path: apk
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: formula-tables-plugin
+          path: plugin-release
+
       - name: GitHub-Release anlegen (Quelle für Obtainium)
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          KEYSTORE_AVAILABLE: ${{ steps.keystore.outputs.available }}
+          KEYSTORE_AVAILABLE: ${{ needs.build.outputs.keystore_available }}
+          KEYSTORE_FINGERPRINT: ${{ needs.build.outputs.keystore_fingerprint }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
-          if [ "$KEYSTORE_AVAILABLE" = "true" ]; then SIG="project keystore"; else SIG="debug keystore (test phase, reinstall required when switching to the project keystore)"; fi
-          APK=joplin/packages/app-mobile/android/app/build/outputs/apk/release/app-release.apk
-          BASE="$(sed -n 's/.*versionName tileViewBuildNumber > 0 ? "\([0-9.]*\)-tiles.*/\1/p' joplin/packages/app-mobile/android/app/build.gradle)"
-          VERSION="${BASE}-tiles.${{ github.run_number }}"
-          cp "$APK" "joplin-tiles-${VERSION}.apk"
+          if [ "$KEYSTORE_AVAILABLE" = "true" ]; then SIG="project keystore (SHA-256 ${KEYSTORE_FINGERPRINT})"; else SIG="debug keystore (fallback, not installable over project-keystore builds)"; fi
+          APK=apk/app-release.apk
+          cp "$APK" "forklin-${VERSION}.apk"
+          NOTICE="Forklin is an unofficial, modified version of Joplin (AGPL-3.0-or-later), not affiliated with the Joplin project. Joplin is a trademark of JOPLIN SAS."
           DISCLAIMER="Vibe-coded: the code is mostly written by an AI assistant (Claude Code) and has not been reviewed line by line by hand. Private hobby project in the test phase, no warranty and no liability. Back up your data before using this with real notes (JEX export)."
-          NOTES="$(printf '%s\n\n%s\n' "Build #${{ github.run_number }} from ${GITHUB_SHA::7}. Signature: ${SIG}. Installable as an update over builds with the same signature." "⚠️ **${DISCLAIMER}**")"
-          gh release create "v${VERSION}" "joplin-tiles-${VERSION}.apk" \
+          PLUGIN="$(ls plugin-release/*.jpl | head -n1)"
+          NOTES="$(printf '%s\n\n%s\n\n%s\n\n%s\n' "${NOTICE}" "Build #${{ github.run_number }} from ${GITHUB_SHA::7}. Signature: ${SIG}. Installable as an update over builds with the same signature." "Also attached: the Formula Tables plugin (\`$(basename "$PLUGIN")\`) – install it in Joplin via Settings → Plugins → Install from file. See plugins/formula-tables/README.md." "⚠️ **${DISCLAIMER}**")"
+          gh release create "v${VERSION}" "forklin-${VERSION}.apk" "$PLUGIN" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Joplin Tiles Beta ${VERSION}" \
+            --title "Forklin ${VERSION}" \
             --notes "$NOTES"

@@ -1,0 +1,12 @@
+/* Formula Tables - viewer styles. */
+
+.ft-result {
+	/* Computed formula result. Slightly muted so it reads as "derived". */
+	font-variant-numeric: tabular-nums;
+}
+
+.ft-error {
+	color: #c0392b;
+	font-weight: bold;
+	cursor: help;
+}

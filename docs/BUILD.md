@@ -17,6 +17,7 @@ Joplin-Tile-View/
 │   ├── apply-patches.sh   Apply patches/*.patch onto the tile-view branch in the submodule
 │   ├── export-patches.sh  Export the tile-view branch in the submodule to patches/
 │   └── build-android.sh   Build the APK (release = installable, debug = requires Metro)
+├── plugins/formula-tables/  Joplin plugin "Formula Tables" (own npm project, built in CI, .jpl attached to releases)
 ├── docs/              Handover, analysis, this file
 └── .github/workflows/android-apk.yml   Builds the APK on GitHub runners
 ```
@@ -76,6 +77,44 @@ Joplin build must pass first") can be verified even without a local Android tool
 usually takes 40–80 minutes, most of which is the NDK compilation of
 `react-native-quick-crypto`.
 
+## Smoke test in CI
+
+After the `build` job, the `smoke-test` job starts an Android emulator (API 34, x86_64,
+`google_apis`, KVM enabled via the udev rule) with `reactivecircus/android-emulator-runner`,
+installs the built APK and plays the [Maestro](https://maestro.mobile.dev) flows from `.maestro/`
+via `scripts/smoke-test.sh`:
+
+1. `01-launch.yaml` – fresh start, optional system dialogs are dismissed, main screen is visible.
+2. `02-shopping-list.yaml` – side menu → "Shopping lists" → new list "CI" → add "Milk" → tap the
+   tile → it shows up under "Recently bought".
+3. `03-settings.yaml` – Configuration opens and contains the "Test logging" section.
+
+The flows use English UI strings (the emulator locale is en-US). The application id is defined in
+one place, `scripts/smoke-test.sh` (`APP_ID`), and passed to the flows as `-e APP_ID=...`; change it
+there when the id changes. Screenshots, the Maestro report/log and `adb logcat -d` are uploaded as
+the artifact `smoke-test-results` (always, also on failure).
+
+**Gating:** the GitHub release lives in its own `release` job (`needs: build, smoke-test, plugin`).
+The repository variable `SMOKE_TEST_REQUIRED` (Settings → Secrets and variables → Actions →
+Variables) controls whether the smoke test blocks it:
+
+- not set / anything but `true` (default): the smoke test may fail (`continue-on-error`), the
+  release is still created. Use this while the flows are new.
+- `true`: a failing smoke test prevents the release.
+
+**Run locally** (emulator or device with en-US locale running, Maestro installed via
+`curl -fsSL "https://get.maestro.mobile.dev" | bash`):
+
+```bash
+scripts/smoke-test.sh                       # uses the release APK from scripts/build-android.sh
+scripts/smoke-test.sh path/to/app.apk       # or a specific APK
+# only the flows, app already installed:
+maestro test -e APP_ID=io.github.sebberich.forklin .maestro
+```
+
+Results land in `smoke-test-results/`. The Maestro version used in CI is pinned via
+`MAESTRO_VERSION` in the workflow.
+
 ## Installing on the Phone – Pitfalls
 
 - **Same package ID as the Store Joplin** (`net.cozic.joplin`), but a different signature.
@@ -92,9 +131,9 @@ usually takes 40–80 minutes, most of which is the NDK compilation of
 ## Updates with Obtainium
 
 Every push (except pure documentation changes) creates a GitHub release
-`v<Joplin-version>-tiles.<build number>` with the APK as an asset, alongside the workflow
+`v<Joplin-version>-forklin.<build number>` with the APK as an asset, alongside the workflow
 artifact. The build number (`github.run_number`) flows through `-PTILE_VIEW_BUILD_NUMBER` into
-`versionCode` (`2097819 + N`) and `versionName` (`3.7.10-tiles.N`), so Android accepts every new
+`versionCode` (`2097819 + N`) and `versionName` (`3.7.10-forklin.N`; up to the rename to Forklin `3.7.10-tiles.N`), so Android accepts every new
 build as an update and Obtainium recognizes the version.
 
 Setup in Obtainium:
@@ -116,22 +155,48 @@ The workflow signs with your own keystore from the repo secrets. If the secrets 
 builds with the debug keystore; the release is still created (test phase), and the release
 notes state which signature was used.
 
-Generate once locally (`keytool` ships with Android Studio under `jbr/bin`):
+Generate once on your own computer, never in CI or a shared environment.
+
+**With Android Studio** (any project must be open, e.g. a new "Empty Activity" project):
+Build → Generate Signed App Bundle or APK… → APK → Next → *Create new…* under "Key store path".
+Store the file outside any repository (e.g. `joplin-tiles.jks`), alias `joplintiles`, **key
+password = keystore password**, validity 25 years or more, at least one certificate field (e.g.
+first and last name). Confirm with OK, then cancel the wizard – no build is needed.
+
+**Or with `keytool`** (ships with Android Studio under `jbr/bin`):
 
 ```
-keytool -genkeypair -v -keystore joplin-tiles.keystore -alias joplintiles \
+keytool -genkeypair -v -keystore joplin-tiles.jks -alias joplintiles \
   -keyalg RSA -keysize 2048 -validity 10000
-base64 -w0 joplin-tiles.keystore > joplin-tiles.keystore.b64
 ```
 
-Repo secrets (Settings → Secrets and variables → Actions):
+Encode as Base64 for the secret:
+
+```
+# Linux
+base64 -w0 joplin-tiles.jks > joplin-tiles.jks.b64
+# macOS
+base64 -i joplin-tiles.jks -o joplin-tiles.jks.b64
+# Windows PowerShell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("joplin-tiles.jks")) | Set-Content -NoNewline joplin-tiles.jks.b64
+```
+
+Repo secrets (Settings → Secrets and variables → Actions → Secrets):
 
 | Secret | Content |
 |---|---|
-| `TILES_KEYSTORE_BASE64` | Content of `joplin-tiles.keystore.b64` |
+| `TILES_KEYSTORE_BASE64` | Content of `joplin-tiles.jks.b64` |
 | `TILES_KEYSTORE_PASSWORD` | Keystore password |
 | `TILES_KEY_ALIAS` | `joplintiles` (or whichever alias you chose) |
-| `TILES_KEY_PASSWORD` | Key password (with `keytool` from JDK 9 on, same as the keystore password) |
+| `TILES_KEY_PASSWORD` | Key password (same as the keystore password) |
+
+**Switch:** Since the rename to Forklin (new app ID, so a fresh install anyway) every build signs
+with the own keystore as soon as the secrets exist. Each build checks the secrets (file, password,
+alias) and prints the certificate's SHA-256 fingerprint in the "Keystore aus Secrets bereitstellen"
+step. Emergency switch: set the repository *variable* `TILES_USE_RELEASE_KEYSTORE` to `false`
+(Settings → Secrets and variables → Actions → Variables) to fall back to the debug keystore; such
+builds cannot be installed as an update over project-signed builds. Delete `joplin-tiles.jks.b64` after
+copying it into the secret.
 
 Keep the keystore and passwords safe: if the keystore is lost, all future builds require a
 fresh install again. When switching from the debug keystore to your own, uninstall the app once

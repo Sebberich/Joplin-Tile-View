@@ -1,0 +1,17 @@
+{
+	"manifest_version": 1,
+	"id": "com.sebberich.formulaTables",
+	"app_min_version": "3.0",
+	"version": "0.1.0",
+	"name": "Formula Tables",
+	"description": "Formulas inside standard Markdown tables, with explicit types and no auto-detection. Works in Joplin desktop and mobile.",
+	"author": "Sebastian Riempp",
+	"homepage_url": "https://github.com/Sebberich/Joplin-Tile-View",
+	"repository_url": "https://github.com/Sebberich/Joplin-Tile-View",
+	"keywords": ["table", "formula", "spreadsheet", "markdown"],
+	"categories": ["productivity"],
+	"screenshots": [],
+	"icons": {},
+	"promo_tile": {},
+	"platforms": ["desktop", "mobile"]
+}
