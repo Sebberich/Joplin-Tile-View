@@ -620,11 +620,37 @@ Aus der Ideenrunde; nichts davon ist umgesetzt. Reihenfolge nach dem Bluetooth-G
     Store schwer auffindbar.
   - **Vor der Entscheidung von Hand prüfen:** TMview (tmdn.org/tmview, deckt EU und nationale Ämter
     inkl. DPMA ab), Suche „tiles“ und „tile“ in Klassen 9 und 42; Play Store nach gleichnamigen Apps.
-- **Arbeitsname (29.09.2026): „Tiles – Notes“.** Vor der Umbenennung noch die TMview-Prüfung
+- *Überholt (siehe „Forklin“ unten):* **Arbeitsname (29.09.2026): „Tiles – Notes“.** Vor der Umbenennung noch die TMview-Prüfung
   (s. o.). Beide Wortteile sind beschreibend, der Name bleibt also schwach unterscheidungskräftig und
   kaum selbst schützbar; das Risiko gegenüber „Tile“ (Tile, Inc.) sinkt durch den Zusatz, ist aber
   nicht null. Vorschlag App-ID: `io.github.sebberich.tilesnotes` (eigene Domain über GitHub Pages,
   passt zu den Einladungslinks). Kurzname auf dem Startbildschirm: „Tiles“.
+- **Entschieden (01.10.2026): App-Name „Forklin“** (Fork von Joplin). Grund für den Wechsel weg von
+  „Tiles – Notes“: Die Notiz-App **xTiles** (xTiles, Inc., kachelbasierte Notizen) liegt im selben
+  Produktbereich; in Deutschland kann ein App-Name auch ohne Eintragung als Werktitel geschützt sein.
+  „Forklin“: Websuche ohne Treffer für App, Software oder Marke (nur entfernt ähnliche Food-Marken
+  „Forkly“, „FORKSLIST“). **Vor der Umstellung noch prüfen:** TMview „forklin“ (Klassen 9/42, EM/DE),
+  Play Store, GitHub. Nicht mit Joplins Logo oder Farben kombinieren.
+- **Umstellung auf Forklin – in einem Release zusammen mit dem eigenen Signaturschlüssel:**
+  - App-Name „Forklin“ (Startbildschirm und Store), App-ID `io.github.sebberich.forklin`,
+    eigenes Icon; Hinweis „Inoffizielle, veränderte Version von Joplin (AGPL-3.0-or-later). Joplin
+    ist eine Marke der JOPLIN SAS.“ in README, Release-Notes und „Über“-Dialog.
+  - **GitHub-Repo umbenennen** (Settings → General → Repository name, z. B. `Sebberich/forklin`).
+    GitHub leitet Web-Adressen, `git clone/push` und die API vom alten Namen weiter, **nicht aber
+    GitHub-Pages-Adressen**.
+  - **Einladungslinks:** `INVITE_LINK_PREFIX` (`lists/core/invite.ts`) und der Intent-Filter im
+    AndroidManifest nutzen `https://sebberich.github.io/joplin-tile-view/l`. Neue Links auf
+    `…/forklin/l` umstellen, **alte Präfixe weiter annehmen** (Parser und Intent-Filter), damit schon
+    verschickte Einladungen funktionieren. Gleiches für das URL-Schema: `forklin://` neu,
+    `joplintiles://` weiter annehmen.
+  - Workflow und Release: Release-Titel „Forklin …“, APK-Name `forklin-<version>.apk`,
+    Artefaktname; README, BUILD.md, Plugin-Manifest (`homepage_url`), ROUTINE.md (Repo-Name im
+    Nachtlauf) und die Routine selbst auf den neuen Repo-Namen umstellen.
+  - Obtainium: Wegen neuer App-ID und neuem Schlüssel die alte App deinstallieren und in Obtainium
+    die neue Quelle `https://github.com/Sebberich/forklin` hinzufügen (vorher Notizen synchronisieren
+    und Listen sichern).
+  - Claude-Sitzungen: Der GitHub-Zugriff ist auf den Repo-Namen eingetragen; nach der Umbenennung
+    das Repo in neuen Sitzungen neu auswählen.
 - **To-do:** Icon festlegen; README, Release-Notes und „Über“-Dialog mit Hinweis
   „Inoffizielle, veränderte Version von Joplin (AGPL-3.0-or-later). Joplin ist eine Marke der
   JOPLIN SAS.“; Lizenz fürs Plugin festlegen (derzeit MIT); Umbenennung, neue App-ID und eigener
