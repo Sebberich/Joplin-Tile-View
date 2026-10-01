@@ -462,6 +462,34 @@ lesen (NIP-44), prüfen nur die Signatur.
 Verbindungsdauer und Durchsatz ab); ob iPhones (Hintergrund-Advertising nur eingeschränkt) als
 Weiterleiter taugen.
 
+### Kompaktes Datenformat (geplant, nach funktionierender Bluetooth-Verbindung)
+
+**Ist (gemessen 01.10.2026)** für „Brot, 5 Stück“: Nutzdaten-JSON 333 B (jedes Feld mit eigenem
+ms-Zeitstempel, Kategorie als Text, Emoji, Mengenzähler pro Gerät) → NIP-44 polstert auf 512 B, +65 B
+Nonce/MAC, Base64 → 604 Zeichen → als Nostr-Event mit id (64 Hex), pubkey (64 Hex), sig (128 Hex) und
+zwei 64-Hex-Tags **≈ 1,1 KB**. (Die früheren Angaben „176–260 Zeichen“ stammen von vor den
+Feld-Zeitstempeln und Mengen und sind überholt.)
+
+**Ziel:**
+- **Nutzdaten binär statt JSON** (für Relays und Bluetooth gleich): Zeitstempel als Basiszeit +
+  kleine Deltas (Varint), Kategorie als 1-Byte-Index in `categories.json`, Emoji nur wenn von Hand
+  gesetzt, Gerätekennung als Index ins Mitgliederverzeichnis, Mengen als Varint pro Einheit.
+  „Brot, 5 Stück“ ≈ 25–35 B statt 333 B.
+- **Nur geänderte Felder senden** (Feld-Patch statt kompletter Artikelzustand); ein Antippen ist dann
+  nur „gekauft = ja, Zeit“.
+- **Bluetooth-Leitungsformat v2:** Keine Nostr-JSON-Hülle über die Funkstrecke. Binär: d-Tag auf
+  8 B gekürzt (listenweit eindeutig genug), Autor als 1-Byte-Index, Inhalt mit dem Sitzungsschlüssel
+  per AEAD (ChaCha20-Poly1305, +28 B, kein Auffüllen). Mit Schnorr-Signatur (64 B, nötig, damit
+  Weiterleitung im Mesh nicht gefälscht werden kann) ≈ **130–140 B**, ohne ≈ 70 B – also 8–15×
+  kleiner. Die id wird nicht übertragen (aus den Feldern berechenbar).
+- **Relays** bleiben beim Nostr-Format (vom Protokoll vorgegeben); mit binären Nutzdaten schrumpft ein
+  Event dort von ≈ 1,1 KB auf ≈ 650 B (die Hülle mit id/pubkey/sig in Hex bleibt).
+- **Kompatibilität:** Versionsbyte in den Nutzdaten; Geräte mit altem Format verstehen weiter
+  JSON-Nutzdaten (Übergangszeit), neue schreiben binär, sobald alle Mitglieder einer Liste es können
+  (Versionsangabe im Profil-Event).
+- **Nicht möglich:** Daten direkt ins Funksignal statt über Verbindungen – auch kompakt passt ein
+  Artikel nicht in 31 B (Legacy-Advertising), und Bestätigungen fehlen.
+
 ### Ideen, bewusst nicht umgesetzt
 
 - **Wi-Fi Direct** (nur Android): 50–100 m und MB/s statt kB/s, aber kein iPhone, ein eigener
