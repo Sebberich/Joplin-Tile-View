@@ -9,6 +9,7 @@ on:
   push:
     paths-ignore:
       - 'docs/**'
+      - '.github/workflows/keystore-check.yml'
       - 'README.md'
       - 'patches/README.md'
   workflow_dispatch:
@@ -140,7 +141,7 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/tiles.keystore"
+          printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/tiles.keystore"
           # Prüfen: Keystore lesbar, Passwort stimmt, Alias vorhanden. (Das Schlüssel-Passwort lässt sich
           # bei PKCS12-Keystores nicht getrennt prüfen; es muss dem Keystore-Passwort entsprechen.)
           if ! keytool -list -keystore "$RUNNER_TEMP/tiles.keystore" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
